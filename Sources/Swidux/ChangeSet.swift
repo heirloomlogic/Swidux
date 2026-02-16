@@ -21,5 +21,6 @@ public nonisolated struct ChangeSet: Sendable, Equatable {
     /// True when no changes have been recorded.
     public var isEmpty: Bool { upserts.isEmpty && deletions.isEmpty }
 
+    /// Creates an empty change set with no recorded upserts or deletions.
     public init() {}
 }

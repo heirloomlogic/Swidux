@@ -10,7 +10,6 @@ import Testing
 
 @Suite("ChangeSet")
 struct ChangeSetTests {
-
     @Test("Fresh ChangeSet is empty")
     func freshIsEmpty() {
         let cs = ChangeSet()

@@ -23,7 +23,6 @@ final class TestDispatcher: SwiduxDispatcher {
 
 @Suite("SwiduxDispatcher")
 struct SwiduxDispatcherTests {
-
     @Test("Send records dispatched actions in order")
     func sendRecordsActions() {
         let dispatcher = TestDispatcher()

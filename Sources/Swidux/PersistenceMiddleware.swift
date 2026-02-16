@@ -28,7 +28,6 @@ import os
 /// ```
 @MainActor
 public final class PersistenceMiddleware<State> {
-
     private let writers: [StateWriter<State>]
     private let debounceInterval: Duration
     private let logger: Logger
@@ -36,6 +35,12 @@ public final class PersistenceMiddleware<State> {
     /// Active debounce task — cancelled and restarted on each change.
     private var debounceTask: Task<Void, Never>?
 
+    /// Creates a persistence middleware with the given writers and debounce interval.
+    ///
+    /// - Parameters:
+    ///   - writers: The state writers that drain and flush entity changes.
+    ///   - debounce: How long to wait after the last change before flushing.
+    ///   - logger: Logger used for debug output.
     public init(
         writers: [StateWriter<State>],
         debounce: Duration = .milliseconds(250),
@@ -54,10 +59,8 @@ public final class PersistenceMiddleware<State> {
     public func afterReduce(state: inout State) {
         var hasPending = false
 
-        for writer in writers {
-            if writer.drain(&state) {
-                hasPending = true
-            }
+        for writer in writers where writer.drain(&state) {
+            hasPending = true
         }
 
         guard hasPending else { return }

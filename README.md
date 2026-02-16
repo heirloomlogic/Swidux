@@ -2,11 +2,9 @@
 
 **Redux-style state management for SwiftUI + SwiftData.**
 
-Swidux provides the persistence middleware layer for apps that use unidirectional data flow. Your reducers mutate state, and Swidux automatically detects what changed and persists it — no explicit save calls, no load/loaded action pairs, no persistence boilerplate in your feature code.
+Swidux is a persistence middleware layer for apps that use unidirectional data flow. Reducers mutate state, and the middleware detects what changed and persists it. This removes the need for explicit save calls, load/loaded action pairs, and persistence boilerplate in feature code.
 
 ## What's in the Package
-
-Swidux provides persistence middleware, protocols, and generic types:
 
 | Type | Purpose |
 |------|---------|
@@ -18,7 +16,7 @@ Swidux provides persistence middleware, protocols, and generic types:
 | `SwiduxReducer` | Protocol enforcing the reducer contract |
 | `SwiduxDispatcher` | Protocol enforcing the store dispatch contract |
 
-Everything else — your state, actions, domain models, DB actors — lives in your app. Swidux provides the contracts and persistence plumbing so you don't have to rewrite them for every project.
+Your state, actions, domain models, and DB actors live in your app. Swidux provides the contracts and persistence plumbing.
 
 ## How It Works
 
@@ -31,11 +29,11 @@ View → store.send(.action)
   → View re-renders via @Observable
 ```
 
-The key insight: **`EntityStore` records every mutation as it happens** — inserts, updates, and deletes. After each reducer call, the middleware drains these changelogs into `StateWriter` buffers. When the debounce timer fires (default 250ms), all pending writes flush in one batch. Rapid mutations naturally coalesce — if a card is updated 10 times in 200ms, only the final state is persisted.
+`EntityStore` records every mutation as it happens — inserts, updates, and deletes. After each reducer call, the middleware drains these changelogs into `StateWriter` buffers. When the debounce timer fires (default 250ms), all pending writes flush in one batch. Rapid mutations coalesce: if a card is updated 10 times in 200ms, only the final state hits the database.
 
 ## Architecture Overview
 
-Swidux is the persistence layer in a larger architecture. Here's where everything lives:
+Swidux is the persistence layer. Here's the boundary between package and app:
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -65,7 +63,7 @@ Swidux is the persistence layer in a larger architecture. Here's where everythin
 
 ### 1. Add the Package
 
-Add `Swidux` as a local package dependency in your Xcode project (same as any local SPM package).
+Add `Swidux` as a local package dependency in your Xcode project.
 
 ### 2. Re-export from AppState
 
@@ -82,11 +80,11 @@ struct AppState: Sendable {
 }
 ```
 
-This single line makes all Swidux types (`EntityStore`, `SwiduxReducer`, `SwiduxDispatcher`, `Effect`, `Send`, etc.) visible throughout your entire app — views, reducers, models — without any additional imports. You will never write `import Swidux` in a feature file.
+This makes all Swidux types (`EntityStore`, `SwiduxReducer`, `SwiduxDispatcher`, `Effect`, `Send`, etc.) visible throughout your app without additional imports. You won't write `import Swidux` in a feature file.
 
 ### 3. Define the App-Side Types
 
-Swidux expects your app to provide these types. They are app-specific because they reference your domain models and actions:
+Swidux expects your app to provide these types. They are app-specific because they reference your domain models and actions.
 
 #### Effect + Send
 
@@ -98,7 +96,7 @@ typealias Send = Swidux.Send<AppAction>
 typealias Effect = Swidux.Effect<AppAction>
 ```
 
-The package provides generic `Send<Action>` and `Effect<Action>`. Your app specializes them with your action type. All reducer return types (`-> Effect?`) work naturally.
+The package provides generic `Send<Action>` and `Effect<Action>`. Your app specializes them with your action type. Reducer return types (`-> Effect?`) work from there.
 
 #### AppAction
 
@@ -157,7 +155,7 @@ struct ItemReducer: SwiduxReducer {
 }
 ```
 
-The `SwiduxReducer` protocol has separate `Action` and `RootAction` associated types to support this pattern — feature reducers handle a slice of actions but effects dispatch root-level actions.
+`SwiduxReducer` has separate `Action` and `RootAction` associated types for this. Feature reducers handle a slice of actions; effects dispatch root-level actions.
 
 #### AppStore
 
@@ -216,7 +214,7 @@ final class AppStore: SwiduxDispatcher {
 
 ### 4. Wire Up Views
 
-Views read from the store and dispatch actions. They never import Swidux, never touch the DB, and never see SwiftData models:
+Views read from the store and dispatch actions. They don't import Swidux, don't touch the DB, and don't see SwiftData models:
 
 ```swift
 struct ItemListView: View {
@@ -260,7 +258,7 @@ cards.sort { $0.sortIndex < $1.sortIndex }
 cards.removeAll { $0.isArchived }
 ```
 
-Every mutation is silently tracked in a `ChangeSet`. You never interact with the `ChangeSet` directly — the middleware drains it after each reducer call.
+Every mutation is tracked in a `ChangeSet`. You don't interact with the `ChangeSet` directly; the middleware drains it after each reducer call.
 
 ### Entity Requirements
 
@@ -302,16 +300,16 @@ PersistenceMiddleware<AppState>(
 Call `persistence.afterReduce(state: &state)` after every reducer invocation. It:
 
 1. **Drains** changelogs from each `EntityStore` (sub-microsecond, synchronous)
-2. **Coalesces** — later writes for the same ID overwrite earlier ones
-3. **Debounces** — restarts a timer on each drain; flushes when it fires
-4. **Batches** — all pending writes flush in a single async Task
+2. **Coalesces** later writes for the same ID, overwriting earlier ones
+3. **Debounces** by restarting a timer on each drain and flushing when it fires
+4. **Batches** all pending writes into a single async Task
 
 ### Writer Ordering
 
 > [!WARNING]
 > **Writers flush sequentially in registration order.** If entity B holds a foreign-key reference to entity A, the writer for A **must** appear before the writer for B. Otherwise, B's upsert will try to look up A's row before it exists, silently dropping the relationship.
 
-The rule is **leaves first, aggregates last**:
+Leaf entities first, aggregates last:
 
 ```
 images  →  flush first   (no foreign keys)
@@ -319,7 +317,7 @@ decks   →  flush second  (no image references)
 cards   →  flush last    (references images via background)
 ```
 
-Your `upsert` methods should also include a **defensive fallback**: if a referenced entity isn't found, create it inline from the domain data rather than silently setting the relationship to `nil`. This protects against timing issues between separate `@ModelActor` contexts.
+Your `upsert` methods should include a defensive fallback: if a referenced entity isn't found, create it inline from the domain data rather than setting the relationship to `nil`. This covers timing issues between separate `@ModelActor` contexts.
 
 ```swift
 // In CardDB — safety net for cross-context timing
@@ -335,23 +333,23 @@ private func findOrCreateImageAsset(_ asset: ImageAsset) throws -> ImageAssetMod
 
 ### Feature Code Never Thinks About Persistence
 
-Reducers mutate `EntityStore` properties on `AppState`. That's it. No `db.save()` calls, no `.loadItems` / `.itemsLoaded` action pairs, no debounce `Task` management. Persistence is fully automatic.
+Reducers mutate `EntityStore` properties on `AppState`. No `db.save()` calls, no `.loadItems` / `.itemsLoaded` action pairs, no debounce `Task` management. Persistence is automatic.
 
 ### Optimistic UI
 
-State is updated synchronously in the reducer (instant UI feedback). Persistence happens asynchronously in the background. If a user taps rapidly, only the final state is persisted.
+State updates synchronously in the reducer, giving instant UI feedback. Persistence happens asynchronously. If a user taps rapidly, only the final state is persisted.
 
 ### Controlled Components
 
-Form inputs are store-bound via `Binding(get:set:)`. No `@State` buffering, no `onAppear`/`onChange` sync. The store is the single source of truth for everything.
+Form inputs are store-bound via `Binding(get:set:)`. No `@State` buffering, no `onAppear`/`onChange` sync. The store is the single source of truth.
 
 ### Reducer Purity
 
-Reducers are pure state transformations. They return `Effect?` for async work (network calls, analytics, etc.), but persistence is handled entirely by the middleware. Most reducer cases return `nil`.
+Reducers are pure state transformations. They return `Effect?` for async work (network calls, analytics, etc.), but persistence is handled by the middleware. Most reducer cases return `nil`.
 
 ## Swift 6 Compatibility
 
-Swidux targets Swift 6 with strict concurrency. Key details:
+Swidux targets Swift 6 with strict concurrency.
 
 - `EntityStore` and `ChangeSet` are `nonisolated` value types conforming to `Sendable`
 - `PersistenceMiddleware` is `@MainActor`-isolated (it manages a debounce `Task`)

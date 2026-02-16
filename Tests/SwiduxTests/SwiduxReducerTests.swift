@@ -48,7 +48,6 @@ struct TestReducer: SwiduxReducer {
 
 @Suite("SwiduxReducer")
 struct SwiduxReducerTests {
-
     let reducer = TestReducer()
     let env = TestEnvironment()
 
@@ -89,7 +88,10 @@ struct SwiduxReducerTests {
         state.items = EntityStore([entity])
 
         let effect = reducer.reduce(
-            state: &state, action: .rename(entity.id, "New"), environment: env)
+            state: &state,
+            action: .rename(entity.id, "New"),
+            environment: env
+        )
 
         #expect(state.items[entity.id]?.name == "New")
         #expect(effect == nil)

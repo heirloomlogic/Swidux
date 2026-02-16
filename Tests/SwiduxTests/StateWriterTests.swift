@@ -11,17 +11,16 @@ import Testing
 /// Thread-safe box for collecting values from @Sendable closures.
 final class SendableBox<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
-    private var _value: T
+    private var storage: T
     var value: T {
-        get { lock.withLock { _value } }
-        set { lock.withLock { _value = newValue } }
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
     }
-    init(_ value: T) { _value = value }
+    init(_ value: T) { storage = value }
 }
 
 @Suite("StateWriter")
 struct StateWriterTests {
-
     // MARK: - Helpers
 
     /// Creates a StateWriter for `TestState.items` that records persisted values.

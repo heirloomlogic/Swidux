@@ -24,7 +24,6 @@ import Foundation
 /// ```
 public nonisolated struct EntityStore<Entity: Identifiable & Equatable & Sendable>: Sendable, Equatable
 where Entity.ID == UUID {
-
     // MARK: - Storage
 
     /// Keyed storage for O(1) lookup.

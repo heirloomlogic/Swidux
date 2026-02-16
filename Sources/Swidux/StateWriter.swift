@@ -20,9 +20,8 @@ import Foundation
 /// 2. **Flush** — called when the debounce timer fires. Returns an async
 ///    closure that persists the accumulated batch, then clears the buffers.
 public final class StateWriter<State> {
-
-    private let _drain: (inout State) -> Bool
-    private let _flush: () -> (@Sendable () async -> Void)?
+    private let drainBody: (inout State) -> Bool
+    private let flushBody: () -> (@Sendable () async -> Void)?
 
     /// Creates a state writer for one `EntityStore` key path.
     ///
@@ -37,7 +36,7 @@ public final class StateWriter<State> {
         var pendingWrites: [UUID: Entity] = [:]
         var pendingDeletions: Set<UUID> = []
 
-        _drain = { state in
+        drainBody = { state in
             let changes = state[keyPath: keyPath].changes
             guard !changes.isEmpty else { return false }
 
@@ -57,7 +56,7 @@ public final class StateWriter<State> {
             return true
         }
 
-        _flush = {
+        flushBody = {
             guard !pendingWrites.isEmpty || !pendingDeletions.isEmpty else { return nil }
             let writes = Array(pendingWrites.values)
             let deletions = pendingDeletions
@@ -69,9 +68,9 @@ public final class StateWriter<State> {
 
     /// Drains the `EntityStore`'s `ChangeSet` into pending buffers.
     /// Returns `true` if there were changes to drain.
-    public func drain(_ state: inout State) -> Bool { _drain(&state) }
+    public func drain(_ state: inout State) -> Bool { drainBody(&state) }
 
     /// Returns an async closure with the batched persistence work,
     /// or `nil` if nothing is pending. Clears the buffers.
-    public func flush() -> (@Sendable () async -> Void)? { _flush() }
+    public func flush() -> (@Sendable () async -> Void)? { flushBody() }
 }

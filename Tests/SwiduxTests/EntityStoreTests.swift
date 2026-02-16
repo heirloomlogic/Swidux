@@ -10,7 +10,6 @@ import Testing
 
 @Suite("EntityStore")
 struct EntityStoreTests {
-
     // MARK: - Init
 
     @Test("Empty init creates an empty store")

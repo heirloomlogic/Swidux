@@ -11,7 +11,6 @@ import Testing
 @Suite("PersistenceMiddleware")
 @MainActor
 struct PersistenceMiddlewareTests {
-
     // MARK: - Tests
 
     @Test("afterReduce with no changes does not schedule a flush")
