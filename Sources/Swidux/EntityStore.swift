@@ -22,8 +22,9 @@ import Foundation
 /// cards.modify(card.id) { $0.quote = "Hello" }  // update — recorded
 /// cards[card.id] = nil            // delete — recorded
 /// ```
-public nonisolated struct EntityStore<Entity: Identifiable & Equatable & Sendable>: Sendable, Equatable
-where Entity.ID == UUID {
+public nonisolated struct EntityStore<
+    Entity: Identifiable & Equatable & Sendable
+>: Sendable, Equatable where Entity.ID == UUID {
     // MARK: - Storage
 
     /// Keyed storage for O(1) lookup.
@@ -113,6 +114,49 @@ where Entity.ID == UUID {
     /// Clears the changelog. Called by `StateWriter` after draining.
     public mutating func resetChanges() {
         changes = ChangeSet()
+    }
+
+    // MARK: - Merging (Re-hydration)
+
+    /// Merges entities from another store, preferring existing values when the
+    /// closure returns `true`.
+    ///
+    /// Use this for re-hydration scenarios where the database may return partial
+    /// data (e.g. metadata-only loading) and you need to preserve richer
+    /// in-memory state that was loaded lazily after startup.
+    ///
+    /// ```swift
+    /// var merged = EntityStore(allCampaignsFromDB)
+    /// merged.merge(from: existingStore) { existing, incoming in
+    ///     existing.calculationState != nil && incoming.calculationState == nil
+    /// }
+    /// campaigns = merged
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - other: The store whose entities should be merged in.
+    ///   - preferExisting: Called when an entity with the same ID exists in both
+    ///     stores. The first argument is the entity from `other`, the second is
+    ///     the entity already in `self`. Return `true` to keep the entity from
+    ///     `other`, replacing the one in `self`.
+    ///
+    /// Does **not** record changes — this is a hydration operation.
+    public mutating func merge(
+        from other: EntityStore,
+        preferExisting: (_ existing: Entity, _ incoming: Entity) -> Bool
+    ) {
+        for entity in other.values {
+            if let existing = storage[entity.id] {
+                if preferExisting(entity, existing) {
+                    storage[entity.id] = entity
+                }
+                // else: keep self's current value
+            } else {
+                // Entity only in other — add it
+                storage[entity.id] = entity
+                order.append(entity.id)
+            }
+        }
     }
 
     // MARK: - Equatable

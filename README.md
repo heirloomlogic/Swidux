@@ -197,9 +197,12 @@ final class AppStore: SwiduxDispatcher {
 
         persistence.afterReduce(state: &state)
 
-        self.items = state.items
-        self.tags  = state.tags
-        self.ui    = state.ui
+        // ⚠️ Guard writes with equality checks — @Observable fires change
+        // notifications on every `set`, even if the value is identical.
+        // Unconditional writes here cause cascading SwiftUI re-renders.
+        if items != state.items { items = state.items }
+        if tags != state.tags   { tags = state.tags }
+        if ui != state.ui       { ui = state.ui }
 
         if let effect {
             Task { [weak self] in
@@ -259,6 +262,22 @@ cards.removeAll { $0.isArchived }
 ```
 
 Every mutation is tracked in a `ChangeSet`. You don't interact with the `ChangeSet` directly; the middleware drains it after each reducer call.
+
+### Merging (Re-hydration)
+
+When re-loading data from the database (e.g. CloudKit sync, background refresh), don't replace the entire `EntityStore` — this destroys any enriched in-memory state that was loaded lazily after startup. Use `merge(from:preferExisting:)` instead:
+
+```swift
+// In hydrate():
+var merged = EntityStore(allFromDB)
+merged.merge(from: campaigns) { existing, incoming in
+    // Keep existing if it has richer data than the DB row
+    existing.calculationState != nil && incoming.calculationState == nil
+}
+campaigns = merged
+```
+
+The `merge` method does not record changes — it has the same hydration semantics as `init(_:)`.
 
 ### Entity Requirements
 
@@ -328,6 +347,39 @@ private func findOrCreateImageAsset(_ asset: ImageAsset) throws -> ImageAssetMod
     return model
 }
 ```
+
+## Performance Pitfalls
+
+### Guard `@Observable` Writes with Equality Checks
+
+> [!CAUTION]
+> `@Observable` fires change notifications on every property *write*, even when the new value is identical to the old one. If `send()` unconditionally writes properties after every dispatch, SwiftUI will re-evaluate views on every action — including Scene bodies, `.task` modifiers, and `onAppear`. This can create infinite dispatch loops (view re-render → `.task` → `send()` → view re-render → …) that consume 100% CPU.
+
+Always guard the unpack step in `send()` with equality checks:
+
+```swift
+if items != state.items { items = state.items }
+if ui != state.ui       { ui = state.ui }
+```
+
+For non-`Equatable` state types (like `UIState`), add `Equatable` conformance or break into individual guarded writes for each sub-property.
+
+### Don't Replace EntityStores After Startup
+
+> [!WARNING]
+> Assigning a fresh `EntityStore(fromDB)` to a property after startup discards any in-memory state that was enriched post-hydration (e.g. lazily loaded calculation results, expanded detail data). If a background process (CloudKit sync, periodic refresh) re-hydrates, it will silently regress the UI to a stale state.
+
+Use `merge(from:preferExisting:)` for re-hydration. The `init(_:)` constructor is for initial hydration only.
+
+### Dispatch Loop Detection
+
+`PersistenceMiddleware` tracks how many times `afterReduce` is called per debounce interval. If the count exceeds the threshold (default: 100), it logs a warning:
+
+```
+⚠️ [PersistenceMiddleware] afterReduce called 127 times in a single debounce interval — possible dispatch loop.
+```
+
+If you see this warning, check that your `send()` implementation guards `@Observable` property writes.
 
 ## Design Principles
 

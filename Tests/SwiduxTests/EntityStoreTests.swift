@@ -217,4 +217,67 @@ struct EntityStoreTests {
         let b = EntityStore([TestEntity(name: "B")])
         #expect(a != b)
     }
+
+    // MARK: - Merge
+
+    @Test("Merge keeps existing entity when preferExisting returns true")
+    func mergeKeepsExisting() {
+        let id = UUID()
+        let rich = TestEntity(id: id, name: "Rich")
+        let sparse = TestEntity(id: id, name: "Sparse")
+
+        var store = EntityStore([sparse])
+        let other = EntityStore([rich])
+
+        store.merge(from: other) { existing, _ in
+            existing.name == "Rich"
+        }
+
+        #expect(store[id]?.name == "Rich")
+        #expect(store.count == 1)
+    }
+
+    @Test("Merge accepts incoming when preferExisting returns false")
+    func mergeAcceptsIncoming() {
+        let id = UUID()
+        let existing = TestEntity(id: id, name: "Existing")
+        let incoming = TestEntity(id: id, name: "Incoming")
+
+        var store = EntityStore([incoming])
+        let other = EntityStore([existing])
+
+        store.merge(from: other) { _, _ in false }
+
+        // When preferExisting returns false, self retains its value
+        #expect(store[id]?.name == "Incoming")
+    }
+
+    @Test("Merge adds entities only present in the other store")
+    func mergeAddsNewEntities() {
+        let a = TestEntity(name: "A")
+        let b = TestEntity(name: "B")
+
+        var store = EntityStore([a])
+        let other = EntityStore([b])
+
+        store.merge(from: other) { _, _ in false }
+
+        #expect(store.count == 2)
+        #expect(store[a.id] != nil)
+        #expect(store[b.id] != nil)
+    }
+
+    @Test("Merge does not record changes — hydration semantics")
+    func mergeNoChangesRecorded() {
+        let a = TestEntity(name: "A")
+        let b = TestEntity(name: "B")
+
+        var store = EntityStore([a])
+        let other = EntityStore([b])
+
+        store.merge(from: other) { _, _ in false }
+
+        // Merge is a hydration operation — no changelog
+        #expect(store.changes.isEmpty)
+    }
 }

@@ -35,19 +35,34 @@ public final class PersistenceMiddleware<State> {
     /// Active debounce task — cancelled and restarted on each change.
     private var debounceTask: Task<Void, Never>?
 
+    /// Number of `afterReduce` calls since the last debounce flush.
+    /// Used to detect probable dispatch loops.
+    private var drainCount = 0
+
+    /// Whether we've already logged a loop warning for this burst.
+    private var hasLoggedLoopWarning = false
+
+    /// Threshold above which `afterReduce` calls per debounce interval
+    /// are considered a probable dispatch loop.
+    private let loopWarningThreshold: Int
+
     /// Creates a persistence middleware with the given writers and debounce interval.
     ///
     /// - Parameters:
     ///   - writers: The state writers that drain and flush entity changes.
     ///   - debounce: How long to wait after the last change before flushing.
+    ///   - loopThreshold: Number of `afterReduce` calls per debounce interval
+    ///     that triggers a dispatch loop warning. Default is 100.
     ///   - logger: Logger used for debug output.
     public init(
         writers: [StateWriter<State>],
         debounce: Duration = .milliseconds(250),
+        loopThreshold: Int = 100,
         logger: Logger = Logger(subsystem: "persistence", category: "middleware")
     ) {
         self.writers = writers
         self.debounceInterval = debounce
+        self.loopWarningThreshold = loopThreshold
         self.logger = logger
     }
 
@@ -65,6 +80,20 @@ public final class PersistenceMiddleware<State> {
 
         guard hasPending else { return }
 
+        // Dispatch loop detection
+        drainCount += 1
+        if drainCount > loopWarningThreshold && !hasLoggedLoopWarning {
+            hasLoggedLoopWarning = true
+            logger.warning(
+                """
+                [PersistenceMiddleware] afterReduce called \(self.drainCount) times \
+                in a single debounce interval — possible dispatch loop. \
+                Check that AppStore.send() guards @Observable property writes \
+                with equality checks.
+                """
+            )
+        }
+
         logger.debug("[PersistenceMiddleware] Changes drained, scheduling flush")
 
         debounceTask?.cancel()
@@ -72,6 +101,10 @@ public final class PersistenceMiddleware<State> {
             guard let self else { return }
             try? await Task.sleep(for: self.debounceInterval)
             guard !Task.isCancelled else { return }
+
+            // Reset loop detection counters
+            self.drainCount = 0
+            self.hasLoggedLoopWarning = false
 
             let work = self.writers.compactMap { $0.flush() }
             guard !work.isEmpty else { return }
