@@ -63,7 +63,23 @@ Swidux is the persistence layer. Here's the boundary between package and app:
 
 ### 1. Add the Package
 
-Add `Swidux` as a local package dependency in your Xcode project.
+Add `Swidux` via Swift Package Manager:
+
+**Xcode:** File → Add Package Dependencies → paste the URL:
+
+```
+https://github.com/heirloomlogic/Swidux
+```
+
+Set the version rule to **Up to Next Major** from `1.0.0`.
+
+**Or add it to `Package.swift`:**
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/heirloomlogic/Swidux", from: "1.0.0"),
+]
+```
 
 ### 2. Re-export from AppState
 
