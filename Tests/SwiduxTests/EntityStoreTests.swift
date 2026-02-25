@@ -156,15 +156,19 @@ struct EntityStoreTests {
 
     // MARK: - Bulk Operations
 
-    @Test("Sort reorders entities")
+    @Test("Sort reorders entities and records upserts")
     func sortReorders() {
         let a = TestEntity(name: "Banana")
         let b = TestEntity(name: "Apple")
         var store = EntityStore([a, b])
+        store.resetChanges()
 
         store.sort { $0.name < $1.name }
 
         #expect(store.values.map(\.name) == ["Apple", "Banana"])
+        // Sort records all entities as upserts for persistence
+        #expect(store.changes.upserts.contains(a.id))
+        #expect(store.changes.upserts.contains(b.id))
     }
 
     @Test("RemoveAll removes matching and records deletions")

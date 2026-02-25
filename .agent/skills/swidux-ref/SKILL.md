@@ -153,6 +153,9 @@ merged.merge(from: existingStore) { existing, incoming in
 store.property = merged
 ```
 
+### 11. Keep Reducers Lightweight
+Reducers run synchronously on the MainActor. Any O(n²) work — nested loops, repeated linear scans, large sorts — blocks the UI thread until it completes. Move heavy computation into an `Effect` and dispatch the result back as an action.
+
 ---
 
 ## EntityStore API

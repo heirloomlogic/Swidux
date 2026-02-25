@@ -38,7 +38,7 @@ struct PersistenceMiddlewareTests {
         await confirmation(expectedCount: 1) { confirmed in
             let writer = StateWriter<TestState>(
                 keyPath: \.items,
-                persist: { writes, _ in
+                persist: { _, _ in
                     confirmed()
                 }
             )

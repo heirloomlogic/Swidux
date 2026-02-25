@@ -571,8 +571,10 @@ struct ItemListView: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
+        // Sort once per body evaluation — avoid sorting inline in ForEach
+        let sorted = store.items.values.sorted { $0.sortIndex < $1.sortIndex }
         List {
-            ForEach(store.items.values.sorted(by: { $0.sortIndex < $1.sortIndex })) { item in
+            ForEach(sorted) { item in
                 ItemRow(item: item)
             }
         }

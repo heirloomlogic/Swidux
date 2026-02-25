@@ -416,6 +416,10 @@ Use `merge(from:preferExisting:)` for re-hydration. The `init(_:)` constructor i
 
 If you see this warning, check that your `send()` implementation guards `@Observable` property writes.
 
+### Keep Reducers Lightweight
+
+Reducers run synchronously on the MainActor. Any O(n²) work — nested loops, repeated linear scans, large sorts — blocks the UI thread until it completes. Move heavy computation into an `Effect` and dispatch the result back as an action.
+
 ## Design Principles
 
 ### Feature Code Never Thinks About Persistence
