@@ -114,6 +114,9 @@ typealias Effect = Swidux.Effect<AppAction>
 
 The package provides generic `Send<Action>` and `Effect<Action>`. Your app specializes them with your action type. Reducer return types (`-> Effect?`) work from there.
 
+- `Send<Action>` is `@MainActor @Sendable (Action) -> Void` — dispatched actions always hop back to the MainActor.
+- `Effect<Action>` is `@Sendable (@escaping Send<Action>) async -> Void` — effect bodies run off the MainActor on the cooperative thread pool.
+
 #### AppAction
 
 ```swift
@@ -220,10 +223,15 @@ final class AppStore: SwiduxDispatcher {
         if tags != state.tags   { tags = state.tags }
         if ui != state.ui       { ui = state.ui }
 
+        // runEffect uses Task { @concurrent in } to run the effect
+        // body off the MainActor. Never use a bare Task { } here —
+        // inside an @MainActor class it inherits MainActor isolation,
+        // keeping the entire effect on the main thread.
         if let effect {
-            Task { [weak self] in
-                await effect { action in self?.send(action) }
+            let send: Send = { [weak self] action in
+                self?.send(action)
             }
+            runEffect(effect, send: send)
         }
     }
 }
@@ -417,12 +425,14 @@ Reducers are pure state transformations. They return `Effect?` for async work (n
 
 ## Swift 6 Compatibility
 
-Swidux targets Swift 6 with strict concurrency.
+Swidux targets Swift 6 with strict concurrency and uses `DefaultIsolationMainActor`.
 
 - `EntityStore` and `ChangeSet` are `nonisolated` value types conforming to `Sendable`
 - `PersistenceMiddleware` is `@MainActor`-isolated (it manages a debounce `Task`)
 - `StateWriter` is a reference type with closure-captured state
-- The package uses `.swiftLanguageMode(.v6)` in its manifest
+- `Send<Action>` is `@MainActor @Sendable` — safe to capture across actor boundaries
+- `runEffect(_:send:)` uses `Task { @concurrent in }` to run effects off the MainActor
+- The package uses `.swiftLanguageMode(.v6)` + `.enableExperimentalFeature("DefaultIsolationMainActor")`
 
 ## Requirements
 

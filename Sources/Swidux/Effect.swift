@@ -9,7 +9,7 @@
 import Foundation
 
 /// A function for dispatching actions back to the store from within an effect.
-public typealias Send<Action> = @MainActor (Action) -> Void
+public typealias Send<Action> = @MainActor @Sendable (Action) -> Void
 
 /// An async unit of work returned by a reducer.
 ///
