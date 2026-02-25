@@ -115,7 +115,7 @@ typealias Effect = Swidux.Effect<AppAction>
 The package provides generic `Send<Action>` and `Effect<Action>`. Your app specializes them with your action type. Reducer return types (`-> Effect?`) work from there.
 
 - `Send<Action>` is `@MainActor @Sendable (Action) -> Void` — dispatched actions always hop back to the MainActor.
-- `Effect<Action>` is `@Sendable (@escaping Send<Action>) async -> Void` — effect bodies run off the MainActor on the cooperative thread pool.
+- `Effect<Action>` is a struct wrapping a `@Sendable` async closure. The closure body is `package`-access — downstream apps construct effects with `Effect { send in ... }` but cannot execute them directly. Use `runEffect(_:send:)` to run effects on the cooperative thread pool.
 
 #### AppAction
 
@@ -169,12 +169,23 @@ struct ItemReducer: SwiduxReducer {
         action: ItemAction,
         environment: AppEnvironment
     ) -> Effect? {
-        // ...
+        switch action {
+        case .increment(let id):
+            state.items.modify(id) { $0.count += 1 }
+        }
+        return nil
     }
 }
 ```
 
-`SwiduxReducer` has separate `Action` and `RootAction` associated types for this. Feature reducers handle a slice of actions; effects dispatch root-level actions.
+Return `nil` when no effect is needed. When async work is required, return `Effect { send in ... }`:
+
+```swift
+return Effect { send in
+    let result = try await api.fetch()
+    send(.dataLoaded(result))
+}
+```
 
 #### AppStore
 
@@ -431,6 +442,7 @@ Swidux targets Swift 6 with strict concurrency and uses `DefaultIsolationMainAct
 - `PersistenceMiddleware` is `@MainActor`-isolated (it manages a debounce `Task`)
 - `StateWriter` is a reference type with closure-captured state
 - `Send<Action>` is `@MainActor @Sendable` — safe to capture across actor boundaries
+- `Effect<Action>` is a struct with `package`-access body — prevents bypassing `runEffect`
 - `runEffect(_:send:)` uses `Task { @concurrent in }` to run effects off the MainActor
 - The package uses `.swiftLanguageMode(.v6)` + `.enableExperimentalFeature("DefaultIsolationMainActor")`
 

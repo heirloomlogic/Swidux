@@ -20,7 +20,7 @@ struct EffectThreadingTests {
     func effectDispatchesActions() async throws {
         let store = TestDispatcher()
 
-        let effect: Effect<TestAction> = { send in
+        let effect = Effect<TestAction> { send in
             await send(.effectAction("from background"))
         }
 
@@ -42,7 +42,7 @@ struct EffectThreadingTests {
         let store = TestDispatcher()
         let wasOnMainThread = Mutex(false)
 
-        let effect: Effect<TestAction> = { send in
+        let effect = Effect<TestAction> { send in
             wasOnMainThread.withLock { $0 = Thread.isMainThread }
             await send(.noOp)
         }
