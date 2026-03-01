@@ -420,6 +420,27 @@ If you see this warning, check that your `send()` implementation guards `@Observ
 
 Reducers run synchronously on the MainActor. Any O(n²) work — nested loops, repeated linear scans, large sorts — blocks the UI thread until it completes. Move heavy computation into an `Effect` and dispatch the result back as an action.
 
+### Never Block Inside Effects
+
+> [!CAUTION]
+> Effects run on Swift concurrency's cooperative thread pool via `Task { @concurrent in }`. The pool has a small, fixed number of threads. **Synchronous blocking calls** inside an effect — `Process.waitUntilExit()`, `DispatchSemaphore.wait()`, `Thread.sleep()`, synchronous file I/O on large data — hold a thread hostage. If enough threads are blocked, the pool starves and the MainActor can't get scheduled, causing a beachball.
+
+Always use async alternatives:
+
+```swift
+// ❌ Blocks a cooperative thread
+process.run()
+process.waitUntilExit()
+
+// ✅ Yields the thread while waiting
+try await withCheckedThrowingContinuation { continuation in
+    process.terminationHandler = { _ in continuation.resume() }
+    try process.run()
+}
+```
+
+Common offenders: `Process.waitUntilExit()`, `DispatchSemaphore.wait()`, `Thread.sleep(forTimeInterval:)`, `Data(contentsOf:)` on large files. Replace with `terminationHandler` + continuation, `AsyncStream`, `Task.sleep()`, and `FileHandle` async reads respectively.
+
 ## Design Principles
 
 ### Feature Code Never Thinks About Persistence
