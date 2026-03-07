@@ -279,7 +279,7 @@ var cards = EntityStore<Card>()
 // Insert or update — automatically recorded
 cards[card.id] = card
 
-// In-place mutation — automatically recorded
+// In-place mutation — recorded only if the value actually changes
 cards.modify(card.id) { $0.title = "New Title" }
 
 // Delete — automatically recorded
@@ -295,6 +295,8 @@ let has  = cards.contains(cardID)  // Existence check
 cards.sort { $0.sortIndex < $1.sortIndex }
 cards.removeAll { $0.isArchived }
 ```
+
+`modify` uses `Equatable` to skip recording when the transform doesn't change the value. `sort` only marks entities whose position actually changed — sorting an already-sorted store is a no-op for persistence. `removeAll(where:)` rebuilds the index in a single pass.
 
 Every mutation is tracked in a `ChangeSet`. You don't interact with the `ChangeSet` directly; the middleware drains it after each reducer call.
 
@@ -357,6 +359,17 @@ Call `persistence.afterReduce(state: &state)` after every reducer invocation. It
 2. **Coalesces** later writes for the same ID, overwriting earlier ones
 3. **Debounces** by restarting a timer on each drain and flushing when it fires
 4. **Batches** all pending writes into a single async Task
+
+### Flushing on Shutdown
+
+The debounce timer means writes can be buffered when the app terminates. Call `flush()` to ensure no data is lost:
+
+```swift
+// In AppStore or App lifecycle:
+await persistence.flush()
+```
+
+`flush()` cancels the active debounce timer and immediately persists all pending writes. Call it from `applicationWillTerminate`, `scenePhase == .background`, or any other shutdown path.
 
 ### Writer Ordering
 
@@ -461,15 +474,14 @@ Reducers are pure state transformations. They return `Effect?` for async work (n
 
 ## Swift 6 Compatibility
 
-Swidux targets Swift 6 with strict concurrency and uses `DefaultIsolationMainActor`.
+Swidux targets Swift 6 with strict concurrency. All isolation is explicit — no implicit `DefaultIsolationMainActor`.
 
 - `EntityStore` and `ChangeSet` are `nonisolated` value types conforming to `Sendable`
-- `PersistenceMiddleware` is `@MainActor`-isolated (it manages a debounce `Task`)
-- `StateWriter` is a reference type with closure-captured state
+- `StateWriter` and `PersistenceMiddleware` are `@MainActor`-isolated
 - `Send<Action>` is `@MainActor @Sendable` — safe to capture across actor boundaries
 - `Effect<Action>` is a struct with `package`-access body — prevents bypassing `runEffect`
 - `runEffect(_:send:)` uses `Task { @concurrent in }` to run effects off the MainActor
-- The package uses `.swiftLanguageMode(.v6)` + `.enableExperimentalFeature("DefaultIsolationMainActor")`
+- The package uses `.swiftLanguageMode(.v6)`
 
 ## Requirements
 

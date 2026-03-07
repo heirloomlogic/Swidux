@@ -19,6 +19,7 @@ import Foundation
 ///    Later values for the same ID overwrite earlier ones.
 /// 2. **Flush** — called when the debounce timer fires. Returns an async
 ///    closure that persists the accumulated batch, then clears the buffers.
+@MainActor
 public final class StateWriter<State> {
     private let drainBody: (inout State) -> Bool
     private let flushBody: () -> (@Sendable () async -> Void)?

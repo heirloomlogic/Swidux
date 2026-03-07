@@ -66,6 +66,23 @@ public final class PersistenceMiddleware<State> {
         self.logger = logger
     }
 
+    /// Immediately flushes all pending writes, cancelling any active debounce timer.
+    ///
+    /// Call this during app shutdown (e.g. `applicationWillTerminate`,
+    /// `scenePhase == .background`) to ensure no buffered writes are lost.
+    public func flush() async {
+        debounceTask?.cancel()
+        debounceTask = nil
+
+        drainCount = 0
+        hasLoggedLoopWarning = false
+
+        let work = writers.compactMap { $0.flush() }
+        for w in work {
+            await w()
+        }
+    }
+
     /// Called after every reducer invocation.
     ///
     /// Synchronously drains changelogs from each `EntityStore` (sub-microsecond).

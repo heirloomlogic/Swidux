@@ -156,6 +156,23 @@ store.property = merged
 ### 11. Keep Reducers Lightweight
 Reducers run synchronously on the MainActor. Any O(n²) work — nested loops, repeated linear scans, large sorts — blocks the UI thread until it completes. Move heavy computation into an `Effect` and dispatch the result back as an action.
 
+### 12. Never Block Inside Effects
+Effects run on Swift concurrency's cooperative thread pool (via `Task { @concurrent in }`). The pool has a small, fixed number of threads. **Synchronous blocking calls** inside an effect — `Process.waitUntilExit()`, `DispatchSemaphore.wait()`, `Thread.sleep()` — hold a thread hostage. If enough threads block, the pool starves and the MainActor freezes (beachball).
+
+```swift
+// ❌ Blocks a cooperative thread
+process.run()
+process.waitUntilExit()
+
+// ✅ Yields the thread while waiting
+try await withCheckedThrowingContinuation { continuation in
+    process.terminationHandler = { _ in continuation.resume() }
+    try process.run()
+}
+```
+
+Common offenders: `Process.waitUntilExit()`, `DispatchSemaphore.wait()`, `Thread.sleep(forTimeInterval:)`, `Data(contentsOf:)` on large files.
+
 ---
 
 ## EntityStore API
@@ -168,7 +185,7 @@ var cards = EntityStore<Card>()
 // Insert or update — automatically recorded
 cards[card.id] = card
 
-// In-place mutation — automatically recorded
+// In-place mutation — recorded only if the value actually changes
 cards.modify(card.id) { $0.title = "New Title" }
 
 // Delete — automatically recorded
@@ -187,6 +204,8 @@ cards.removeAll { $0.isArchived }
 // Hydration (no changes recorded)
 cards = EntityStore(arrayFromDB)
 ```
+
+`modify` uses `Equatable` to skip recording when the transform doesn't change the value. `sort` only marks entities whose position actually changed — sorting an already-sorted store is a no-op for persistence. `removeAll(where:)` rebuilds the index once in O(n) rather than per-removal.
 
 Every mutation is silently tracked in a `ChangeSet`. You never interact with the `ChangeSet` directly — the middleware drains it after each reducer call.
 
@@ -213,6 +232,17 @@ PersistenceMiddleware<AppState>(
 ```
 
 Call `persistence.afterReduce(state: &state)` after every reducer invocation from `AppStore.send()`.
+
+### Explicit Flush on Shutdown
+
+The debounce timer means writes can be buffered when the app terminates. Call `flush()` during shutdown to ensure no data is lost:
+
+```swift
+// In AppStore or App lifecycle:
+await persistence.flush()
+```
+
+`flush()` cancels the active debounce timer and immediately persists all pending writes. Call it from `applicationWillTerminate`, `scenePhase == .background`, or any other shutdown path.
 
 ### Writer Ordering
 
@@ -308,14 +338,14 @@ if let effect {
 
 ## Threading Model (Swift 6.2+ Approachable Concurrency)
 
-- **MainActor is default.** Package uses `DefaultIsolationMainActor` experimental feature. AppStore, reducers, views, effect helpers are all MainActor-isolated.
+- **All isolation is explicit.** No implicit `DefaultIsolationMainActor` — each type declares its own isolation. AppStore, reducers, views, effect helpers are MainActor-isolated in app code.
 - **Effects run off MainActor.** `runEffect(_:send:)` uses `Task { @concurrent in }` to run effect bodies on the cooperative thread pool. Dispatched actions hop back to MainActor via `Send`.
 - **DB actors run off MainActor.** `@ModelActor` provides isolated `ModelContext`.
 - **Minimize explicit `@MainActor`.** Only `AppStore` needs it explicitly in app code; the compiler infers the rest.
 - **`nonisolated init`** on value types to allow creation from any context.
 - `EntityStore` and `ChangeSet` are `nonisolated` value types conforming to `Sendable`.
-- `PersistenceMiddleware` is `@MainActor`-isolated (manages a debounce `Task`).
-- Package uses `.swiftLanguageMode(.v6)` + `.enableExperimentalFeature("DefaultIsolationMainActor")`.
+- `StateWriter` and `PersistenceMiddleware` are both `@MainActor`-isolated (manage mutable buffers and a debounce `Task`).
+- Package uses `.swiftLanguageMode(.v6)`.
 
 ---
 

@@ -91,6 +91,31 @@ struct PersistenceMiddlewareTests {
         #expect(flushCount.value == 1)
     }
 
+    @Test("Explicit flush persists pending writes immediately")
+    func explicitFlush() async throws {
+        let writesBox = SendableBox<[TestEntity]>([])
+
+        let writer = StateWriter<TestState>(
+            keyPath: \.items,
+            persist: { writes, _ in writesBox.value = writes }
+        )
+        let middleware = PersistenceMiddleware<TestState>(
+            writers: [writer],
+            debounce: .milliseconds(500)  // long debounce — won't fire naturally
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Urgent")
+        state.items[entity.id] = entity
+        middleware.afterReduce(state: &state)
+
+        // Flush immediately — don't wait for debounce
+        await middleware.flush()
+
+        #expect(writesBox.value.count == 1)
+        #expect(writesBox.value.first?.name == "Urgent")
+    }
+
     @Test("Multiple writers are all flushed")
     func multipleWriters() async throws {
         await confirmation(expectedCount: 2) { confirmed in

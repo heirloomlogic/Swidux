@@ -85,11 +85,15 @@ public nonisolated struct EntityStore<
         }
     }
 
-    /// Mutates an entity in-place. Records the change. No-op if the ID doesn't exist.
+    /// Mutates an entity in-place. Records the change only if the value actually changed.
+    /// No-op if the ID doesn't exist.
     public mutating func modify(_ id: UUID, _ transform: (inout Entity) -> Void) {
         guard let index = positions[id] else { return }
+        let old = entities[index]
         transform(&entities[index])
-        changes.upserts.insert(id)
+        if entities[index] != old {
+            changes.upserts.insert(id)
+        }
     }
 
     // MARK: - Collection
@@ -109,22 +113,34 @@ public nonisolated struct EntityStore<
     // MARK: - Bulk Operations
 
     /// Sorts the store's order using the given predicate.
-    /// Records all entities as upserts so the persistence middleware
-    /// captures the new ordering.
+    /// Only records upserts for entities whose position actually changed.
     public mutating func sort(by areInIncreasingOrder: (Entity, Entity) -> Bool) {
+        let oldOrder = entities
         entities.sort(by: areInIncreasingOrder)
-        // Rebuild the index to match the new order
         for (index, entity) in entities.enumerated() {
             positions[entity.id] = index
-            changes.upserts.insert(entity.id)
+            if index >= oldOrder.count || oldOrder[index].id != entity.id {
+                changes.upserts.insert(entity.id)
+            }
         }
     }
 
     /// Removes all entities matching the predicate. Records deletions.
     public mutating func removeAll(where shouldRemove: (Entity) -> Bool) {
-        let toRemove = entities.filter(shouldRemove)
-        for entity in toRemove {
-            self[entity.id] = nil
+        let removedIDs = Set(entities.filter(shouldRemove).map(\.id))
+        guard !removedIDs.isEmpty else { return }
+
+        entities.removeAll { removedIDs.contains($0.id) }
+
+        // Rebuild index once
+        positions = [:]
+        for (i, entity) in entities.enumerated() {
+            positions[entity.id] = i
+        }
+
+        for id in removedIDs {
+            changes.deletions.insert(id)
+            changes.upserts.remove(id)
         }
     }
 

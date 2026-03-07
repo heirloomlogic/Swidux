@@ -121,6 +121,20 @@ struct EntityStoreTests {
         #expect(store.changes.upserts.contains(entity.id))
     }
 
+    @Test("Modify with no actual change does not record upsert")
+    func modifyNoChange() {
+        let entity = TestEntity(name: "Same")
+        var store = EntityStore([entity])
+        store.resetChanges()
+
+        store.modify(entity.id) { _ in
+            // no mutation
+        }
+
+        #expect(store[entity.id]?.name == "Same")
+        #expect(store.changes.isEmpty)
+    }
+
     @Test("Modify for missing ID is a no-op")
     func modifyMissing() {
         var store = EntityStore<TestEntity>()
@@ -156,7 +170,7 @@ struct EntityStoreTests {
 
     // MARK: - Bulk Operations
 
-    @Test("Sort reorders entities and records upserts")
+    @Test("Sort reorders entities and records upserts for moved entities")
     func sortReorders() {
         let a = TestEntity(name: "Banana")
         let b = TestEntity(name: "Apple")
@@ -166,9 +180,23 @@ struct EntityStoreTests {
         store.sort { $0.name < $1.name }
 
         #expect(store.values.map(\.name) == ["Apple", "Banana"])
-        // Sort records all entities as upserts for persistence
+        // Both moved — both should be upserted
         #expect(store.changes.upserts.contains(a.id))
         #expect(store.changes.upserts.contains(b.id))
+    }
+
+    @Test("Sort on already-sorted data records no upserts")
+    func sortAlreadySorted() {
+        let a = TestEntity(name: "Apple")
+        let b = TestEntity(name: "Banana")
+        var store = EntityStore([a, b])
+        store.resetChanges()
+
+        store.sort { $0.name < $1.name }
+
+        #expect(store.values.map(\.name) == ["Apple", "Banana"])
+        // No entities moved — no upserts should be recorded
+        #expect(store.changes.isEmpty)
     }
 
     @Test("RemoveAll removes matching and records deletions")

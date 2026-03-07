@@ -20,6 +20,7 @@ final class SendableBox<T: Sendable>: @unchecked Sendable {
 }
 
 @Suite("StateWriter")
+@MainActor
 struct StateWriterTests {
     // MARK: - Helpers
 
