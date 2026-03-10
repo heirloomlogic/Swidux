@@ -25,31 +25,3 @@ public protocol SwiduxDispatcher<Action> {
     associatedtype Action
     func send(_ action: Action)
 }
-
-extension SwiduxDispatcher {
-    /// Runs an effect on the cooperative thread pool, off the MainActor.
-    ///
-    /// Effects are `@Sendable ... async -> Void` — designed for background work
-    /// (network calls, pixel analysis, etc.). This method uses `@concurrent` so
-    /// downstream apps never need `Task.detached` in their code. The `send`
-    /// closure hops back to `@MainActor` for each dispatched action.
-    ///
-    /// ```swift
-    /// // In AppStore.send():
-    /// if let effect {
-    ///     let send: Send<AppAction> = { [weak self] action in
-    ///         self?.send(action)
-    ///     }
-    ///     runEffect(effect, send: send)
-    /// }
-    /// ```
-    public nonisolated func runEffect(
-        _ effect: Effect<Action>,
-        send: @escaping Send<Action>
-    ) {
-        let body = effect.body
-        Task { @concurrent in
-            await body(send)
-        }
-    }
-}

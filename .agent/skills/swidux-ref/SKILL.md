@@ -316,21 +316,23 @@ typealias Effect = Swidux.Effect<AppAction>
 ```
 
 - `Send<Action>` is `@MainActor @Sendable (Action) -> Void` — hops to MainActor for each dispatched action.
-- `Effect<Action>` is a **struct** wrapping a `@Sendable` async closure. The body is `package`-access — downstream apps construct effects with `Effect { send in ... }` but cannot execute them directly.
+- `Effect<Action>` is a typealias for a `@Sendable` async closure. Reducers return plain closures; tests call them directly.
 
 Return `nil` from the reducer when no effect is needed.
 
-### Running Effects with `runEffect`
+### Running Effects
 
-`SwiduxDispatcher` provides a `runEffect(_:send:)` method that uses `Task { @concurrent in }` to run the effect body off the MainActor. **Never use a bare `Task { }` to run effects** — inside an `@MainActor` class, `Task { }` inherits MainActor isolation, defeating the purpose. The `package`-access body prevents this at compile time.
+Use `Task { @concurrent in }` to run effects off the MainActor. **Never use a bare `Task { }`** — inside an `@MainActor` class it inherits MainActor isolation, keeping the entire effect on the main thread.
 
 ```swift
 // In AppStore.send():
 if let effect {
-    let send: Send<AppAction> = { [weak self] action in
+    let send: Send = { [weak self] action in
         self?.send(action)
     }
-    runEffect(effect, send: send)
+    Task { @concurrent in
+        await effect(send)
+    }
 }
 ```
 
@@ -339,7 +341,7 @@ if let effect {
 ## Threading Model (Swift 6.2+ Approachable Concurrency)
 
 - **All isolation is explicit.** No implicit `DefaultIsolationMainActor` — each type declares its own isolation. AppStore, reducers, views, effect helpers are MainActor-isolated in app code.
-- **Effects run off MainActor.** `runEffect(_:send:)` uses `Task { @concurrent in }` to run effect bodies on the cooperative thread pool. Dispatched actions hop back to MainActor via `Send`.
+- **Effects run off MainActor.** `Task { @concurrent in }` runs effect bodies on the cooperative thread pool. Dispatched actions hop back to MainActor via `Send`.
 - **DB actors run off MainActor.** `@ModelActor` provides isolated `ModelContext`.
 - **Minimize explicit `@MainActor`.** Only `AppStore` needs it explicitly in app code; the compiler infers the rest.
 - **`nonisolated init`** on value types to allow creation from any context.
