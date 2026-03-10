@@ -2,7 +2,8 @@
 //  EffectThreadingTests.swift
 //  SwiduxTests
 //
-//  Verifies that runEffect executes effect bodies off the MainActor.
+//  Verifies that effects dispatched with Task { @concurrent in }
+//  execute off the MainActor.
 //
 
 import Foundation
@@ -15,7 +16,7 @@ import Testing
 
 @Suite("Effect Threading")
 struct EffectThreadingTests {
-    @Test("runEffect dispatches actions back to the store")
+    @Test("Effect dispatches actions back via send")
     @MainActor
     func effectDispatchesActions() async throws {
         let store = TestDispatcher()
@@ -27,19 +28,19 @@ struct EffectThreadingTests {
         let send: Send<TestAction> = { action in
             store.send(action)
         }
-        store.runEffect(effect, send: send)
+        Task { @concurrent in
+            await effect(send)
+        }
 
-        // Give the concurrent task time to execute
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(store.dispatched.count == 1)
         #expect(store.dispatched.first == .effectAction("from background"))
     }
 
-    @Test("runEffect runs the effect body off the MainActor")
+    @Test("@concurrent runs the effect body off the MainActor")
     @MainActor
     func effectRunsOffMainActor() async throws {
-        let store = TestDispatcher()
         let wasOnMainThread = Mutex(false)
 
         let effect: Effect<TestAction> = { send in
@@ -47,12 +48,14 @@ struct EffectThreadingTests {
             await send(.noOp)
         }
 
+        let store = TestDispatcher()
         let send: Send<TestAction> = { action in
             store.send(action)
         }
-        store.runEffect(effect, send: send)
+        Task { @concurrent in
+            await effect(send)
+        }
 
-        // Give the concurrent task time to execute
         try await Task.sleep(for: .milliseconds(50))
 
         let ranOnMain = wasOnMainThread.withLock { $0 }

@@ -115,7 +115,7 @@ typealias Effect = Swidux.Effect<AppAction>
 The package provides generic `Send<Action>` and `Effect<Action>`. Your app specializes them with your action type. Reducer return types (`-> Effect?`) work from there.
 
 - `Send<Action>` is `@MainActor @Sendable (Action) -> Void` — dispatched actions always hop back to the MainActor.
-- `Effect<Action>` is a typealias for a `@Sendable` async closure. Use `runEffect(_:send:)` to run effects on the cooperative thread pool with `@concurrent`.
+- `Effect<Action>` is a typealias for a `@Sendable` async closure. Run effects with `Task { @concurrent in }` to keep them off the MainActor.
 
 #### AppAction
 
@@ -234,15 +234,16 @@ final class AppStore: SwiduxDispatcher {
         if tags != state.tags   { tags = state.tags }
         if ui != state.ui       { ui = state.ui }
 
-        // runEffect uses Task { @concurrent in } to run the effect
-        // body off the MainActor. Never use a bare Task { } here —
-        // inside an @MainActor class it inherits MainActor isolation,
+        // Use @concurrent to run the effect off the MainActor.
+        // A bare Task { } inherits MainActor isolation here,
         // keeping the entire effect on the main thread.
         if let effect {
             let send: Send = { [weak self] action in
                 self?.send(action)
             }
-            runEffect(effect, send: send)
+            Task { @concurrent in
+                await effect(send)
+            }
         }
     }
 }
@@ -479,8 +480,7 @@ Swidux targets Swift 6 with strict concurrency. All isolation is explicit — no
 - `EntityStore` and `ChangeSet` are `nonisolated` value types conforming to `Sendable`
 - `StateWriter` and `PersistenceMiddleware` are `@MainActor`-isolated
 - `Send<Action>` is `@MainActor @Sendable` — safe to capture across actor boundaries
-- `Effect<Action>` is a typealias for a `@Sendable` async closure
-- `runEffect(_:send:)` uses `Task { @concurrent in }` to run effects off the MainActor
+- `Effect<Action>` is a typealias for a `@Sendable` async closure — run with `Task { @concurrent in }`
 - The package uses `.swiftLanguageMode(.v6)`
 
 ## Requirements

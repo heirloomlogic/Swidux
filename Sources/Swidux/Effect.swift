@@ -11,14 +11,14 @@ public typealias Send<Action> = @MainActor @Sendable (Action) -> Void
 /// An async unit of work returned by a reducer.
 ///
 /// Effects receive a `send` function to dispatch follow-up actions.
-/// Use ``SwiduxDispatcher/runEffect(_:send:)`` to run effects on the
-/// cooperative thread pool.
+/// Run effects with `Task { @concurrent in }` to keep them off the
+/// MainActor.
 ///
 /// ```swift
 /// // In a reducer:
-/// return Effect { send in
+/// return { send in
 ///     let result = try await db.fetchAll()
-///     send(.dataLoaded(result))
+///     await send(.dataLoaded(result))
 /// }
 /// ```
 public typealias Effect<Action> = @Sendable (@escaping Send<Action>) async -> Void

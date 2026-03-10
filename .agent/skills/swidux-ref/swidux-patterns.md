@@ -482,15 +482,16 @@ final class AppStore: SwiduxDispatcher {
         if tags != state.tags   { tags = state.tags }
         if ui != state.ui       { ui = state.ui }
 
-        // runEffect uses Task { @concurrent in } to run the effect
-        // body off the MainActor. Never use a bare Task { } here —
-        // inside an @MainActor class it inherits MainActor isolation,
+        // Use @concurrent to run the effect off the MainActor.
+        // A bare Task { } inherits MainActor isolation here,
         // keeping the entire effect on the main thread.
         if let effect {
             let send: Send = { [weak self] action in
                 self?.send(action)
             }
-            runEffect(effect, send: send)
+            Task { @concurrent in
+                await effect(send)
+            }
         }
     }
 
