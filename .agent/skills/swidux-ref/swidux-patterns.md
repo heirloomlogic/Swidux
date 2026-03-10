@@ -1,5 +1,25 @@
 # Swidux Code Patterns Reference
 
+## Table of Contents
+
+- [Effect.swift](#effectswift)
+- [AppState.swift](#appstateswift)
+- [AppAction.swift](#appactionswift)
+- [AppEnvironment.swift](#appenvironmentswift)
+- [Value Type (Domain Model)](#value-type-domain-model)
+- [SwiftData Model](#swiftdata-model)
+- [DB Actor](#db-actor)
+- [Feature Reducer](#feature-reducer)
+- [AppReducer](#appreducer)
+- [AppStore](#appstore)
+- [App Entry Point](#app-entry-point)
+- [View Pattern](#view-pattern)
+- [Controlled Component Pattern](#controlled-component-pattern)
+- [Testing Pattern](#testing-pattern)
+- [SwiftData Integration Test](#swiftdata-integration-test)
+
+---
+
 Copy-paste ready templates derived from [Adagio](file:///Users/sessions/HeirloomLogic/adagio), the canonical Swidux reference app. All patterns use:
 - **iOS 18+ / macOS 15+** (`@Observable`, `@Environment(Type.self)`)
 - **Swift 6.2+ Approachable Concurrency** (minimal explicit `@MainActor`)
