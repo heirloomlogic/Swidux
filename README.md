@@ -115,7 +115,7 @@ typealias Effect = Swidux.Effect<AppAction>
 The package provides generic `Send<Action>` and `Effect<Action>`. Your app specializes them with your action type. Reducer return types (`-> Effect?`) work from there.
 
 - `Send<Action>` is `@MainActor @Sendable (Action) -> Void` — dispatched actions always hop back to the MainActor.
-- `Effect<Action>` is a struct wrapping a `@Sendable` async closure. The closure body is `package`-access — downstream apps construct effects with `Effect { send in ... }` but cannot execute them directly. Use `runEffect(_:send:)` to run effects on the cooperative thread pool.
+- `Effect<Action>` is a typealias for a `@Sendable` async closure. Use `runEffect(_:send:)` to run effects on the cooperative thread pool with `@concurrent`.
 
 #### AppAction
 
@@ -479,7 +479,7 @@ Swidux targets Swift 6 with strict concurrency. All isolation is explicit — no
 - `EntityStore` and `ChangeSet` are `nonisolated` value types conforming to `Sendable`
 - `StateWriter` and `PersistenceMiddleware` are `@MainActor`-isolated
 - `Send<Action>` is `@MainActor @Sendable` — safe to capture across actor boundaries
-- `Effect<Action>` is a struct with `package`-access body — prevents bypassing `runEffect`
+- `Effect<Action>` is a typealias for a `@Sendable` async closure
 - `runEffect(_:send:)` uses `Task { @concurrent in }` to run effects off the MainActor
 - The package uses `.swiftLanguageMode(.v6)`
 

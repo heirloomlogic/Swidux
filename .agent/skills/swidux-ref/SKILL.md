@@ -316,13 +316,13 @@ typealias Effect = Swidux.Effect<AppAction>
 ```
 
 - `Send<Action>` is `@MainActor @Sendable (Action) -> Void` — hops to MainActor for each dispatched action.
-- `Effect<Action>` is a **struct** wrapping a `@Sendable` async closure. The body is `package`-access — downstream apps construct effects with `Effect { send in ... }` but cannot execute them directly.
+- `Effect<Action>` is a typealias for a `@Sendable` async closure. Reducers return plain closures; tests call them directly.
 
 Return `nil` from the reducer when no effect is needed.
 
 ### Running Effects with `runEffect`
 
-`SwiduxDispatcher` provides a `runEffect(_:send:)` method that uses `Task { @concurrent in }` to run the effect body off the MainActor. **Never use a bare `Task { }` to run effects** — inside an `@MainActor` class, `Task { }` inherits MainActor isolation, defeating the purpose. The `package`-access body prevents this at compile time.
+`SwiduxDispatcher` provides a `runEffect(_:send:)` method that uses `Task { @concurrent in }` to run the effect off the MainActor. **Always use `runEffect`** — never a bare `Task { }`, which inherits MainActor isolation inside an `@MainActor` class.
 
 ```swift
 // In AppStore.send():

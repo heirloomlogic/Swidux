@@ -44,12 +44,11 @@ extension SwiduxDispatcher {
     /// }
     /// ```
     public nonisolated func runEffect(
-        _ effect: Effect<Action>,
+        _ effect: @escaping Effect<Action>,
         send: @escaping Send<Action>
     ) {
-        let body = effect.body
         Task { @concurrent in
-            await body(send)
+            await effect(send)
         }
     }
 }
