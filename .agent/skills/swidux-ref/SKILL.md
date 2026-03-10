@@ -1,6 +1,6 @@
 ---
 name: swidux-ref
-description: "Swidux architecture reference (Redux-style unidirectional data flow for SwiftUI + SwiftData). MANDATORY when adding actions, modifying reducers, creating Effects, working with AppStore/AppState, or scaffolding new apps. Activate on: 'scaffold', 'new project', 'create app', 'setup SwiftUI', 'add action', 'add reducer', 'modify reducer', 'dispatch', 'Swidux'."
+description: "Swidux architecture reference (Redux-style unidirectional data flow for SwiftUI + SwiftData). MANDATORY when adding actions, modifying reducers, creating Effects, working with AppStore/AppState, EntityStore, PersistenceMiddleware, StateWriter, change tracking, or scaffolding new apps. Also use for controlled components, form bindings with store-bound state, and the effect system. Activate on: 'scaffold', 'new project', 'create app', 'setup SwiftUI', 'add action', 'add reducer', 'modify reducer', 'dispatch', 'Swidux', 'EntityStore', 'persistence', 'controlled component', 'form binding', 'effect', 'StateWriter'."
 ---
 
 # Swidux Architecture Reference
@@ -82,7 +82,8 @@ struct ItemReducer: SwiduxReducer {
     ) -> Effect? {
         switch action {
         case .create(let name):
-            state.items[item.id] = Item(name: name)
+            let item = Item(name: name)
+            state.items[item.id] = item
         }
         return nil
     }
@@ -147,6 +148,9 @@ After initial startup, never assign a fresh `EntityStore(fromDB)` to a property 
 
 ```swift
 var merged = EntityStore(allFromDB)
+// existing = entity from `existingStore` (the `from:` argument)
+// incoming = entity already in `merged` (self)
+// Return true to keep the `from:` entity, replacing the one in self
 merged.merge(from: existingStore) { existing, incoming in
     existing.richData != nil && incoming.richData == nil
 }
@@ -182,10 +186,11 @@ Common offenders: `Process.waitUntilExit()`, `DispatchSemaphore.wait()`, `Thread
 ```swift
 var cards = EntityStore<Card>()
 
-// Insert or update — automatically recorded
+// Insert or update — always records an upsert, even if value is identical
 cards[card.id] = card
 
-// In-place mutation — recorded only if the value actually changes
+// In-place mutation — recorded only if the value actually changes (checks Equatable)
+// Prefer modify over subscript set when the transform might be a no-op
 cards.modify(card.id) { $0.title = "New Title" }
 
 // Delete — automatically recorded
@@ -207,7 +212,7 @@ cards = EntityStore(arrayFromDB)
 
 `modify` uses `Equatable` to skip recording when the transform doesn't change the value. `sort` only marks entities whose position actually changed — sorting an already-sorted store is a no-op for persistence. `removeAll(where:)` rebuilds the index once in O(n) rather than per-removal.
 
-Every mutation is silently tracked in a `ChangeSet`. You never interact with the `ChangeSet` directly — the middleware drains it after each reducer call.
+Every mutation is silently tracked in `changes: ChangeSet` (read-only property). The middleware drains changes via `resetChanges()` after each reducer call — you never call either of these yourself.
 
 ---
 
@@ -227,9 +232,13 @@ PersistenceMiddleware<AppState>(
             for id in deletes  { try? await itemDB.delete(id: id) }
         },
     ],
-    debounce: .milliseconds(250)  // Default; configurable
+    debounce: .milliseconds(250),  // Default; configurable
+    loopThreshold: 100,            // Warns if afterReduce called this many times per debounce interval
+    logger: environment.logger
 )
 ```
+
+The middleware tracks how many times `afterReduce` fires per debounce interval. If it exceeds `loopThreshold` (default 100), it logs a warning — this usually means `AppStore.send()` is missing the equality guards from Rule #9, causing an infinite dispatch loop.
 
 Call `persistence.afterReduce(state: &state)` after every reducer invocation from `AppStore.send()`.
 
@@ -247,7 +256,7 @@ await persistence.flush()
 ### Writer Ordering
 
 > [!WARNING]
-> **Writers flush sequentially in registration order.** If entity B holds a foreign-key reference to entity A, the writer for A **must** appear before the writer for B. Otherwise, B's upsert will look up A's row before it exists, silently dropping the relationship.
+> **Writers flush sequentially in registration order (not in parallel).** If entity B holds a foreign-key reference to entity A, the writer for A **must** appear before the writer for B. Otherwise, B's upsert will look up A's row before it exists, silently dropping the relationship. Sequential flushing is what makes this ordering guarantee work.
 
 The rule is **leaves first, aggregates last**:
 
