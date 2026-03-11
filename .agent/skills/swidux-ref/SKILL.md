@@ -135,13 +135,20 @@ struct AppState: Sendable {
 }
 ```
 
-### 9. Guard `@Observable` Writes in `send()` with Equality Checks
-`@Observable` fires change notifications on every property `set`, even when the value is identical. Unconditional writes after every dispatch cause cascading SwiftUI re-renders that can create infinite loops. Always guard:
+### 9. Use the Snapshot Pattern in `send()` — No Manual Equality Guards
+`@Observable` checks `Equatable` on plain assignment (`set` accessor) and suppresses notifications when values are unchanged. **Explicit equality guards are unnecessary.** However, Swift's `_modify` accessor (used by `inout`) fires notifications unconditionally. Always use the snapshot pattern: copy state out, mutate the copy, assign back.
 
 ```swift
-if items != state.items { items = state.items }
-if ui != state.ui       { ui = state.ui }
+// ✅ Snapshot pattern — `set` accessor checks equality automatically
+var state = AppState(items: items, tags: tags, ui: ui)
+reducer.reduce(state: &state, action: action, environment: environment)
+items = state.items  // No notification if unchanged
+ui = state.ui
+
+// ❌ Never use inout on a stored @Observable property — _modify fires unconditionally
 ```
+
+**Cross-slice isolation requires separate stored properties.** A view reading `store.items` won't re-render when `store.ui` changes. A single `var state: AppState` would invalidate all observers on every change. This is why `send()` must live in app code, not the framework.
 
 ### 10. Use `merge(from:preferExisting:)` for Re-hydration, Not Replacement
 After initial startup, never assign a fresh `EntityStore(fromDB)` to a property — this destroys enriched in-memory state loaded lazily. Use `merge()` instead:
@@ -238,7 +245,7 @@ PersistenceMiddleware<AppState>(
 )
 ```
 
-The middleware tracks how many times `afterReduce` fires per debounce interval. If it exceeds `loopThreshold` (default 100), it logs a warning — this usually means `AppStore.send()` is missing the equality guards from Rule #9, causing an infinite dispatch loop.
+The middleware tracks how many times `afterReduce` fires per debounce interval. If it exceeds `loopThreshold` (default 100), it logs a warning — this usually means `AppStore.send()` is not using the snapshot pattern from Rule #9, causing an infinite dispatch loop.
 
 Call `persistence.afterReduce(state: &state)` after every reducer invocation from `AppStore.send()`.
 

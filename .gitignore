@@ -1,3 +1,7 @@
-.build
+**/xcuserdata
+*.swiftdeps
+*.swiftmodule
+.build/
 .DS_Store
 .swiftpm
+.vscode

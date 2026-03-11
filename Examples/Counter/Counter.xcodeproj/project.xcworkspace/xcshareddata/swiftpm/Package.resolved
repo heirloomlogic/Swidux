@@ -1,0 +1,15 @@
+{
+  "originHash" : "73c5bae405f156cfaac912ebea24d6c322cf259db873783110557b8f53dbfabc",
+  "pins" : [
+    {
+      "identity" : "swiftformatplugin",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/HeirloomLogic/SwiftFormatPlugin",
+      "state" : {
+        "revision" : "5b13b7f0f9f427ab75f883021f28d38a2379117a",
+        "version" : "1.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}
