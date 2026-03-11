@@ -1,5 +1,9 @@
 import Foundation
 
+/// Root reducer that routes actions to feature reducers.
+///
+/// Conforms to `SwiduxReducer` with `Action == AppAction` (root reducer).
+/// Cases that don't need async work fall through to `return nil`.
 struct AppReducer: SwiduxReducer {
     let counter = CounterReducer()
 

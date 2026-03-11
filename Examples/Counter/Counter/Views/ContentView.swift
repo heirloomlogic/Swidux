@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Main list view displaying all counters with selection highlighting.
 struct ContentView: View {
     @Environment(AppStore.self) private var store
 
