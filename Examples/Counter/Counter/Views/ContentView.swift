@@ -5,23 +5,22 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(store.counters.values) { counter in
-                    CounterRow(counterID: counter.id)
-                }
-                .onDelete { offsets in
-                    for index in offsets {
-                        let id = store.counters.values[index].id
-                        store.send(.counter(.remove(id)))
+            List(store.counters.values) { counter in
+                CounterRow(counterID: counter.id)
+                    .listRowBackground(
+                        store.ui.selectedCounterID == counter.id
+                            ? Color.accentColor.opacity(0.15)
+                            : Color.clear
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        store.send(.selectCounter(counter.id))
                     }
-                }
             }
             .navigationTitle("Counters")
             .toolbar {
-                Button {
+                Button("Add Counter", systemImage: "plus") {
                     store.send(.counter(.add))
-                } label: {
-                    Image(systemName: "plus")
                 }
             }
             .overlay {
@@ -39,5 +38,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .environment(AppStore(environment: .mock(), reducer: AppReducer()))
+        .environment(AppStore(environment: .mock()))
 }

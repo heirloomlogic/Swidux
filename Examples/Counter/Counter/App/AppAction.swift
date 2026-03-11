@@ -2,6 +2,7 @@ import Foundation
 
 enum AppAction: Sendable {
     case counter(CounterAction)
+    case selectCounter(UUID?)
 }
 
 enum CounterAction: Sendable {

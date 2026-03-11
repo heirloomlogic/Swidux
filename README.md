@@ -219,6 +219,9 @@ final class AppStore: SwiduxDispatcher {
     }
 
     func send(_ action: AppAction) {
+        // Snapshot pattern: copy state out, mutate the copy, assign back.
+        // This routes through the `set` accessor (not `_modify`), which
+        // lets @Observable check equality and suppress redundant notifications.
         var state = AppState(items: items, tags: tags, ui: ui)
 
         let effect = reducer.reduce(
@@ -227,12 +230,12 @@ final class AppStore: SwiduxDispatcher {
 
         persistence.afterReduce(state: &state)
 
-        // ⚠️ Guard writes with equality checks — @Observable fires change
-        // notifications on every `set`, even if the value is identical.
-        // Unconditional writes here cause cascading SwiftUI re-renders.
-        if items != state.items { items = state.items }
-        if tags != state.tags   { tags = state.tags }
-        if ui != state.ui       { ui = state.ui }
+        // Unconditional assignment is safe here. @Observable checks Equatable
+        // on `set` and suppresses change notifications when the value is identical.
+        // See "@Observable and Equality" below for details.
+        items = state.items
+        tags = state.tags
+        ui = state.ui
 
         // Use @concurrent to run the effect off the MainActor.
         // A bare Task { } inherits MainActor isolation here,
@@ -399,19 +402,33 @@ private func findOrCreateImageAsset(_ asset: ImageAsset) throws -> ImageAssetMod
 
 ## Performance Pitfalls
 
-### Guard `@Observable` Writes with Equality Checks
+### @Observable and Equality
 
-> [!CAUTION]
-> `@Observable` fires change notifications on every property *write*, even when the new value is identical to the old one. If `send()` unconditionally writes properties after every dispatch, SwiftUI will re-evaluate views on every action — including Scene bodies, `.task` modifiers, and `onAppear`. This can create infinite dispatch loops (view re-render → `.task` → `send()` → view re-render → …) that consume 100% CPU.
+`@Observable` checks `Equatable` conformance on plain assignment (`set` accessor). If the new value equals the old value, no change notification fires and SwiftUI does not re-render. **Explicit equality guards (`if x != state.x { x = state.x }`) are unnecessary** — unconditional assignment is safe and cleaner.
 
-Always guard the unpack step in `send()` with equality checks:
+However, this only works when the assignment routes through the `set` accessor. Swift's `_modify` coroutine accessor — used by `inout` parameters — fires change notifications unconditionally because the new value isn't known at notification time. This is why `send()` uses the **snapshot pattern**: copy state into a local `var`, mutate the copy, then assign back. The final assignment goes through `set`, which checks equality.
 
 ```swift
-if items != state.items { items = state.items }
-if ui != state.ui       { ui = state.ui }
+// ✅ Snapshot pattern — routes through `set`, @Observable checks equality
+var state = AppState(items: items, tags: tags, ui: ui)
+reducer.reduce(state: &state, action: action, environment: environment)
+items = state.items  // No-op notification if unchanged
+tags = state.tags
+ui = state.ui
+
+// ❌ Direct inout — routes through `_modify`, always fires notifications
+var state = AppState(items: items, tags: tags, ui: ui)
+reducer.reduce(state: &state, action: action, environment: environment)
+// If `state` were a stored @Observable property, `&state` would use _modify
 ```
 
-For non-`Equatable` state types (like `UIState`), add `Equatable` conformance or break into individual guarded writes for each sub-property.
+**Verified experimentally:** In the Counter demo app, dispatching a no-op action (no state change) with the snapshot pattern produces zero SwiftUI re-renders. Without the snapshot pattern (direct `inout` on a stored `@Observable` property), every dispatch triggers re-renders across all views — regardless of whether state actually changed.
+
+#### Why `send()` Must Stay in App Code
+
+The snapshot pattern requires separate stored properties on `AppStore` (e.g. `var items`, `var tags`, `var ui`) rather than a single `var state: AppState`. This is critical for **cross-slice observation isolation**: a view reading only `store.items` won't re-render when `store.ui` changes. A single `var state` property would invalidate all observers on every change, regardless of which slice was modified.
+
+Because the stored properties and their types are app-specific, `send()` cannot be provided by the framework — it must be written in each app's `AppStore`.
 
 ### Don't Replace EntityStores After Startup
 
@@ -428,7 +445,7 @@ Use `merge(from:preferExisting:)` for re-hydration. The `init(_:)` constructor i
 ⚠️ [PersistenceMiddleware] afterReduce called 127 times in a single debounce interval — possible dispatch loop.
 ```
 
-If you see this warning, check that your `send()` implementation guards `@Observable` property writes.
+If you see this warning, check that `send()` uses the snapshot pattern (copy state out, mutate, assign back) and that state properties are separate stored properties on `AppStore`.
 
 ### Keep Reducers Lightweight
 

@@ -3,17 +3,19 @@ import os
 
 @Observable
 final class AppStore: SwiduxDispatcher {
-    // MARK: - Entity Stores (persisted via middleware)
+    // MARK: - Entity Stores
 
     private(set) var counters = EntityStore<Counter>()
+
+    // MARK: - Ephemeral State
+
+    private(set) var ui = UIState()
 
     // MARK: - Dependencies
 
     private let environment: AppEnvironment
     private let reducer: AppReducer
     private let persistence: PersistenceMiddleware<AppState>
-
-    private let logger: Logger
 
     // MARK: - Init
 
@@ -28,7 +30,6 @@ final class AppStore: SwiduxDispatcher {
 
         self.environment = environment
         self.reducer = reducer
-        self.logger = logger
 
         self.persistence = PersistenceMiddleware(
             writers: [
@@ -48,7 +49,7 @@ final class AppStore: SwiduxDispatcher {
     // MARK: - Dispatch
 
     func send(_ action: AppAction) {
-        var state = AppState(counters: counters)
+        var state = AppState(counters: counters, ui: ui)
 
         let effect = reducer.reduce(
             state: &state,
@@ -58,13 +59,9 @@ final class AppStore: SwiduxDispatcher {
 
         persistence.afterReduce(state: &state)
 
-        // Guard @Observable writes with equality checks (Rule #9).
-        // Without this, every send() triggers change notifications
-        // even when the value is identical, causing cascading re-renders.
-        if counters != state.counters { counters = state.counters }
+        counters = state.counters
+        ui = state.ui
 
-        // Run effects off MainActor. A bare Task { } inherits MainActor
-        // isolation here, keeping the entire effect on the main thread.
         if let effect {
             let send: Send = { [weak self] action in
                 self?.send(action)

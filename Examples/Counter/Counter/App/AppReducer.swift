@@ -10,7 +10,12 @@ struct AppReducer: SwiduxReducer {
     ) -> Effect? {
         switch action {
         case .counter(let action):
-            counter.reduce(state: &state, action: action, environment: environment)
+            return counter.reduce(state: &state, action: action, environment: environment)
+
+        case .selectCounter(let id):
+            state.ui.selectedCounterID = id
         }
+
+        return nil
     }
 }
