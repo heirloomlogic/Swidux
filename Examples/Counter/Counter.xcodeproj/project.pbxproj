@@ -155,7 +155,7 @@
 			mainGroup = 9C8EB97A2F61A350007BA15C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				9C8EB9AD2F61A43C007BA15C /* XCLocalSwiftPackageReference "../../../davis" */,
+				9C8EB9AD2F61A43C007BA15C /* XCLocalSwiftPackageReference "../.." */,
 				9C8EB9CC2F61AC64007BA15C /* XCRemoteSwiftPackageReference "SwiftFormatPlugin" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -509,9 +509,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		9C8EB9AD2F61A43C007BA15C /* XCLocalSwiftPackageReference "../../../davis" */ = {
+		9C8EB9AD2F61A43C007BA15C /* XCLocalSwiftPackageReference "../.." */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../../davis;
+			relativePath = ../..;
 		};
 /* End XCLocalSwiftPackageReference section */
 

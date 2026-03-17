@@ -1,6 +1,6 @@
 ---
 name: swidux-ref
-description: "Swidux architecture reference (Redux-style unidirectional data flow for SwiftUI + SwiftData). MANDATORY when adding actions, modifying reducers, creating Effects, working with AppStore/AppState, EntityStore, PersistenceMiddleware, StateWriter, change tracking, or scaffolding new apps. Also use for controlled components, form bindings with store-bound state, and the effect system. Activate on: 'scaffold', 'new project', 'create app', 'setup SwiftUI', 'add action', 'add reducer', 'modify reducer', 'dispatch', 'Swidux', 'EntityStore', 'persistence', 'controlled component', 'form binding', 'effect', 'StateWriter'."
+description: "Swidux architecture reference (Redux-style unidirectional data flow for SwiftUI + SwiftData). MANDATORY when adding actions, modifying reducers, creating Effects, working with AppStore/AppState, EntityStore, PersistenceMiddleware, StateWriter, UndoMiddleware, change tracking, or scaffolding new apps. Also use for controlled components, form bindings with store-bound state, the effect system, and undo/redo. Activate on: 'scaffold', 'new project', 'create app', 'setup SwiftUI', 'add action', 'add reducer', 'modify reducer', 'dispatch', 'Swidux', 'EntityStore', 'persistence', 'controlled component', 'form binding', 'effect', 'StateWriter', 'undo', 'redo', 'UndoMiddleware'."
 ---
 
 # Swidux Architecture Reference
@@ -17,6 +17,7 @@ Swidux provides the persistence middleware layer for apps that use unidirectiona
 | `ChangeSet` | Tracks which entity IDs were upserted or deleted |
 | `StateWriter<State>` | Drains changelogs and accumulates batched persistence work |
 | `PersistenceMiddleware<State>` | Debounced orchestrator that flushes writes after each reducer call |
+| `UndoMiddleware<State>` | Opt-in stack-based undo/redo for state snapshots |
 | `Effect<Action>` / `Send<Action>` | Generic typealiases for the async effect system |
 | `SwiduxReducer` | Protocol enforcing the reducer contract |
 | `SwiduxDispatcher` | Protocol enforcing the store dispatch contract |
@@ -221,6 +222,21 @@ cards = EntityStore(arrayFromDB)
 
 Every mutation is silently tracked in `changes: ChangeSet` (read-only property). The middleware drains changes via `resetChanges()` after each reducer call — you never call either of these yourself.
 
+### restore(from:)
+
+`restore(from:)` replaces all entities with those from a source store while recording the diff as changes for persistence. Used by undo/redo so the persistence middleware picks up the restored state.
+
+```swift
+// In applySnapshot (undo/redo):
+var state = AppState(items: items, tags: tags, ui: ui)
+state.items.restore(from: restored.items)  // records upserts + deletions
+state.tags.restore(from: restored.tags)
+state.ui = restored.ui                     // plain state — assign directly
+persistence.afterReduce(state: &state)     // drains changes normally
+```
+
+Unlike `merge(from:)` (hydration, no changes recorded), `restore` records every difference.
+
 ---
 
 ## Persistence Middleware
@@ -284,6 +300,43 @@ private func findOrCreateImageAsset(_ asset: ImageAsset) throws -> ImageAssetMod
     return model
 }
 ```
+
+---
+
+## Undo/Redo
+
+`UndoMiddleware<State>` is opt-in. It captures `AppState` snapshots before undoable actions and restores them on undo/redo. Memory-based (lost on relaunch), but restored state is persisted via `EntityStore.restore(from:)`.
+
+```swift
+@MainActor
+public final class UndoMiddleware<State: Equatable & Sendable> {
+    public init(maxDepth: Int = .max)
+
+    public var canUndo: Bool
+    public var canRedo: Bool
+
+    /// Call before reducer for undoable actions.
+    /// coalescing: true groups consecutive calls (e.g. keystrokes) into one entry.
+    public func willReduce(state: State, coalescing: Bool = false)
+
+    /// Returns restored state, or nil if stack is empty.
+    public func undo(current: State) -> State?
+    public func redo(current: State) -> State?
+}
+```
+
+### Integration in AppStore
+
+1. Add `undoMiddleware`, `canUndo`/`canRedo` observable properties
+2. Classify actions with `isUndoable` and `isCoalescing` computed properties on `AppAction`
+3. Call `undoMiddleware.willReduce(state:coalescing:)` before the reducer in `send()` for undoable actions
+4. Add `undo()`/`redo()` methods using `applySnapshot()` with `EntityStore.restore(from:)`
+5. Call `syncUndoState()` after every `send()`, `undo()`, and `redo()`
+6. Wire platform UI: macOS `.commands { CommandGroup(replacing: .undoRedo) }`, iOS `UndoManager` bridge via `@Environment(\.undoManager)`
+
+### Coalescing
+
+`willReduce(coalescing: true)` pushes on the first call, skips subsequent consecutive coalescing calls. A non-coalescing call or undo/redo resets the flag. Use for per-keystroke text edits (`setName`, `rename`).
 
 ---
 

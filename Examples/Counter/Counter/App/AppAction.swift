@@ -29,3 +29,29 @@ enum CounterAction: Sendable {
     /// Rename a counter. Used by the controlled `TextField` binding.
     case setName(UUID, String)
 }
+
+// MARK: - Undo Classification
+
+extension AppAction {
+    /// Whether this action should create an undo entry.
+    var isUndoable: Bool {
+        switch self {
+        case .counter(.add), .counter(.remove),
+            .counter(.increment), .counter(.decrement),
+            .counter(.setName):
+            true
+        case .counter(.incrementAsync), .selectCounter:
+            // incrementAsync is a no-op on state — the resulting .increment
+            // dispatched by the effect is what creates the undo entry.
+            false
+        }
+    }
+
+    /// Whether consecutive instances should share one undo entry.
+    var isCoalescing: Bool {
+        switch self {
+        case .counter(.setName): true
+        default: false
+        }
+    }
+}

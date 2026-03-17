@@ -299,6 +299,90 @@ struct EntityStoreTests {
         #expect(store[b.id] != nil)
     }
 
+    // MARK: - Restore (Undo/Redo)
+
+    @Test("Restore records upserts for changed entities")
+    func restoreRecordsUpserts() {
+        let id = UUID()
+        let original = TestEntity(id: id, name: "Original")
+        let modified = TestEntity(id: id, name: "Modified")
+
+        var store = EntityStore([modified])
+        store.resetChanges()
+
+        let snapshot = EntityStore([original])
+        store.restore(from: snapshot)
+
+        #expect(store[id]?.name == "Original")
+        #expect(store.changes.upserts.contains(id))
+        #expect(store.changes.deletions.isEmpty)
+    }
+
+    @Test("Restore records deletions for removed entities")
+    func restoreRecordsDeletions() {
+        let entity = TestEntity(name: "WillBeGone")
+        var store = EntityStore([entity])
+        store.resetChanges()
+
+        let emptySnapshot = EntityStore<TestEntity>()
+        store.restore(from: emptySnapshot)
+
+        #expect(store.isEmpty)
+        #expect(store.changes.deletions.contains(entity.id))
+    }
+
+    @Test("Restore records upserts for new entities")
+    func restoreRecordsNewEntities() {
+        var store = EntityStore<TestEntity>()
+        store.resetChanges()
+
+        let entity = TestEntity(name: "New")
+        let snapshot = EntityStore([entity])
+        store.restore(from: snapshot)
+
+        #expect(store[entity.id]?.name == "New")
+        #expect(store.changes.upserts.contains(entity.id))
+    }
+
+    @Test("Restore with identical data records no changes")
+    func restoreIdenticalNoChanges() {
+        let entity = TestEntity(name: "Same")
+        var store = EntityStore([entity])
+        store.resetChanges()
+
+        let snapshot = EntityStore([entity])
+        store.restore(from: snapshot)
+
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("Restore handles mixed adds, removes, and changes")
+    func restoreMixed() {
+        let kept = TestEntity(name: "Kept")
+        let removed = TestEntity(name: "Removed")
+        let changedID = UUID()
+        let changed = TestEntity(id: changedID, name: "Before")
+
+        var store = EntityStore([kept, removed, changed])
+        store.resetChanges()
+
+        let added = TestEntity(name: "Added")
+        let changedAfter = TestEntity(id: changedID, name: "After")
+        let snapshot = EntityStore([kept, changedAfter, added])
+        store.restore(from: snapshot)
+
+        #expect(store.count == 3)
+        #expect(store[kept.id] != nil)
+        #expect(store[removed.id] == nil)
+        #expect(store[changedID]?.name == "After")
+        #expect(store[added.id] != nil)
+
+        #expect(store.changes.deletions.contains(removed.id))
+        #expect(store.changes.upserts.contains(changedID))
+        #expect(store.changes.upserts.contains(added.id))
+        #expect(!store.changes.upserts.contains(kept.id))
+    }
+
     @Test("Merge does not record changes — hydration semantics")
     func mergeNoChangesRecorded() {
         let a = TestEntity(name: "A")

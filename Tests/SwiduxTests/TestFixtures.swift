@@ -24,7 +24,7 @@ struct TestEntity: Identifiable, Equatable, Sendable {
 // MARK: - Test State
 
 /// Root state containing one or two EntityStores for middleware tests.
-struct TestState: Sendable {
+struct TestState: Sendable, Equatable {
     var items: EntityStore<TestEntity> = EntityStore()
     var extras: EntityStore<TestEntity> = EntityStore()
 }

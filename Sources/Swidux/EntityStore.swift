@@ -194,6 +194,43 @@ public nonisolated struct EntityStore<
         }
     }
 
+    // MARK: - Restore (Undo/Redo)
+
+    /// Replaces all entities with those from `source`, recording the
+    /// differences as changes for persistence tracking.
+    ///
+    /// Use this when restoring a previous state snapshot (e.g. undo/redo)
+    /// so the persistence middleware can persist the restored state.
+    ///
+    /// Unlike `merge(from:)` (which is a hydration operation that records
+    /// no changes), `restore` records every difference so that
+    /// `PersistenceMiddleware` picks them up via normal `afterReduce()` draining.
+    public mutating func restore(from source: EntityStore) {
+        let currentIDs = Set(positions.keys)
+        let sourceIDs = Set(source.positions.keys)
+
+        // Deletions: in current but not in source
+        for id in currentIDs.subtracting(sourceIDs) {
+            changes.deletions.insert(id)
+            changes.upserts.remove(id)
+        }
+
+        // Upserts: new or changed entities in source
+        for entity in source.entities {
+            if let index = positions[entity.id] {
+                if entities[index] != entity {
+                    changes.upserts.insert(entity.id)
+                }
+            } else {
+                changes.upserts.insert(entity.id)
+            }
+        }
+
+        // Replace storage
+        entities = source.entities
+        positions = source.positions
+    }
+
     // MARK: - Equatable
 
     /// Two stores are equal when they contain the same entities in the same order.
