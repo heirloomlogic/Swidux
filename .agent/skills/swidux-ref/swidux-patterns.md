@@ -12,6 +12,7 @@
 - [Feature Reducer](#feature-reducer)
 - [AppReducer](#appreducer)
 - [AppStore](#appstore)
+- [AppStore with Undo/Redo](#appstore-with-undoredo)
 - [App Entry Point](#app-entry-point)
 - [View Pattern](#view-pattern)
 - [Controlled Component Pattern](#controlled-component-pattern)
@@ -495,12 +496,11 @@ final class AppStore: SwiduxDispatcher {
         // Drain changelogs and schedule persistence
         persistence.afterReduce(state: &state)
 
-        // Unpack back to observable properties — guard with equality checks.
-        // @Observable fires change notifications on every `set`, even if the
-        // value is identical. Unconditional writes cause cascading re-renders.
-        if items != state.items { items = state.items }
-        if tags != state.tags   { tags = state.tags }
-        if ui != state.ui       { ui = state.ui }
+        // Assign back — @Observable checks Equatable on `set` and suppresses
+        // no-op notifications automatically. No manual equality guards needed.
+        items = state.items
+        tags = state.tags
+        ui = state.ui
 
         // Use @concurrent to run the effect off the MainActor.
         // A bare Task { } inherits MainActor isolation here,
@@ -538,6 +538,143 @@ final class AppStore: SwiduxDispatcher {
             environment.logger.error("Hydration failed: \(error)")
         }
     }
+}
+```
+
+---
+
+## AppStore with Undo/Redo
+
+Add these to the AppStore when undo/redo is needed:
+
+```swift
+// MARK: - Undo State
+
+private(set) var canUndo = false
+private(set) var canRedo = false
+
+// MARK: - Dependencies (add to existing)
+
+private let undoMiddleware = UndoMiddleware<AppState>()
+weak var undoManager: UndoManager?  // Set from view for iOS shake-to-undo
+```
+
+Modify `send()`:
+
+```swift
+func send(_ action: AppAction) {
+    let current = AppState(items: items, tags: tags, ui: ui)
+
+    if action.isUndoable {
+        undoMiddleware.willReduce(state: current, coalescing: action.isCoalescing)
+    }
+
+    var state = current
+    let effect = reducer.reduce(state: &state, action: action, environment: environment)
+    persistence.afterReduce(state: &state)
+    items = state.items
+    tags = state.tags
+    ui = state.ui
+    syncUndoState()
+
+    if action.isUndoable {
+        undoManager?.registerUndo(withTarget: self) { $0.undo() }
+    }
+
+    if let effect {
+        let send: Send = { [weak self] action in self?.send(action) }
+        Task { @concurrent in await effect(send) }
+    }
+}
+```
+
+Add undo/redo methods:
+
+```swift
+// MARK: - Undo / Redo
+
+func undo() {
+    let current = AppState(items: items, tags: tags, ui: ui)
+    guard let restored = undoMiddleware.undo(current: current) else { return }
+    applySnapshot(restored)
+    undoManager?.registerUndo(withTarget: self) { $0.redo() }
+}
+
+func redo() {
+    let current = AppState(items: items, tags: tags, ui: ui)
+    guard let restored = undoMiddleware.redo(current: current) else { return }
+    applySnapshot(restored)
+    undoManager?.registerUndo(withTarget: self) { $0.undo() }
+}
+
+private func applySnapshot(_ restored: AppState) {
+    var state = AppState(items: items, tags: tags, ui: ui)
+    state.items.restore(from: restored.items)
+    state.tags.restore(from: restored.tags)
+    state.ui = restored.ui
+    persistence.afterReduce(state: &state)
+    items = state.items
+    tags = state.tags
+    ui = state.ui
+    syncUndoState()
+}
+
+private func syncUndoState() {
+    canUndo = undoMiddleware.canUndo
+    canRedo = undoMiddleware.canRedo
+}
+```
+
+Action classification:
+
+```swift
+extension AppAction {
+    var isUndoable: Bool {
+        switch self {
+        case .itemBrowser(.create), .itemBrowser(.delete),
+             .itemBrowser(.rename), .itemBrowser(.reorder): true
+        case .itemBrowser(.selectItem), .itemBrowser(.restoreSelection),
+             .inspector: false
+        case .itemInserted: false  // dispatched from effects
+        }
+    }
+
+    var isCoalescing: Bool {
+        switch self {
+        case .itemBrowser(.rename): true
+        default: false
+        }
+    }
+}
+```
+
+Platform UI — macOS:
+
+```swift
+// In App body
+WindowGroup { ... }
+.commands {
+    CommandGroup(replacing: .undoRedo) {
+        Button("Undo") { store.undo() }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(!store.canUndo)
+        Button("Redo") { store.redo() }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!store.canRedo)
+    }
+}
+```
+
+Platform UI — iOS (bridge system UndoManager for shake-to-undo):
+
+```swift
+// In root view
+@Environment(\.undoManager) private var undoManager
+
+var body: some View {
+    NavigationStack { ... }
+        .onAppear { store.undoManager = undoManager }
+        .onChange(of: undoManager) { _, new in store.undoManager = new }
 }
 ```
 

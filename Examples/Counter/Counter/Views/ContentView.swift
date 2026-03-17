@@ -3,6 +3,7 @@ import SwiftUI
 /// Main list view displaying all counters with selection highlighting.
 struct ContentView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         NavigationStack {
@@ -33,6 +34,8 @@ struct ContentView: View {
                     )
                 }
             }
+            .onAppear { store.undoManager = undoManager }
+            .onChange(of: undoManager) { _, new in store.undoManager = new }
         }
     }
 }
