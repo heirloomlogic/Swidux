@@ -9,8 +9,7 @@
 
 import Foundation
 
-/// Accumulates entity snapshots from an `EntityStore`'s `ChangeSet` and
-/// produces batched async persistence work on demand.
+/// Accumulates entity snapshots and produces batched async persistence work.
 ///
 /// ## Lifecycle
 ///
@@ -67,11 +66,13 @@ public final class StateWriter<State> {
         }
     }
 
-    /// Drains the `EntityStore`'s `ChangeSet` into pending buffers.
+    /// Drains the `EntityStore` `ChangeSet` into pending buffers.
+    ///
     /// Returns `true` if there were changes to drain.
     public func drain(_ state: inout State) -> Bool { drainBody(&state) }
 
-    /// Returns an async closure with the batched persistence work,
-    /// or `nil` if nothing is pending. Clears the buffers.
+    /// Returns an async closure with the batched persistence work.
+    ///
+    /// Returns `nil` if nothing is pending. Clears the buffers.
     public func flush() -> (@Sendable () async -> Void)? { flushBody() }
 }

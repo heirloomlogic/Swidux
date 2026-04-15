@@ -30,7 +30,9 @@ public nonisolated struct EntityStore<
 >: Sendable, Equatable where Entity.ID == UUID {
     // MARK: - Storage
 
-    /// Entities in insertion order. The single source of truth for entity data.
+    /// Entities in insertion order.
+    ///
+    /// The single source of truth for entity data.
     private var entities: [Entity] = []
 
     /// Maps entity ID → position in `entities` for O(1) keyed access.
@@ -45,6 +47,7 @@ public nonisolated struct EntityStore<
     public init() {}
 
     /// Creates a store pre-populated from an array (e.g. hydration).
+    ///
     /// Does **not** record changes — the data is already persisted.
     public init(_ initialEntities: [Entity]) {
         entities = initialEntities
@@ -55,7 +58,9 @@ public nonisolated struct EntityStore<
 
     // MARK: - Access
 
-    /// O(1) keyed access. Setting a value records an upsert; setting `nil` records a deletion.
+    /// O(1) keyed access.
+    ///
+    /// Setting a value records an upsert; setting `nil` records a deletion.
     public subscript(id: UUID) -> Entity? {
         get {
             guard let index = positions[id] else { return nil }
@@ -85,7 +90,9 @@ public nonisolated struct EntityStore<
         }
     }
 
-    /// Mutates an entity in-place. Records the change only if the value actually changed.
+    /// Mutates an entity in-place.
+    ///
+    /// Records the change only if the value actually changed.
     /// No-op if the ID doesn't exist.
     public mutating func modify(_ id: UUID, _ transform: (inout Entity) -> Void) {
         guard let index = positions[id] else { return }
@@ -98,7 +105,9 @@ public nonisolated struct EntityStore<
 
     // MARK: - Collection
 
-    /// All entities in insertion order. O(1) — returns the stored array directly.
+    /// All entities in insertion order.
+    ///
+    /// O(1) — returns the stored array directly.
     public var values: [Entity] { entities }
 
     /// Number of entities.
@@ -113,6 +122,7 @@ public nonisolated struct EntityStore<
     // MARK: - Bulk Operations
 
     /// Sorts the store's order using the given predicate.
+    ///
     /// Only records upserts for entities whose position actually changed.
     public mutating func sort(by areInIncreasingOrder: (Entity, Entity) -> Bool) {
         let oldOrder = entities
@@ -125,7 +135,9 @@ public nonisolated struct EntityStore<
         }
     }
 
-    /// Removes all entities matching the predicate. Records deletions.
+    /// Removes all entities matching the predicate.
+    ///
+    /// Records deletions.
     public mutating func removeAll(where shouldRemove: (Entity) -> Bool) {
         let removedIDs = Set(entities.filter(shouldRemove).map(\.id))
         guard !removedIDs.isEmpty else { return }
@@ -146,7 +158,9 @@ public nonisolated struct EntityStore<
 
     // MARK: - Change Tracking
 
-    /// Clears the changelog. Called by `StateWriter` after draining.
+    /// Clears the changelog.
+    ///
+    /// Called by `StateWriter` after draining.
     public mutating func resetChanges() {
         changes = ChangeSet()
     }
@@ -234,6 +248,7 @@ public nonisolated struct EntityStore<
     // MARK: - Equatable
 
     /// Two stores are equal when they contain the same entities in the same order.
+    ///
     /// Changes are excluded — they're transient metadata, not semantic state.
     public static func == (lhs: EntityStore, rhs: EntityStore) -> Bool {
         lhs.entities == rhs.entities
