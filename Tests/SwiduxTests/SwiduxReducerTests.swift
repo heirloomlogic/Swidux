@@ -48,15 +48,13 @@ struct TestReducer: SwiduxReducer {
 
 @Suite("SwiduxReducer")
 struct SwiduxReducerTests {
-    let reducer = TestReducer()
-    let env = TestEnvironment()
-
     @Test("Reduce inserts entity and returns an effect")
-    func reduceInsert() async {
+    @MainActor func reduceInsert() async {
+        let reducer = TestReducer()
         var state = TestState()
         let entity = TestEntity(name: "Hello")
 
-        let effect = reducer.reduce(state: &state, action: .insert(entity), environment: env)
+        let effect = reducer.reduce(state: &state, action: .insert(entity), environment: TestEnvironment())
 
         #expect(state.items[entity.id]?.name == "Hello")
         #expect(effect != nil)
@@ -71,11 +69,12 @@ struct SwiduxReducerTests {
 
     @Test("Reduce deletes entity and returns nil")
     func reduceDelete() {
+        let reducer = TestReducer()
         let entity = TestEntity(name: "Doomed")
         var state = TestState()
         state.items = EntityStore([entity])
 
-        let effect = reducer.reduce(state: &state, action: .delete(entity.id), environment: env)
+        let effect = reducer.reduce(state: &state, action: .delete(entity.id), environment: TestEnvironment())
 
         #expect(state.items[entity.id] == nil)
         #expect(effect == nil)
@@ -83,6 +82,7 @@ struct SwiduxReducerTests {
 
     @Test("Reduce renames entity and returns nil")
     func reduceRename() {
+        let reducer = TestReducer()
         let entity = TestEntity(name: "Old")
         var state = TestState()
         state.items = EntityStore([entity])
@@ -90,7 +90,7 @@ struct SwiduxReducerTests {
         let effect = reducer.reduce(
             state: &state,
             action: .rename(entity.id, "New"),
-            environment: env
+            environment: TestEnvironment()
         )
 
         #expect(state.items[entity.id]?.name == "New")
@@ -99,8 +99,9 @@ struct SwiduxReducerTests {
 
     @Test("Reduce noOp returns nil and state unchanged")
     func reduceNoOp() {
+        let reducer = TestReducer()
         var state = TestState()
-        let effect = reducer.reduce(state: &state, action: .noOp, environment: env)
+        let effect = reducer.reduce(state: &state, action: .noOp, environment: TestEnvironment())
 
         #expect(state.items.isEmpty)
         #expect(effect == nil)

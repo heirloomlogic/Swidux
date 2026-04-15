@@ -36,6 +36,7 @@ public final class PersistenceMiddleware<State> {
     private var debounceTask: Task<Void, Never>?
 
     /// Number of `afterReduce` calls since the last debounce flush.
+    ///
     /// Used to detect probable dispatch loops.
     private var drainCount = 0
 

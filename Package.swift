@@ -15,14 +15,11 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/HeirloomLogic/SwiftFormatPlugin", from: "1.1.0"),
+        .package(url: "https://github.com/HeirloomLogic/SwiftFormatPlugin", from: "1.3.0"),
     ],
     targets: [
         .target(
             name: "Swidux",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
