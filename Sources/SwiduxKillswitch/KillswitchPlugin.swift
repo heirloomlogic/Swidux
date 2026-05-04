@@ -1,0 +1,113 @@
+//
+//  KillswitchPlugin.swift
+//  SwiduxKillswitch
+//
+//  Swidux plugin for remote killswitch enforcement.
+//
+
+import Foundation
+import Swidux
+
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
+/// A Swidux plugin that evaluates a remote killswitch configuration
+/// against the current app version and blocks usage when required.
+@MainActor
+public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
+    /// Root state type of the host app.
+    public typealias State = RootState
+    /// Root action type of the host app.
+    public typealias Action = RootAction
+
+    private let stateKeyPath: WritableKeyPath<RootState, KillswitchState>
+    private let toRootAction: @Sendable (KillswitchAction) -> RootAction
+    private let extractAction: @Sendable (RootAction) -> KillswitchAction?
+    private let service: KillswitchService
+    private let appVersion: @Sendable () -> String
+    private let openURL: @Sendable (URL) async -> Void
+
+    /// Creates a killswitch plugin wired into the host app's state and action types.
+    public init(
+        state: WritableKeyPath<RootState, KillswitchState>,
+        action toRootAction: @escaping @Sendable (KillswitchAction) -> RootAction,
+        extractAction: @escaping @Sendable (RootAction) -> KillswitchAction?,
+        service: KillswitchService,
+        appVersion: @escaping @Sendable () -> String,
+        openURL: @escaping @Sendable (URL) async -> Void = { url in
+            #if canImport(UIKit)
+            await MainActor.run { UIApplication.shared.open(url) }
+            #elseif canImport(AppKit)
+            await MainActor.run { _ = NSWorkspace.shared.open(url) }
+            #endif
+        }
+    ) {
+        self.stateKeyPath = state
+        self.toRootAction = toRootAction
+        self.extractAction = extractAction
+        self.service = service
+        self.appVersion = appVersion
+        self.openURL = openURL
+    }
+
+    /// Routes killswitch actions and returns effects for async work.
+    public func reduce(
+        state: inout RootState,
+        action: RootAction
+    ) -> Effect<RootAction>? {
+        guard let local = extractAction(action) else { return nil }
+        let localEffect = reduceLocal(
+            state: &state[keyPath: stateKeyPath],
+            action: local
+        )
+        guard let localEffect else { return nil }
+        let lift = toRootAction
+        return { send in
+            await localEffect { localAction in
+                send(lift(localAction))
+            }
+        }
+    }
+
+    private func reduceLocal(
+        state: inout KillswitchState,
+        action: KillswitchAction
+    ) -> Effect<KillswitchAction>? {
+        switch action {
+        case .fetch:
+            let service = self.service
+            let appVersion = self.appVersion()
+            return { send in
+                do {
+                    let config = try await service.fetch()
+                    service.saveCached(config)
+                    let verdict = KillswitchVerdict.evaluate(
+                        config, against: appVersion
+                    )
+                    await send(.verdictReceived(verdict))
+                } catch {
+                    await send(.fetchFailed(error.localizedDescription))
+                }
+            }
+
+        case .verdictReceived(let verdict):
+            state.verdict = verdict
+            state.lastFetch = Date()
+            state.fetchError = nil
+
+        case .fetchFailed(let message):
+            state.fetchError = message
+
+        case .openUpdateURL:
+            guard case .blocked(_, _, let url) = state.verdict,
+                let url
+            else { return nil }
+            let openURL = self.openURL
+            return { _ in await openURL(url) }
+        }
+        return nil
+    }
+}
