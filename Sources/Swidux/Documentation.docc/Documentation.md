@@ -13,7 +13,7 @@ Swidux is a persistence middleware layer for apps that use unidirectional data f
 ```
 View → store.send(.action)
   → Reducer mutates state (EntityStore tracks changes silently)
-  → PersistenceMiddleware drains changelogs from EntityStores
+  → PersistencePlugin drains changelogs from EntityStores
   → StateWriters accumulate pending writes
   → Debounce timer fires → batched DB writes execute
   → View re-renders via @Observable
@@ -24,8 +24,10 @@ View → store.send(.action)
 - **``EntityStore``** — Ordered, keyed collection with built-in change tracking
 - **``ChangeSet``** — Tracks which entity IDs were upserted or deleted
 - **``StateWriter``** — Drains changelogs and accumulates batched persistence work
-- **``PersistenceMiddleware``** — Debounced orchestrator that flushes writes after each reducer call
-- **``UndoMiddleware``** — Opt-in stack-based undo/redo for state snapshots
+- **``PersistencePlugin``** — Debounced orchestrator that flushes writes after each reducer call
+- **``UndoPlugin``** — Opt-in stack-based undo/redo for state snapshots
+- **``SwiduxPlugin``** — Unified extension point for the dispatch cycle
+- **``PluginHost``** — Ordered plugin registry that drives lifecycle hooks
 - **``Effect`` / ``Send``** — Generic typealiases for the async effect system
 - **``SwiduxReducer``** — Protocol enforcing the reducer contract
 - **``SwiduxDispatcher``** — Protocol enforcing the store dispatch contract
@@ -47,13 +49,20 @@ Your state, actions, domain models, and DB actors live in your app. Swidux provi
 ### Persistence
 
 - <doc:PersistenceMiddlewareGuide>
-- ``PersistenceMiddleware``
+- ``PersistencePlugin``
 - ``StateWriter``
 
 ### Undo / Redo
 
 - <doc:UndoRedo>
-- ``UndoMiddleware``
+- ``UndoPlugin``
+
+### Plugins
+
+- <doc:PluginArchitecture>
+- <doc:BuildingADomainPlugin>
+- ``SwiduxPlugin``
+- ``PluginHost``
 
 ### Architecture
 

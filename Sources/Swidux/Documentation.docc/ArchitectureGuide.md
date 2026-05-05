@@ -20,7 +20,7 @@ Because the stored properties are app-specific, `send()` cannot be provided by t
 
 ## Dispatch Loop Detection
 
-``Swidux/PersistenceMiddleware`` warns if `afterReduce` is called more than 100 times per debounce interval. This usually means `send()` isn't using the snapshot pattern, causing cascading re-renders that trigger re-dispatches.
+``PersistencePlugin`` warns if `afterReduce` is called more than 100 times per debounce interval. This usually means `send()` isn't using the snapshot pattern, causing cascading re-renders that trigger re-dispatches.
 
 ## Reducer Weight
 

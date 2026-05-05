@@ -218,7 +218,7 @@ public nonisolated struct EntityStore<
     ///
     /// Unlike `merge(from:)` (which is a hydration operation that records
     /// no changes), `restore` records every difference so that
-    /// `PersistenceMiddleware` picks them up via normal `afterReduce()` draining.
+    /// `PersistencePlugin` picks them up via normal `afterReduce()` draining.
     public mutating func restore(from source: EntityStore) {
         let currentIDs = Set(positions.keys)
         let sourceIDs = Set(source.positions.keys)

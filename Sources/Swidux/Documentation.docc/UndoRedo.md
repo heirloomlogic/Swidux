@@ -1,20 +1,20 @@
 # Undo / Redo
 
-Add stack-based undo/redo to your app with ``UndoMiddleware``.
+Add stack-based undo/redo to your app with ``UndoPlugin``.
 
 ## Overview
 
-``UndoMiddleware`` captures state snapshots before each undoable action. Undo history lives in memory (lost on relaunch), but restored state is persisted normally via ``EntityStore``'s `restore(from:)`.
+``UndoPlugin`` captures state snapshots before each undoable action. Undo history lives in memory (lost on relaunch), but restored state is persisted normally via ``EntityStore``'s `restore(from:)`.
 
-If you don't use ``UndoMiddleware``, nothing changes. It's fully opt-in.
+If you don't use ``UndoPlugin``, nothing changes. It's fully opt-in.
 
 ## Adding Undo to Your App
 
 ### 1. Create the middleware
 
 ```swift
-private let undoMiddleware = UndoMiddleware<AppState>()             // unlimited depth
-private let undoMiddleware = UndoMiddleware<AppState>(maxDepth: 50) // or capped
+private let undoPlugin = UndoPlugin<AppState, AppAction>()             // unlimited depth
+private let undoPlugin = UndoPlugin<AppState, AppAction>(maxDepth: 50) // or capped
 ```
 
 ### 2. Classify actions
@@ -47,7 +47,7 @@ Call `willReduce` before the reducer runs:
 func send(_ action: AppAction) {
     let current = AppState(items: items, tags: tags, ui: ui)
     if action.isUndoable {
-        undoMiddleware.willReduce(state: current, coalescing: action.isCoalescing)
+        undoPlugin.willReduce(state: current, coalescing: action.isCoalescing)
     }
     var state = current
     // ... reducer, persistence, assign-back as normal
@@ -61,13 +61,13 @@ Use `restore(from:)` so changes flow through persistence:
 ```swift
 func undo() {
     let current = AppState(items: items, tags: tags, ui: ui)
-    guard let restored = undoMiddleware.undo(current: current) else { return }
+    guard let restored = undoPlugin.undo(current: current) else { return }
     applySnapshot(restored)
 }
 
 func redo() {
     let current = AppState(items: items, tags: tags, ui: ui)
-    guard let restored = undoMiddleware.redo(current: current) else { return }
+    guard let restored = undoPlugin.redo(current: current) else { return }
     applySnapshot(restored)
 }
 
