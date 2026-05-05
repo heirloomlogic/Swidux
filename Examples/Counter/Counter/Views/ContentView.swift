@@ -42,5 +42,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .environment(AppStore(environment: .mock()))
+        .environment(AppStore.configured(environment: .mock()))
 }
