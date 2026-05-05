@@ -14,16 +14,16 @@ struct CounterApp: App {
                 .environment(store)
         }
         #if os(macOS)
-            .commands {
-                CommandGroup(replacing: .undoRedo) {
-                    Button("Undo") { store.undo() }
-                    .keyboardShortcut("z", modifiers: .command)
-                    .disabled(!store.canUndo)
-                    Button("Redo") { store.redo() }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!store.canRedo)
-                }
+        .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { store.undo() }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!store.canUndo)
+                Button("Redo") { store.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!store.canRedo)
             }
+        }
         #endif
     }
 }

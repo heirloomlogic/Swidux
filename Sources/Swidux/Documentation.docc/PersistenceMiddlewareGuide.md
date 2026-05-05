@@ -4,10 +4,10 @@ Configure automatic persistence that drains entity changes and batches database 
 
 ## Overview
 
-``Swidux/PersistenceMiddleware`` is configured with one ``StateWriter`` per ``EntityStore``:
+``PersistencePlugin`` is configured with one ``StateWriter`` per ``EntityStore``:
 
 ```swift
-PersistenceMiddleware<AppState>(
+PersistencePlugin<AppState, AppAction>(
     writers: [
         StateWriter(keyPath: \.items) { writes, deletes in
             for item in writes { try? await db.upsert(item) }

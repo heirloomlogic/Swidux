@@ -27,7 +27,7 @@ mkdir -p skills
 cp -r path/to/Swidux/skills/swidux-ref skills/
 ```
 
-The skill activates automatically when the assistant detects Swidux-related work — adding actions, modifying reducers, creating effects, working with ``EntityStore``, configuring ``PersistenceMiddleware``, or scaffolding a new app.
+The skill activates automatically when the assistant detects Swidux-related work — adding actions, modifying reducers, creating effects, working with ``EntityStore``, configuring ``PersistencePlugin``, or scaffolding a new app.
 
 ### Other Assistants
 
@@ -42,7 +42,7 @@ The skill files are plain Markdown. Point your assistant's context or system pro
 | Configure persistence | Respects writer ordering (leaves first, aggregates last) |
 | Create form bindings | Uses controlled component pattern (`Binding(get:set:)`) instead of `@State` |
 | Write effects | Uses `Task { @concurrent in }`, never bare `Task { }` |
-| Add undo/redo | Wires ``UndoMiddleware`` with coalescing and platform UI |
+| Add undo/redo | Wires ``UndoPlugin`` with coalescing and platform UI |
 | Scaffold a new project | Creates files in the correct dependency order |
 
 ## Example Prompts

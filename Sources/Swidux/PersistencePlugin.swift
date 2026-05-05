@@ -1,5 +1,5 @@
 //
-//  PersistenceMiddleware.swift
+//  PersistencePlugin.swift
 //  Swidux
 //
 //  Observes state changes after each reducer call and batches
@@ -9,7 +9,7 @@
 import Foundation
 import os
 
-/// Coalescing persistence middleware.
+/// Coalescing persistence plugin.
 ///
 /// After each reducer call, drains `ChangeSet`s from registered `EntityStore`s
 /// into `StateWriter` buffers. Restarts a debounce timer on each drain. When the
@@ -18,16 +18,17 @@ import os
 /// ## Wiring
 ///
 /// ```swift
-/// let middleware = PersistenceMiddleware<AppState>(
+/// let persistence = PersistencePlugin<AppState, AppAction>(
 ///     writers: [
 ///         StateWriter(keyPath: \.decks) { writes, deletes in ... },
 ///         StateWriter(keyPath: \.cards) { writes, deletes in ... },
 ///     ],
 ///     debounce: .milliseconds(250)
 /// )
+/// plugins.register(persistence)
 /// ```
 @MainActor
-public final class PersistenceMiddleware<State> {
+public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     private let writers: [StateWriter<State>]
     private let debounceInterval: Duration
     private let logger: Logger
@@ -47,7 +48,7 @@ public final class PersistenceMiddleware<State> {
     /// are considered a probable dispatch loop.
     private let loopWarningThreshold: Int
 
-    /// Creates a persistence middleware with the given writers and debounce interval.
+    /// Creates a persistence plugin with the given writers and debounce interval.
     ///
     /// - Parameters:
     ///   - writers: The state writers that drain and flush entity changes.
@@ -59,7 +60,7 @@ public final class PersistenceMiddleware<State> {
         writers: [StateWriter<State>],
         debounce: Duration = .milliseconds(250),
         loopThreshold: Int = 100,
-        logger: Logger = Logger(subsystem: "persistence", category: "middleware")
+        logger: Logger = Logger(subsystem: "persistence", category: "plugin")
     ) {
         self.writers = writers
         self.debounceInterval = debounce
@@ -84,12 +85,12 @@ public final class PersistenceMiddleware<State> {
         }
     }
 
-    /// Called after every reducer invocation.
+    /// Drains ChangeSets after every reducer invocation.
     ///
     /// Synchronously drains changelogs from each `EntityStore` (sub-microsecond).
     /// If any changes were drained, restarts the debounce timer. When the timer
     /// fires, flushes all accumulated writes in one batch.
-    public func afterReduce(state: inout State) {
+    public func afterReduce(state: inout State, action: Action) {
         var hasPending = false
 
         for writer in writers where writer.drain(&state) {
@@ -104,7 +105,7 @@ public final class PersistenceMiddleware<State> {
             hasLoggedLoopWarning = true
             logger.warning(
                 """
-                [PersistenceMiddleware] afterReduce called \(self.drainCount) times \
+                [PersistencePlugin] afterReduce called \(self.drainCount) times \
                 in a single debounce interval — possible dispatch loop. \
                 Check that AppStore.send() guards @Observable property writes \
                 with equality checks.
@@ -112,7 +113,7 @@ public final class PersistenceMiddleware<State> {
             )
         }
 
-        logger.debug("[PersistenceMiddleware] Changes drained, scheduling flush")
+        logger.debug("[PersistencePlugin] Changes drained, scheduling flush")
 
         debounceTask?.cancel()
         debounceTask = Task { [weak self] in
@@ -127,10 +128,14 @@ public final class PersistenceMiddleware<State> {
             let work = self.writers.compactMap { $0.flush() }
             guard !work.isEmpty else { return }
 
-            self.logger.debug("[PersistenceMiddleware] Flushing \(work.count) writer(s)")
+            self.logger.debug("[PersistencePlugin] Flushing \(work.count) writer(s)")
             for w in work {
                 await w()
             }
         }
     }
 }
+
+/// Migration aid — use ``PersistencePlugin`` instead.
+@available(*, deprecated, renamed: "PersistencePlugin")
+public typealias PersistenceMiddleware<State> = PersistencePlugin<State, Never>

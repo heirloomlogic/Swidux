@@ -1,5 +1,5 @@
 //
-//  PersistenceMiddlewareTests.swift
+//  PersistencePluginTests.swift
 //  SwiduxTests
 //
 
@@ -8,9 +8,9 @@ import Testing
 
 @testable import Swidux
 
-@Suite("PersistenceMiddleware")
+@Suite("PersistencePlugin")
 @MainActor
-struct PersistenceMiddlewareTests {
+struct PersistencePluginTests {
     // MARK: - Tests
 
     @Test("afterReduce with no changes does not schedule a flush")
@@ -20,13 +20,13 @@ struct PersistenceMiddlewareTests {
             keyPath: \.items,
             persist: { _, _ in flushCount.value += 1 }
         )
-        let middleware = PersistenceMiddleware<TestState>(
+        let plugin = PersistencePlugin<TestState, TestAction>(
             writers: [writer],
             debounce: .milliseconds(10)
         )
 
         var state = TestState()
-        middleware.afterReduce(state: &state)
+        plugin.afterReduce(state: &state, action: .noOp)
 
         // Wait longer than the debounce — nothing should fire
         try await Task.sleep(for: .milliseconds(50))
@@ -42,7 +42,7 @@ struct PersistenceMiddlewareTests {
                     confirmed()
                 }
             )
-            let middleware = PersistenceMiddleware<TestState>(
+            let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer],
                 debounce: .milliseconds(20)
             )
@@ -51,7 +51,7 @@ struct PersistenceMiddlewareTests {
             let entity = TestEntity(name: "Test")
             state.items[entity.id] = entity
 
-            middleware.afterReduce(state: &state)
+            plugin.afterReduce(state: &state, action: .noOp)
 
             try? await Task.sleep(for: .milliseconds(100))
         }
@@ -69,7 +69,7 @@ struct PersistenceMiddlewareTests {
                     confirmed()
                 }
             )
-            let middleware = PersistenceMiddleware<TestState>(
+            let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer],
                 debounce: .milliseconds(50)
             )
@@ -80,7 +80,7 @@ struct PersistenceMiddlewareTests {
             for i in 0..<5 {
                 let entity = TestEntity(name: "Entity \(i)")
                 state.items[entity.id] = entity
-                middleware.afterReduce(state: &state)
+                plugin.afterReduce(state: &state, action: .noOp)
                 try? await Task.sleep(for: .milliseconds(10))
             }
 
@@ -99,7 +99,7 @@ struct PersistenceMiddlewareTests {
             keyPath: \.items,
             persist: { writes, _ in writesBox.value = writes }
         )
-        let middleware = PersistenceMiddleware<TestState>(
+        let plugin = PersistencePlugin<TestState, TestAction>(
             writers: [writer],
             debounce: .milliseconds(500)  // long debounce — won't fire naturally
         )
@@ -107,10 +107,10 @@ struct PersistenceMiddlewareTests {
         var state = TestState()
         let entity = TestEntity(name: "Urgent")
         state.items[entity.id] = entity
-        middleware.afterReduce(state: &state)
+        plugin.afterReduce(state: &state, action: .noOp)
 
         // Flush immediately — don't wait for debounce
-        await middleware.flush()
+        await plugin.flush()
 
         #expect(writesBox.value.count == 1)
         #expect(writesBox.value.first?.name == "Urgent")
@@ -128,7 +128,7 @@ struct PersistenceMiddlewareTests {
                 persist: { _, _ in confirmed() }
             )
 
-            let middleware = PersistenceMiddleware<TestState>(
+            let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer1, writer2],
                 debounce: .milliseconds(20)
             )
@@ -139,9 +139,36 @@ struct PersistenceMiddlewareTests {
             state.items[e1.id] = e1
             state.extras[e2.id] = e2
 
-            middleware.afterReduce(state: &state)
+            plugin.afterReduce(state: &state, action: .noOp)
 
             try? await Task.sleep(for: .milliseconds(100))
         }
+    }
+
+    @Test("plugin registers with PluginHost and receives lifecycle calls")
+    func pluginHostIntegration() async throws {
+        let writesBox = SendableBox<[TestEntity]>([])
+
+        let writer = StateWriter<TestState>(
+            keyPath: \.items,
+            persist: { writes, _ in writesBox.value = writes }
+        )
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(500)
+        )
+
+        let host = PluginHost<TestState, TestAction>()
+        host.register(plugin)
+
+        var state = TestState()
+        let entity = TestEntity(name: "Via host")
+        state.items[entity.id] = entity
+        host.afterReduce(state: &state, action: .noOp)
+
+        await host.flush()
+
+        #expect(writesBox.value.count == 1)
+        #expect(writesBox.value.first?.name == "Via host")
     }
 }

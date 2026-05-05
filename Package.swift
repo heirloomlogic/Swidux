@@ -9,10 +9,10 @@ let package = Package(
         .iOS(.v18),
     ],
     products: [
-        .library(
-            name: "Swidux",
-            targets: ["Swidux"]
-        )
+        .library(name: "Swidux", targets: ["Swidux"]),
+        .library(name: "SwiduxKillswitch", targets: ["SwiduxKillswitch"]),
+        .library(name: "SwiduxParentalGate", targets: ["SwiduxParentalGate"]),
+        .library(name: "SwiduxPaywall", targets: ["SwiduxPaywall"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.4.5"),
@@ -25,9 +25,51 @@ let package = Package(
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
         ),
+        .target(
+            name: "SwiduxKillswitch",
+            dependencies: ["Swidux"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .target(
+            name: "SwiduxParentalGate",
+            dependencies: ["Swidux"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .target(
+            name: "SwiduxPaywall",
+            dependencies: ["Swidux"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
         .testTarget(
             name: "SwiduxTests",
             dependencies: ["Swidux"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxKillswitchTests",
+            dependencies: ["Swidux", "SwiduxKillswitch"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxParentalGateTests",
+            dependencies: ["Swidux", "SwiduxParentalGate"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxPaywallTests",
+            dependencies: ["Swidux", "SwiduxPaywall"],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]

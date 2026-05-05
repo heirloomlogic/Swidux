@@ -100,7 +100,7 @@ final class AppStore: SwiduxDispatcher {
     private(set) var ui    = UIState()
 
     private let reducer: AppReducer
-    private let persistence: PersistenceMiddleware<AppState>
+    private let persistence: PersistencePlugin<AppState, AppAction>
 
     func send(_ action: AppAction) {
         var state = AppState(items: items, tags: tags, ui: ui)
