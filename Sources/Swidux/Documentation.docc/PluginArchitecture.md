@@ -8,7 +8,7 @@ Swidux's plugin system is a single protocol (``SwiduxPlugin``) with four lifecyc
 
 ## The Dispatch Lifecycle
 
-Every call to `send()` drives plugins through a four-phase lifecycle:
+Every call to `store.send()` drives plugins through a four-phase lifecycle:
 
 ```
 plugins.willReduce(state:action:)      // 1. Pre-reduce (read-only state)
@@ -16,6 +16,8 @@ appReducer.reduce(state:action:...)    // 2. App reducer runs
 pluginEffects = plugins.reduce(...)    // 3. Plugin reducers run
 plugins.afterReduce(state:action:)     // 4. Post-reduce cleanup
 ```
+
+The generic ``Store`` implements this lifecycle internally. You don't write `send()` by hand — `Store.send()` handles packing, reducing, plugin hooks, unpacking, and effect dispatch.
 
 A fifth method, `flush()`, runs once at shutdown to drain async buffers.
 

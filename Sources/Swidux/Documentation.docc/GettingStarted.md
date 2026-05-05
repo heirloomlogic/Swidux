@@ -27,12 +27,15 @@ Re-export Swidux from `AppState.swift` so no other file needs `import Swidux`:
 import Foundation
 @_exported import Swidux
 
-struct AppState: Sendable {
+@SwiduxState
+struct AppState: Equatable, Sendable {
     var items = EntityStore<Item>()
     var tags  = EntityStore<Tag>()
-    var ui    = UIState()
+    @SwiduxNested var ui = UIState()
 }
 ```
+
+`@SwiduxState` generates an `@Observable` companion class and `SwiduxObservable` conformance. `@SwiduxNested` marks nested state slices that get their own observer class for per-property observation granularity.
 
 Specialize the generic effect system with your action type:
 
@@ -88,35 +91,43 @@ struct ItemReducer: SwiduxReducer {
 }
 ```
 
-## Wire the AppStore
+## Wire the Store
 
-`AppStore` owns separate stored properties per state slice so `@Observable` tracks each one independently. `send()` uses the snapshot pattern (see <doc:ArchitectureGuide#The-Snapshot-Pattern>):
+`Store` is a generic `@Observable` class that owns the dispatch cycle, plugin lifecycle, and observation layer. Define a typealias and a factory method:
 
 ```swift
-@Observable
-final class AppStore: SwiduxDispatcher {
-    private(set) var items = EntityStore<Item>()
-    private(set) var tags  = EntityStore<Tag>()
-    private(set) var ui    = UIState()
+typealias AppStore = Store<AppState, AppAction>
 
-    private let reducer: AppReducer
-    private let persistence: PersistencePlugin<AppState, AppAction>
+extension Store where State == AppState, Action == AppAction {
+    static func configured() -> AppStore {
+        let reducer = AppReducer()
+        let environment = AppEnvironment.live()
 
-    func send(_ action: AppAction) {
-        var state = AppState(items: items, tags: tags, ui: ui)
-        let effect = reducer.reduce(state: &state, action: action, environment: environment)
-        persistence.afterReduce(state: &state)
-        items = state.items
-        tags = state.tags
-        ui = state.ui
+        let persistencePlugin = PersistencePlugin<AppState, AppAction>(
+            writers: [
+                StateWriter(keyPath: \.items) { writes, deletes in
+                    for item in writes { try? await db.upsert(item) }
+                    for id in deletes  { try? await db.delete(id: id) }
+                },
+            ]
+        )
 
-        if let effect {
-            let send: Send = { [weak self] action in self?.send(action) }
-            Task { @concurrent in await effect(send) }
-        }
+        let plugins = PluginHost<AppState, AppAction>()
+        plugins.register(persistencePlugin)
+
+        return Store(
+            initialState: AppState(),
+            reducer: { state, action in
+                reducer.reduce(state: &state, action: action, environment: environment)
+            },
+            plugins: plugins,
+            persistencePlugin: persistencePlugin
+        )
     }
 }
 ```
+
+`Store` handles the snapshot pattern internally — packing the observer tree into a struct, running the reducer, then unpacking only changed properties back. Views access state through `@dynamicMemberLookup`, which forwards to the generated observer class tree.
 
 ## Wire Views
 
@@ -137,8 +148,27 @@ struct ItemListView: View {
 }
 ```
 
+### App Entry Point
+
+Own the store with `@State` and inject it via `.environment()`:
+
+```swift
+@main
+struct MyApp: App {
+    @State private var store = AppStore.configured()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(store)
+        }
+    }
+}
+```
+
 ## Next Steps
 
 - <doc:EntityStoreGuide> — Learn the full ``EntityStore`` API
 - <doc:PersistenceMiddlewareGuide> — Configure persistence writers
 - <doc:ArchitectureGuide> — Understand the snapshot pattern and performance considerations
+- `SwiduxObservable` — Hand-write observation bridging for advanced cases

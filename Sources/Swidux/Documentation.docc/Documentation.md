@@ -21,6 +21,9 @@ View → store.send(.action)
 
 ### Features
 
+- **``Store``** — Generic `@Observable` store with `@dynamicMemberLookup`, dispatch cycle, undo/redo, and plugin lifecycle
+- **``SwiduxObservable``** — Protocol bridging value-type state to `@Observable` class trees
+- **`@SwiduxState` / `@SwiduxNested`** — Macros that auto-generate observer classes from state structs
 - **``EntityStore``** — Ordered, keyed collection with built-in change tracking
 - **``ChangeSet``** — Tracks which entity IDs were upserted or deleted
 - **``StateWriter``** — Drains changelogs and accumulates batched persistence work
@@ -40,6 +43,11 @@ Your state, actions, domain models, and DB actors live in your app. Swidux provi
 
 - <doc:GettingStarted>
 - <doc:DesignPrinciples>
+
+### Store
+
+- ``Store``
+- ``SwiduxObservable``
 
 ### Data
 

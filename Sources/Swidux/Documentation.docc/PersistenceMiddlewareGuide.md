@@ -18,9 +18,9 @@ PersistencePlugin<AppState, AppAction>(
 )
 ```
 
-Call `persistence.afterReduce(state: &state)` after every reducer invocation. It drains changelogs, coalesces writes per ID, debounces, and batches all pending writes into a single async Task.
+When using ``Store``, `afterReduce` is called automatically through the plugin lifecycle — no manual invocation needed. Register the ``PersistencePlugin`` with ``PluginHost`` and pass it to ``Store``'s initializer.
 
-Call `await persistence.flush()` on shutdown (`scenePhase == .background`, `applicationWillTerminate`) to ensure buffered writes aren't lost.
+Call `await store.flush()` on shutdown (`scenePhase == .background`, `applicationWillTerminate`) to ensure buffered writes aren't lost. This delegates to each registered plugin's `flush()` method.
 
 ## Writer Ordering
 

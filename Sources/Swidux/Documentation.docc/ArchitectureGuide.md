@@ -8,13 +8,15 @@ Swidux relies on specific patterns to ensure correct `@Observable` behavior, eff
 
 ## The Snapshot Pattern
 
-`send()` copies stored properties into a local `AppState`, mutates the copy via the reducer, then assigns back. This is required for two reasons:
+`Store.send()` copies the observer tree into a local struct, mutates the copy via the reducer, then assigns changed properties back. This happens internally via `SwiduxObservable` — `State(observer:)` packs, `State.apply(_:to:)` unpacks.
+
+The pattern exists for two reasons:
 
 1. **`@Observable` equality checking.** The `set` accessor checks `Equatable` and suppresses no-op notifications. Swift's `_modify` accessor (used by `inout`) fires notifications unconditionally. The snapshot pattern routes through `set`.
 
-2. **Cross-slice observation isolation.** Separate stored properties (`var items`, `var tags`, `var ui`) mean a view reading `store.items` won't re-render when only `store.ui` changes. A single `var state: AppState` would invalidate all observers on every dispatch.
+2. **Cross-slice observation isolation.** The `@SwiduxState` macro generates a separate `@Observable` class for each `@SwiduxNested` property. A view reading `store.items` won't re-render when only `store.ui` changes, because they live on different observer objects.
 
-Because the stored properties are app-specific, `send()` cannot be provided by the framework — it must be written in each app's `AppStore`.
+The `@SwiduxState` macro generates the observer class tree and `SwiduxObservable` conformance automatically. Hand-written conformance is still possible for advanced cases — see ``SwiduxObservable``.
 
 > Note: Explicit equality guards (`if x != state.x { x = state.x }`) are unnecessary. `@Observable` already checks equality on `set`. Unconditional assignment is safe.
 
