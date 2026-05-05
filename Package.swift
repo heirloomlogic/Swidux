@@ -1,5 +1,6 @@
 // swift-tools-version: 6.2
 
+import CompilerPluginSupport
 import PackageDescription
 
 let package = Package(
@@ -17,10 +18,23 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.4.5"),
         .package(url: "https://github.com/HeirloomLogic/SwiftFormatPlugin", from: "1.3.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax", from: "603.0.0"),
     ],
     targets: [
+        .macro(
+            name: "SwiduxMacros",
+            dependencies: [
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+                .product(name: "SwiftParser", package: "swift-syntax"),
+            ],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
         .target(
             name: "Swidux",
+            dependencies: ["SwiduxMacros"],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
@@ -70,6 +84,16 @@ let package = Package(
         .testTarget(
             name: "SwiduxPaywallTests",
             dependencies: ["Swidux", "SwiduxPaywall"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxMacrosTests",
+            dependencies: [
+                "SwiduxMacros",
+                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
+            ],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
