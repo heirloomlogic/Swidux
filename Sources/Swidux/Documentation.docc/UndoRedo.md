@@ -10,84 +10,51 @@ If you don't use ``UndoPlugin``, nothing changes. It's fully opt-in.
 
 ## Adding Undo to Your App
 
-### 1. Create the middleware
+### 1. Create the plugin
+
+Pass declarative predicates to classify which actions are undoable and which coalesce:
 
 ```swift
-private let undoPlugin = UndoPlugin<AppState, AppAction>()             // unlimited depth
-private let undoPlugin = UndoPlugin<AppState, AppAction>(maxDepth: 50) // or capped
-```
-
-### 2. Classify actions
-
-Decide which actions are undoable and which coalesce (grouping rapid calls like per-keystroke text edits into one undo step):
-
-```swift
-extension AppAction {
-    var isUndoable: Bool {
-        switch self {
-        case .items(.create), .items(.delete), .items(.rename): true
-        case .selectItem, .toggleSidebar: false
-        }
-    }
-
-    var isCoalescing: Bool {
-        switch self {
-        case .items(.rename): true
-        default: false
-        }
+let isUndoable: @Sendable (AppAction) -> Bool = { action in
+    switch action {
+    case .items(.create), .items(.delete), .items(.rename): true
+    case .selectItem, .toggleSidebar: false
     }
 }
-```
 
-### 3. Snapshot in send()
-
-Call `willReduce` before the reducer runs:
-
-```swift
-func send(_ action: AppAction) {
-    let current = AppState(items: items, tags: tags, ui: ui)
-    if action.isUndoable {
-        undoPlugin.willReduce(state: current, coalescing: action.isCoalescing)
+let undoPlugin = UndoPlugin<AppState, AppAction>(
+    isUndoable: isUndoable,
+    coalescing: { action in
+        if case .items(.rename) = action { return true }
+        return false
     }
-    var state = current
-    // ... reducer, persistence, assign-back as normal
-}
+)
 ```
 
-### 4. Add undo/redo methods
+### 2. Register and pass to Store
 
-Use `restore(from:)` so changes flow through persistence:
+Register the plugin with ``PluginHost`` for lifecycle hooks, and pass it directly to ``Store`` for undo/redo methods and `canUndo`/`canRedo` tracking:
 
 ```swift
-func undo() {
-    let current = AppState(items: items, tags: tags, ui: ui)
-    guard let restored = undoPlugin.undo(current: current) else { return }
-    applySnapshot(restored)
-}
+let plugins = PluginHost<AppState, AppAction>()
+plugins.register(undoPlugin)
+plugins.register(persistencePlugin)
 
-func redo() {
-    let current = AppState(items: items, tags: tags, ui: ui)
-    guard let restored = undoPlugin.redo(current: current) else { return }
-    applySnapshot(restored)
-}
-
-private func applySnapshot(_ restored: AppState) {
-    var state = AppState(items: items, tags: tags, ui: ui)
-    state.items.restore(from: restored.items)  // records diff for persistence
-    state.tags.restore(from: restored.tags)
-    state.ui = restored.ui                     // plain state — assign directly
-    persistence.afterReduce(state: &state)
-    items = state.items
-    tags = state.tags
-    ui = state.ui
-}
+return Store(
+    initialState: AppState(),
+    reducer: { state, action in
+        reducer.reduce(state: &state, action: action, environment: environment)
+    },
+    plugins: plugins,
+    undoPlugin: undoPlugin,
+    persistencePlugin: persistencePlugin,
+    isUndoable: isUndoable
+)
 ```
 
-### 5. Expose canUndo / canRedo
+`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, and updating `canUndo`/`canRedo`.
 
-Expose these as observable properties. Call `syncUndoState()` after every `send()`, `undo()`, and `redo()`.
-
-### 6. Wire platform UI
+### 3. Wire platform UI
 
 **macOS** — replace the Edit menu:
 
@@ -108,21 +75,21 @@ WindowGroup { ... }
 **iOS** — bridge the system UndoManager for shake-to-undo:
 
 ```swift
-// In AppStore:
-weak var undoManager: UndoManager?
-// Register after undoable send():  undoManager?.registerUndo(withTarget: self) { $0.undo() }
-// Register after undo():           undoManager?.registerUndo(withTarget: self) { $0.redo() }
-// Register after redo():           undoManager?.registerUndo(withTarget: self) { $0.undo() }
-
-// In view — connect the environment UndoManager:
+// In your view — connect the environment UndoManager:
 .onAppear { store.undoManager = undoManager }
 .onChange(of: undoManager) { _, new in store.undoManager = new }
 ```
 
+`Store` automatically registers undo/redo actions with the `UndoManager` after each undoable dispatch.
+
 ## Coalescing
 
-`willReduce(coalescing: true)` pushes on the first call, then skips subsequent consecutive coalescing calls — they share the original snapshot. A non-coalescing call or undo/redo resets the flag. Typing "hello" produces one undo entry, not five.
+The `coalescing` predicate groups consecutive matching actions into a single undo step. The first coalescing action captures a snapshot; subsequent consecutive coalescing actions share that snapshot. A non-coalescing action or undo/redo resets the flag. Typing "hello" produces one undo entry, not five.
 
 ## Memory
 
-Each snapshot is a value-type copy of `AppState`. Cost is proportional to the number of entities across all stores. Use `maxDepth` to bound memory for large state.
+Each snapshot is a value-type copy of your state. Cost is proportional to the number of entities across all stores. Use `maxDepth` to bound memory for large state:
+
+```swift
+let undoPlugin = UndoPlugin<AppState, AppAction>(maxDepth: 50, ...)
+```

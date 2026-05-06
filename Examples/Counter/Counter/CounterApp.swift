@@ -6,7 +6,7 @@ import SwiftUI
 /// re-evaluations without being recreated.
 @main
 struct CounterApp: App {
-    @State private var store = AppStore()
+    @State private var store = AppStore.configured()
 
     var body: some Scene {
         WindowGroup {

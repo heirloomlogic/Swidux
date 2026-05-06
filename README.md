@@ -6,9 +6,13 @@ Swidux is a persistence middleware layer for apps that use unidirectional data f
 
 ## Features
 
+- **Store** — Generic `@Observable` store with `@dynamicMemberLookup`, dispatch cycle, undo/redo, and plugin lifecycle
+- **@SwiduxState / @SwiduxNested** — Macros that auto-generate `@Observable` observer classes from state structs
+- **SwiduxObservable** — Protocol bridging value-type state to `@Observable` class trees
 - **EntityStore** — Ordered, keyed collection with built-in change tracking
-- **PersistenceMiddleware** — Debounced orchestrator that coalesces and batches DB writes
-- **UndoMiddleware** — Opt-in stack-based undo/redo for state snapshots
+- **PersistencePlugin** — Debounced orchestrator that coalesces and batches DB writes
+- **UndoPlugin** — Opt-in stack-based undo/redo for state snapshots
+- **SwiduxPlugin / PluginHost** — Unified extension point and ordered registry for the dispatch cycle
 - **Effect / Send** — Generic typealiases for the async effect system
 - **SwiduxReducer / SwiduxDispatcher** — Protocols enforcing the reducer and dispatch contracts
 
@@ -27,23 +31,26 @@ dependencies: [
 ## Quick Start
 
 ```swift
-@Observable
-final class AppStore: SwiduxDispatcher {
-    private(set) var items = EntityStore<Item>()
+@SwiduxState
+struct AppState: Equatable, Sendable {
+    var items = EntityStore<Item>()
+    @SwiduxNested var ui = UIState()
+}
 
-    private let reducer = AppReducer()
-    private let persistence: PersistenceMiddleware<AppState>
+typealias AppStore = Store<AppState, AppAction>
 
-    func send(_ action: AppAction) {
-        var state = AppState(items: items)
-        let effect = reducer.reduce(state: &state, action: action, environment: env)
-        persistence.afterReduce(state: &state)
-        items = state.items
-
-        if let effect {
-            let send: Send = { [weak self] action in self?.send(action) }
-            Task { @concurrent in await effect(send) }
-        }
+extension Store where State == AppState, Action == AppAction {
+    static func configured() -> AppStore {
+        let plugins = PluginHost<AppState, AppAction>()
+        plugins.register(persistencePlugin)
+        return Store(
+            initialState: AppState(),
+            reducer: { state, action in
+                AppReducer().reduce(state: &state, action: action, environment: .live())
+            },
+            plugins: plugins,
+            persistencePlugin: persistencePlugin
+        )
     }
 }
 ```
@@ -63,7 +70,7 @@ Full documentation is available as [DocC articles](https://heirloomlogic.github.
 
 ## Agent Skill
 
-Swidux includes an agent skill at `skills/swidux-ref/` for AI coding assistants like [Claude Code](https://claude.ai/claude-code). It contains the architecture rules, conventions, and code templates the assistant needs to generate correct Swidux code. Copy the skill directory into your downstream project to activate it. See the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article for setup details.
+Swidux provides a companion agent skill (`swidux-ref`) for AI coding assistants like [Claude Code](https://claude.ai/claude-code). The skill contains architecture rules, conventions, and code templates for generating correct Swidux code. It is auto-discovered by Claude Code in projects that depend on Swidux. See the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article for details.
 
 ## Requirements
 

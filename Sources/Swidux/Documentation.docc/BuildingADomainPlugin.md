@@ -159,7 +159,8 @@ The public `reduce` method follows a fixed pattern: guard-extract the local acti
 ### Add state and action
 
 ```swift
-struct AppState: Sendable {
+@SwiduxState
+struct AppState: Equatable, Sendable {
     var items = EntityStore<Item>()
     // ...
     var announcements = AnnouncementState()

@@ -4,7 +4,7 @@ Use the bundled `swidux-ref` skill to give your AI coding assistant Swidux's arc
 
 ## Overview
 
-Swidux includes an agent skill at `skills/swidux-ref/` for AI coding assistants like Claude Code. It contains the architecture rules, conventions, and code templates the assistant needs to generate correct Swidux code without you having to explain the patterns each time.
+Swidux provides a companion agent skill (`swidux-ref`) for AI coding assistants like Claude Code. It contains the architecture rules, conventions, and code templates the assistant needs to generate correct Swidux code without you having to explain the patterns each time.
 
 ## What the Skill Covers
 
@@ -13,21 +13,15 @@ The skill contains two files:
 - **SKILL.md** — Architecture reference covering the snapshot pattern, controlled components, effect threading, writer ordering, and other rules.
 - **swidux-patterns.md** — Code templates for every layer: AppState, AppAction, reducers, AppStore, SwiftData models, DB actors, views, tests, and undo/redo.
 
+Both files cover the ``Store``, `@SwiduxState`, `@SwiduxNested`, and ``SwiduxObservable`` patterns.
+
 With both files loaded, the assistant can scaffold features or catch architectural mistakes without reading every source file.
 
 ## Installation
 
 ### Claude Code
 
-The skill is auto-discovered when you work in a project that depends on Swidux. If your downstream app has Swidux as a package dependency, symlink or copy the skill into your project:
-
-```bash
-# From your app's root directory
-mkdir -p skills
-cp -r path/to/Swidux/skills/swidux-ref skills/
-```
-
-The skill activates automatically when the assistant detects Swidux-related work — adding actions, modifying reducers, creating effects, working with ``EntityStore``, configuring ``PersistencePlugin``, or scaffolding a new app.
+The `swidux-ref` skill is auto-discovered by Claude Code in projects that depend on Swidux. No manual installation needed.
 
 ### Other Assistants
 
@@ -44,6 +38,8 @@ The skill files are plain Markdown. Point your assistant's context or system pro
 | Write effects | Uses `Task { @concurrent in }`, never bare `Task { }` |
 | Add undo/redo | Wires ``UndoPlugin`` with coalescing and platform UI |
 | Scaffold a new project | Creates files in the correct dependency order |
+| Configure a Store | Sets up `Store` factory with plugins, undo, persistence |
+| Use @SwiduxState | Generates observer class + `SwiduxObservable` conformance |
 
 ## Example Prompts
 
@@ -54,3 +50,5 @@ Once the skill is active, these kinds of requests produce correct Swidux code:
 - "Add undo support for card editing"
 - "Create a controlled text field for renaming items"
 - "Scaffold a new macOS app using Swidux"
+- "Set up a new app with @SwiduxState and Store"
+- "Configure undo/redo for my Store"

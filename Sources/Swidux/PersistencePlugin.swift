@@ -85,12 +85,11 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         }
     }
 
-    /// Drains ChangeSets after every reducer invocation.
+    /// Drains ChangeSets and schedules a debounced flush.
     ///
-    /// Synchronously drains changelogs from each `EntityStore` (sub-microsecond).
-    /// If any changes were drained, restarts the debounce timer. When the timer
-    /// fires, flushes all accumulated writes in one batch.
-    public func afterReduce(state: inout State, action: Action) {
+    /// Called by ``Store`` during undo/redo where no action value exists.
+    /// Also called internally by ``afterReduce(state:action:)``.
+    public func drainAndScheduleFlush(_ state: inout State) {
         var hasPending = false
 
         for writer in writers where writer.drain(&state) {
@@ -99,7 +98,6 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
 
         guard hasPending else { return }
 
-        // Dispatch loop detection
         drainCount += 1
         if drainCount > loopWarningThreshold && !hasLoggedLoopWarning {
             hasLoggedLoopWarning = true
@@ -121,7 +119,6 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
             try? await Task.sleep(for: self.debounceInterval)
             guard !Task.isCancelled else { return }
 
-            // Reset loop detection counters
             self.drainCount = 0
             self.hasLoggedLoopWarning = false
 
@@ -133,6 +130,15 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
                 await w()
             }
         }
+    }
+
+    /// Drains ChangeSets after every reducer invocation.
+    ///
+    /// Synchronously drains changelogs from each `EntityStore` (sub-microsecond).
+    /// If any changes were drained, restarts the debounce timer. When the timer
+    /// fires, flushes all accumulated writes in one batch.
+    public func afterReduce(state: inout State, action: Action) {
+        drainAndScheduleFlush(&state)
     }
 }
 
