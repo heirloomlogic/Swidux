@@ -16,6 +16,18 @@ public struct KillswitchState: Sendable, Equatable {
     /// Human-readable description of the last fetch failure, or `nil`.
     public var fetchError: String?
 
+    /// `true` when the verdict is `.blocked`.
+    public var isBlocked: Bool {
+        if case .blocked = verdict { return true }
+        return false
+    }
+
+    /// `true` when the verdict is `.blocked` and includes an update URL.
+    public var canOpenUpdateURL: Bool {
+        if case .blocked(_, _, let url) = verdict { return url != nil }
+        return false
+    }
+
     /// Creates a killswitch state with default values.
     public init(
         verdict: KillswitchVerdict = .unknown,
