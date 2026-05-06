@@ -70,4 +70,10 @@ public enum KillswitchVerdict: Sendable, Equatable {
 
         return .allowed
     }
+
+    /// `true` when the verdict is `.blocked`.
+    public var isBlocked: Bool {
+        if case .blocked = self { return true }
+        return false
+    }
 }

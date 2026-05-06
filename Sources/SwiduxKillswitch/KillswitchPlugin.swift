@@ -80,17 +80,30 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
         case .fetch:
             let service = self.service
             let appVersion = self.appVersion()
+            let lastFetch = state.lastFetch
             return { send in
-                do {
-                    let config = try await service.fetch()
-                    service.saveCached(config)
+                if let lastFetch,
+                    Date().timeIntervalSince(lastFetch) < service.cacheLifetime,
+                    let cached = service.loadCached()
+                {
                     let verdict = KillswitchVerdict.evaluate(
-                        config, against: appVersion
+                        cached, against: appVersion
                     )
                     await send(.verdictReceived(verdict))
-                } catch {
-                    await send(.fetchFailed(error.localizedDescription))
+                    return
                 }
+                await Self.fetchFromNetwork(
+                    service: service, appVersion: appVersion, send: send
+                )
+            }
+
+        case .forceFetch:
+            let service = self.service
+            let appVersion = self.appVersion()
+            return { send in
+                await Self.fetchFromNetwork(
+                    service: service, appVersion: appVersion, send: send
+                )
             }
 
         case .verdictReceived(let verdict):
@@ -109,5 +122,28 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             return { _ in await openURL(url) }
         }
         return nil
+    }
+
+    nonisolated private static func fetchFromNetwork(
+        service: KillswitchService,
+        appVersion: String,
+        send: @escaping Send<KillswitchAction>
+    ) async {
+        do {
+            let config = try await service.fetch()
+            service.saveCached(config)
+            let verdict = KillswitchVerdict.evaluate(
+                config, against: appVersion
+            )
+            await send(.verdictReceived(verdict))
+        } catch {
+            if let cached = service.loadCached() {
+                let verdict = KillswitchVerdict.evaluate(
+                    cached, against: appVersion
+                )
+                await send(.verdictReceived(verdict))
+            }
+            await send(.fetchFailed(error.localizedDescription))
+        }
     }
 }
