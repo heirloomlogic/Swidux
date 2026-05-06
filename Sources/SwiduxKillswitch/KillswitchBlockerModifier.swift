@@ -48,13 +48,6 @@ struct KillswitchBlockerModifier<Blocker: View>: ViewModifier {
     }
 }
 
-private extension KillswitchVerdict {
-    var isBlocked: Bool {
-        if case .blocked = self { return true }
-        return false
-    }
-}
-
 struct KillswitchBlockerView: View {
     let title: String?
     let message: String?

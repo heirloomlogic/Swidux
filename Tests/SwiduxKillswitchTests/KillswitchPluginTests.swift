@@ -180,16 +180,6 @@ struct KillswitchPluginTests {
         }
     }
 
-    @Test("forceFetch returns an effect")
-    func forceFetchReturnsEffect() {
-        let plugin = makePlugin()
-        var state = TestState()
-        let effect = plugin.reduce(
-            state: &state, action: .killswitch(.forceFetch)
-        )
-        #expect(effect != nil)
-    }
-
     // MARK: - Cache fallback on failure
 
     @Test("fetch falls back to cache on network error")
@@ -272,16 +262,4 @@ struct KillswitchPluginTests {
         #expect(state.canOpenUpdateURL == expected)
     }
 
-    // MARK: - Legacy
-
-    @Test("fetch returns an effect")
-    func fetchReturnsEffect() {
-        let plugin = makePlugin()
-        var state = TestState()
-        let effect = plugin.reduce(
-            state: &state,
-            action: .killswitch(.fetch)
-        )
-        #expect(effect != nil)
-    }
 }

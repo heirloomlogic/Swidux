@@ -17,10 +17,7 @@ public struct KillswitchState: Sendable, Equatable {
     public var fetchError: String?
 
     /// `true` when the verdict is `.blocked`.
-    public var isBlocked: Bool {
-        if case .blocked = verdict { return true }
-        return false
-    }
+    public var isBlocked: Bool { verdict.isBlocked }
 
     /// `true` when the verdict is `.blocked` and includes an update URL.
     public var canOpenUpdateURL: Bool {
