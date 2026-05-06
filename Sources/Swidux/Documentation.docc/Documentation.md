@@ -1,6 +1,6 @@
 # ``Swidux``
 
-Redux-style state management for SwiftUI with built-in persistence.
+Redux-style state management for SwiftUI, with macros for observability and ready-made plugins for persistence, undo, paywalls, version killswitches, and parental gates.
 
 @Metadata {
     @DisplayName("Swidux")
@@ -8,81 +8,74 @@ Redux-style state management for SwiftUI with built-in persistence.
 
 ## Overview
 
-Swidux is a persistence middleware layer for apps that use unidirectional data flow. Reducers mutate state, and the middleware detects what changed and persists it. You don't write save calls, load/loaded action pairs, or persistence code in features.
+Swidux is a Redux-style state-management library for SwiftUI. State lives in one observable store, mutations go through reducers, and side effects run as async effects. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Three optional plugins ship ready-made paywalls (RevenueCat or StoreKit-shaped), version killswitches, and parental gates.
+
+The dispatch cycle:
 
 ```
 View → store.send(.action)
-  → Reducer mutates state (EntityStore tracks changes silently)
-  → PersistencePlugin drains changelogs from EntityStores
-  → StateWriters accumulate pending writes
-  → Debounce timer fires → batched DB writes execute
-  → View re-renders via @Observable
+  → willReduce hooks (UndoPlugin snapshots here)
+  → reducer mutates state in place, optionally returns Effect
+  → plugin reducers handle their own actions
+  → afterReduce hooks (PersistencePlugin drains EntityStore changelogs here)
+  → observer tree updates only changed properties (per-property observation)
+  → effects run on a background actor; results dispatch back via @MainActor send
 ```
 
-### Features
-
-- **``Store``** — Generic `@Observable` store with `@dynamicMemberLookup`, dispatch cycle, undo/redo, and plugin lifecycle
-- **``SwiduxObservable``** — Protocol bridging value-type state to `@Observable` class trees
-- **`@SwiduxState` / `@SwiduxNested`** — Macros that auto-generate observer classes from state structs
-- **``EntityStore``** — Ordered, keyed collection with built-in change tracking
-- **``ChangeSet``** — Tracks which entity IDs were upserted or deleted
-- **``StateWriter``** — Drains changelogs and accumulates batched persistence work
-- **``PersistencePlugin``** — Debounced orchestrator that flushes writes after each reducer call
-- **``UndoPlugin``** — Opt-in stack-based undo/redo for state snapshots
-- **``SwiduxPlugin``** — Unified extension point for the dispatch cycle
-- **``PluginHost``** — Ordered plugin registry that drives lifecycle hooks
-- **``Effect`` / ``Send``** — Generic typealiases for the async effect system
-- **``SwiduxReducer``** — Protocol enforcing the reducer contract
-- **``SwiduxDispatcher``** — Protocol enforcing the store dispatch contract
-
-Your state, actions, domain models, and DB actors live in your app. Swidux provides the contracts and persistence plumbing.
+Your domain types and database stay in your app. Swidux provides the contracts, observability, and dispatch loop.
 
 ## Topics
 
-### Essentials
+### Tutorials
 
+- <doc:BuildingYourFirstApp>
+
+### How-to Guides
+
+- <doc:HowToAddAPaywall>
+- <doc:HowToAddAVersionKillswitch>
+- <doc:HowToAddAParentalGate>
+- <doc:BuildingADomainPlugin>
+- <doc:AgentSkill>
+
+### Reference
+
+- <doc:MacrosReference>
+- <doc:PluginKillswitchReference>
+- <doc:PluginParentalGateReference>
+- <doc:PluginPaywallReference>
+- <doc:EntityStoreGuide>
+- <doc:PersistenceMiddlewareGuide>
+- <doc:UndoRedo>
 - <doc:GettingStarted>
+
+### Explanation
+
+- <doc:ArchitectureGuide>
+- <doc:PluginArchitecture>
 - <doc:DesignPrinciples>
 
 ### Store
 
 - ``Store``
 - ``SwiduxObservable``
+- ``SwiduxReducer``
+- ``SwiduxDispatcher``
+- ``Effect``
+- ``Send``
 
 ### Data
 
 - ``EntityStore``
 - ``ChangeSet``
 
-### Persistence
+### Persistence & Undo
 
-- <doc:PersistenceMiddlewareGuide>
 - ``PersistencePlugin``
 - ``StateWriter``
-
-### Undo / Redo
-
-- <doc:UndoRedo>
 - ``UndoPlugin``
 
-### Plugins
+### Plugin Protocol
 
-- <doc:PluginArchitecture>
-- <doc:BuildingADomainPlugin>
 - ``SwiduxPlugin``
 - ``PluginHost``
-
-### Architecture
-
-- <doc:ArchitectureGuide>
-
-### Protocols & Effects
-
-- ``SwiduxReducer``
-- ``SwiduxDispatcher``
-- ``Effect``
-- ``Send``
-
-### Tools
-
-- <doc:AgentSkill>

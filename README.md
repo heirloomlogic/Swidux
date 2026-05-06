@@ -1,76 +1,146 @@
 # Swidux
 
-**Redux-style state management for SwiftUI + SwiftData.**
+**Redux-style state management for SwiftUI.** State lives in one observable store, mutations go through reducers, and side effects run as async closures. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Three optional plugins ship ready-made paywalls, version killswitches, and parental gates.
 
-Swidux is a persistence middleware layer for apps that use unidirectional data flow. Reducers mutate state, and the middleware detects what changed and persists it. You don't write save calls, load/loaded action pairs, or persistence code in features.
+## Why Swidux
 
-## Features
-
-- **Store** — Generic `@Observable` store with `@dynamicMemberLookup`, dispatch cycle, undo/redo, and plugin lifecycle
-- **@SwiduxState / @SwiduxNested** — Macros that auto-generate `@Observable` observer classes from state structs
-- **SwiduxObservable** — Protocol bridging value-type state to `@Observable` class trees
-- **EntityStore** — Ordered, keyed collection with built-in change tracking
-- **PersistencePlugin** — Debounced orchestrator that coalesces and batches DB writes
-- **UndoPlugin** — Opt-in stack-based undo/redo for state snapshots
-- **SwiduxPlugin / PluginHost** — Unified extension point and ordered registry for the dispatch cycle
-- **Effect / Send** — Generic typealiases for the async effect system
-- **SwiduxReducer / SwiduxDispatcher** — Protocols enforcing the reducer and dispatch contracts
+- **Predictable mutations.** Reducers are pure and synchronous. Async work is explicit, off the MainActor, and dispatches results back through actions.
+- **No observer-class boilerplate.** `@SwiduxState` writes the `@Observable` companion class for you. SwiftUI gets per-property observation without hand-maintained class trees.
+- **Persistence is invisible.** `EntityStore` tracks every change; `PersistencePlugin` debounces and batches them. You never write `save()` in a feature.
+- **Batteries included.** Undo/redo, version killswitches, parental gates, and RevenueCat-shaped paywalls are one `plugins.register(...)` away.
+- **Strict-concurrency-native.** Built for Swift 6 from the ground up. `Sendable`, `@MainActor`, and `@concurrent` are wired into the dispatch cycle so your app composes safely with async/await and SwiftData.
 
 ## Installation
 
-**Xcode:** File > Add Package Dependencies, paste `https://github.com/heirloomlogic/Swidux`, set **Up to Next Major** from `1.0.0`.
+**Xcode.** File > Add Package Dependencies, paste `https://github.com/heirloomlogic/Swidux`, set **Up to Next Major** from `1.0.0`. Add the products you need:
 
-**Package.swift:**
+- `Swidux` — core
+- `SwiduxKillswitch` — version-blocking plugin (optional)
+- `SwiduxParentalGate` — math-challenge gate plugin (optional)
+- `SwiduxPaywall` — paywall + entitlement plugin (optional)
+
+**Package.swift.**
 
 ```swift
-dependencies: [
-    .package(url: "https://github.com/heirloomlogic/Swidux", from: "1.0.0"),
-]
+.package(url: "https://github.com/heirloomlogic/Swidux", from: "1.0.0"),
 ```
 
-## Quick Start
+```swift
+.product(name: "Swidux", package: "Swidux"),
+.product(name: "SwiduxPaywall", package: "Swidux"),     // optional
+.product(name: "SwiduxKillswitch", package: "Swidux"),  // optional
+.product(name: "SwiduxParentalGate", package: "Swidux"),// optional
+```
+
+## Quickstart
+
+The shape of a Swidux app, condensed:
 
 ```swift
+import SwiftUI
+@_exported import Swidux
+
 @SwiduxState
-struct AppState: Equatable, Sendable {
-    var items = EntityStore<Item>()
-    @SwiduxNested var ui = UIState()
+nonisolated struct AppState: Equatable, Sendable {
+    var counters: EntityStore<Counter> = .init()
+}
+
+enum AppAction: Sendable {
+    case increment(UUID)
 }
 
 typealias AppStore = Store<AppState, AppAction>
 
 extension Store where State == AppState, Action == AppAction {
     static func configured() -> AppStore {
-        let plugins = PluginHost<AppState, AppAction>()
-        plugins.register(persistencePlugin)
-        return Store(
-            initialState: AppState(),
-            reducer: { state, action in
-                AppReducer().reduce(state: &state, action: action, environment: .live())
-            },
-            plugins: plugins,
-            persistencePlugin: persistencePlugin
-        )
+        Store(initialState: AppState(), reducer: { state, action in
+            if case .increment(let id) = action {
+                state.counters.modify(id) { $0.count += 1 }
+            }
+            return nil
+        })
     }
 }
 ```
 
-Views dispatch actions and read from the store. They never import Swidux or touch the database.
+Walk through a complete counter app — actions, reducer, plugins, views, undo, async effects — in [Build Your First Swidux App](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingyourfirstapp). The runnable version of that tutorial lives at [`Examples/Counter/`](Examples/Counter/).
+
+## Plugins
+
+Three optional plugins ship as separate library targets. Wire any of them with three keypath/closure pieces and a `plugins.register(...)` call.
+
+### Killswitch
+
+Block users on outdated app versions by checking remote config (`minimumSupportedVersion`, `blockedVersions`, `blockedRanges`) against the current `CFBundleShortVersionString`. Cache-aware (`.fetch` uses the local cache when fresh; `.forceFetch` always hits the network), with cached fallback on network failure so a flaky launch still yields a usable verdict. Drop in the `killswitchBlocker(verdict:onUpdate:)` view modifier and the blocker overlays automatically when blocked. See [Add a Version Killswitch](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddaversionkillswitch).
+
+```swift
+plugins.register(KillswitchPlugin(state: \.killswitch, action: AppAction.killswitch, extractAction: { if case .killswitch(let a) = $0 { return a }; return nil }, service: .live(endpoint: configURL), appVersion: { Bundle.main.shortVersion }))
+```
+
+### Parental gate
+
+Guard sensitive actions (purchases, settings changes, leaving kids mode) behind a math challenge. Passed reasons are remembered for the session — once `"purchase"` clears, subsequent `.request(reason: "purchase")` auto-pass. Plug in custom challenge generators via `ParentalChallengeSource`. See [Add a Parental Gate](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddaparentalgate).
+
+```swift
+plugins.register(ParentalGatePlugin(state: \.parentalGate, action: AppAction.parentalGate, extractAction: { if case .parentalGate(let a) = $0 { return a }; return nil }))
+```
+
+### Paywall
+
+Manage paywall presentation, entitlement observation, and purchase restoration. The plugin is purchase-agnostic — it doesn't know about products or prices. You implement a `PaywallService` against RevenueCat, StoreKit, or a custom backend; the plugin handles state. Check `store.paywall.isGateSatisfied` before running a pro feature. See [Add a Paywall](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddapaywall).
+
+```swift
+plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extractAction: { if case .paywall(let a) = $0 { return a }; return nil }, service: RevenueCatPaywallService()))
+```
+
+## Macros
+
+`@SwiduxState` and `@SwiduxNested` eliminate the observer-class boilerplate that would otherwise sit between your value-type state and SwiftUI's `@Observable` requirement.
+
+```swift
+// Before — you'd hand-write an @Observable class mirroring AppState plus
+// a SwiduxObservable conformance with pack/unpack/restore methods.
+
+// After:
+@SwiduxState
+nonisolated struct AppState: Equatable, Sendable {
+    var items: EntityStore<Item> = .init()
+    @SwiduxNested var ui: UIState = .init()
+}
+```
+
+The macros emit an `AppStateObserver` class and a `SwiduxObservable` extension. `@SwiduxNested` ensures composed state slices keep per-property observation. See [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference).
 
 ## Documentation
 
-Full documentation is available as [DocC articles](https://heirloomlogic.github.io/Swidux/documentation/swidux/) covering:
+Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swidux/. Starting points by intent:
 
-- [Getting Started](https://heirloomlogic.github.io/Swidux/documentation/swidux/gettingstarted) — Installation, types, wiring
-- [EntityStore](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystore) — Collection API, merging, restore
-- [Persistence Middleware](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddleware) — Writers, flushing, ordering
-- [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo) — Snapshots, coalescing, platform wiring
-- [Architecture](https://heirloomlogic.github.io/Swidux/documentation/swidux/architecture) — Snapshot pattern, performance
-- [Design Principles](https://heirloomlogic.github.io/Swidux/documentation/swidux/designprinciples) — Philosophy
+- **I want to learn** — [Build Your First Swidux App](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingyourfirstapp)
+- **I want to add a paywall / killswitch / parental gate** — the three how-tos linked above
+- **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Middleware Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
+- **I want to understand the design** — [Architecture Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/architectureguide), [Plugin Architecture](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginarchitecture), [Design Principles](https://heirloomlogic.github.io/Swidux/documentation/swidux/designprinciples)
+- **I want to write my own plugin** — [Building a Domain Plugin](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingadomainplugin)
 
-## Agent Skill
+## Installing the agent skill
 
-Swidux provides a companion agent skill (`swidux-ref`) for AI coding assistants like [Claude Code](https://claude.ai/claude-code). The skill contains architecture rules, conventions, and code templates for generating correct Swidux code. It is auto-discovered by Claude Code in projects that depend on Swidux. See the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article for details.
+Swidux ships an AI-assistant skill at `.claude/skills/swidux-ref/` containing the architecture rules and copy-pasteable code templates. Claude Code does **not** auto-discover skills inside Swift Package dependencies — you have to install it explicitly.
+
+**Personal install (all your projects):**
+
+```bash
+git clone https://github.com/heirloomlogic/Swidux ~/code/Swidux
+ln -s ~/code/Swidux/.claude/skills/swidux-ref ~/.claude/skills/swidux-ref
+```
+
+**Project install (commit for the team):**
+
+```bash
+mkdir -p .claude/skills
+cp -R path/to/Swidux/.claude/skills/swidux-ref .claude/skills/
+git add .claude/skills/swidux-ref
+```
+
+For other AI assistants, point your context at `swidux-ref/SKILL.md` and `swidux-ref/swidux-patterns.md`. See the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article for details.
 
 ## Requirements
 
