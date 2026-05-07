@@ -62,53 +62,64 @@ case .paywall:
     return nil
 ```
 
-## Step 3: Implement a `PaywallService`
+## Step 3: Provide a `PaywallService`
 
-The plugin needs a `PaywallService` conformer that talks to your purchase backend. Below is a skeleton for a RevenueCat-backed implementation; replace the commented-out calls with real SDK calls in your project.
+The plugin needs a `PaywallService` conformer that talks to your purchase backend. Pick the path that matches your backend.
+
+### Path A: RevenueCat (recommended)
+
+Add the [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) companion package and use the supplied `RevenueCatPaywallService`. No bridging code on your side.
+
+```swift
+.package(url: "https://github.com/heirloomlogic/SwiduxRevenueCatPaywall", from: "1.0.0"),
+```
+
+```swift
+import SwiduxRevenueCatPaywall
+
+let service = RevenueCatPaywallService()
+```
+
+The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin. See its README for configuration (API key, entitlement identifiers).
+
+### Path B: StoreKit or custom backend
+
+For any non-RevenueCat backend, implement `PaywallService` directly. The protocol is small:
 
 ```swift
 import SwiduxPaywall
-// import RevenueCat
 
-struct RevenueCatPaywallService: PaywallService {
+struct MyPaywallService: PaywallService {
     func customerInfo() async throws -> EntitlementSnapshot {
-        // let info = try await Purchases.shared.customerInfo()
-        // return snapshot(from: info)
+        // Fetch the current entitlement once.
         return EntitlementSnapshot()
     }
 
     func customerInfoStream() -> AsyncStream<EntitlementSnapshot> {
         AsyncStream { continuation in
-            // let task = Task {
-            //     for await info in Purchases.shared.customerInfoStream {
-            //         continuation.yield(snapshot(from: info))
-            //     }
-            //     continuation.finish()
-            // }
-            // continuation.onTermination = { _ in task.cancel() }
+            // Yield a new snapshot each time the entitlement changes.
+            // Call continuation.finish() when the source ends.
         }
     }
 
     func restorePurchases() async throws -> EntitlementSnapshot {
-        // let info = try await Purchases.shared.restorePurchases()
-        // return snapshot(from: info)
+        // Run a restore against the user's account and return the result.
         return EntitlementSnapshot()
     }
-
-    // private func snapshot(from info: CustomerInfo) -> EntitlementSnapshot {
-    //     EntitlementSnapshot(
-    //         isPro: info.entitlements["pro"]?.isActive == true,
-    //         hasPermanentLicense: info.entitlements["lifetime"]?.isActive == true
-    //     )
-    // }
 }
 ```
 
-For previews and tests, use the built-in `MockPaywallService`:
+A vanilla StoreKit conformer iterates `Transaction.currentEntitlements` and listens to `Transaction.updates`; a custom server conformer hits whatever endpoint reports the user's entitlement.
+
+### Previews and tests
+
+Use the built-in `MockPaywallService` for backend-agnostic previews:
 
 ```swift
 let service = MockPaywallService(isPro: true)
 ```
+
+If you're on Path A, `SwiduxRevenueCatPaywall` also ships `MockRevenueCatPaywallService` for RevenueCat-flavored previews.
 
 ## Step 4: Wire the plugin
 

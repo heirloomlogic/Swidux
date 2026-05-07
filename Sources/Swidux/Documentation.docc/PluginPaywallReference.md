@@ -15,6 +15,16 @@ For end-to-end wiring, see <doc:HowToAddAPaywall>. For where this plugin sits in
 
 Add the product to your target dependencies in `Package.swift` alongside `Swidux`.
 
+## Provided implementations
+
+The plugin ships with `MockPaywallService` for previews and tests. For production RevenueCat integrations, the [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) companion package provides:
+
+- `RevenueCatPaywallService` — a `PaywallService` conformer that bridges RevenueCat's `CustomerInfo` stream and `restorePurchases()` API.
+- `MockRevenueCatPaywallService` — a RevenueCat-flavored mock for previews.
+- `SwiduxRevenueCatPaywallUI` — a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin.
+
+For other backends (StoreKit, custom server), implement `PaywallService` directly — see <doc:HowToAddAPaywall> Step 3, Path B.
+
 ## Types
 
 ### `PaywallPlugin<RootState, RootAction>`
