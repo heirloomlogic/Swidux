@@ -102,7 +102,10 @@ struct KillswitchPluginTests {
         let config = KillswitchConfig(minimumSupportedVersion: "0.5.0")
         await confirmation("network not called", expectedCount: 0) { networkCall in
             let service = KillswitchService.mock(
-                result: { networkCall(); return KillswitchConfig() },
+                result: {
+                    networkCall()
+                    return KillswitchConfig()
+                },
                 cached: config,
                 cacheLifetime: 3600
             )
@@ -115,7 +118,8 @@ struct KillswitchPluginTests {
             )
             let actions = await collectActions(from: effect)
             #expect(actions.count == 1)
-            if case .verdictReceived(.allowed) = actions.first {} else {
+            if case .verdictReceived(.allowed) = actions.first {
+            } else {
                 Issue.record("Expected verdictReceived(.allowed), got \(actions)")
             }
         }
@@ -126,7 +130,10 @@ struct KillswitchPluginTests {
         let config = KillswitchConfig()
         await confirmation("network called") { networkCall in
             let service = KillswitchService.mock(
-                result: { networkCall(); return config },
+                result: {
+                    networkCall()
+                    return config
+                },
                 cached: config,
                 cacheLifetime: 60
             )
@@ -145,7 +152,10 @@ struct KillswitchPluginTests {
     func fetchHitsNetworkWhenNoPriorFetch() async {
         await confirmation("network called") { networkCall in
             let service = KillswitchService.mock(
-                result: { networkCall(); return KillswitchConfig() },
+                result: {
+                    networkCall()
+                    return KillswitchConfig()
+                },
                 cacheLifetime: 3600
             )
             let plugin = makePlugin(service: service)
@@ -165,7 +175,10 @@ struct KillswitchPluginTests {
         let config = KillswitchConfig()
         await confirmation("network called") { networkCall in
             let service = KillswitchService.mock(
-                result: { networkCall(); return config },
+                result: {
+                    networkCall()
+                    return config
+                },
                 cached: config,
                 cacheLifetime: 3600
             )
@@ -199,10 +212,12 @@ struct KillswitchPluginTests {
         let actions = await collectActions(from: effect)
 
         #expect(actions.count == 2)
-        if case .verdictReceived(.blocked) = actions.first {} else {
+        if case .verdictReceived(.blocked) = actions.first {
+        } else {
             Issue.record("Expected verdictReceived(.blocked), got \(actions)")
         }
-        if case .fetchFailed = actions.last {} else {
+        if case .fetchFailed = actions.last {
+        } else {
             Issue.record("Expected fetchFailed, got \(actions)")
         }
     }
@@ -223,7 +238,8 @@ struct KillswitchPluginTests {
         let actions = await collectActions(from: effect)
 
         #expect(actions.count == 1)
-        if case .fetchFailed = actions.first {} else {
+        if case .fetchFailed = actions.first {
+        } else {
             Issue.record("Expected fetchFailed, got \(actions)")
         }
     }
@@ -261,5 +277,4 @@ struct KillswitchPluginTests {
         let state = KillswitchState(verdict: verdict)
         #expect(state.canOpenUpdateURL == expected)
     }
-
 }
