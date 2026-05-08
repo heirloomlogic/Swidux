@@ -81,7 +81,6 @@ struct PersistencePluginTests {
                 let entity = TestEntity(name: "Entity \(i)")
                 state.items[entity.id] = entity
                 plugin.afterReduce(state: &state, action: .noOp)
-                try? await Task.sleep(for: .milliseconds(10))
             }
 
             // Wait for the single debounced flush — generous margin for slow CI runners
