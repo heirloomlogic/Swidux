@@ -215,7 +215,8 @@ struct PaywallPluginTests {
 
         let actions = await collectActions(from: effect)
         #expect(actions.count == 1)
-        if case .refreshCustomerInfo = actions.first {} else {
+        if case .refreshCustomerInfo = actions.first {
+        } else {
             Issue.record("Expected refreshCustomerInfo, got \(actions)")
         }
     }
