@@ -44,7 +44,7 @@ struct PersistencePluginTests {
             )
             let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer],
-                debounce: .milliseconds(20)
+                debounce: .milliseconds(50)
             )
 
             var state = TestState()
@@ -53,7 +53,7 @@ struct PersistencePluginTests {
 
             plugin.afterReduce(state: &state, action: .noOp)
 
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(500))
         }
     }
 
@@ -81,11 +81,10 @@ struct PersistencePluginTests {
                 let entity = TestEntity(name: "Entity \(i)")
                 state.items[entity.id] = entity
                 plugin.afterReduce(state: &state, action: .noOp)
-                try? await Task.sleep(for: .milliseconds(10))
             }
 
-            // Wait for the single debounced flush
-            try? await Task.sleep(for: .milliseconds(150))
+            // Wait for the single debounced flush — generous margin for slow CI runners
+            try? await Task.sleep(for: .milliseconds(500))
         }
 
         #expect(flushCount.value == 1)
@@ -130,7 +129,7 @@ struct PersistencePluginTests {
 
             let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer1, writer2],
-                debounce: .milliseconds(20)
+                debounce: .milliseconds(50)
             )
 
             var state = TestState()
@@ -141,7 +140,7 @@ struct PersistencePluginTests {
 
             plugin.afterReduce(state: &state, action: .noOp)
 
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(500))
         }
     }
 

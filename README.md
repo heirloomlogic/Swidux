@@ -87,11 +87,15 @@ plugins.register(ParentalGatePlugin(state: \.parentalGate, action: AppAction.par
 
 ### Paywall
 
-Manage paywall presentation, entitlement observation, and purchase restoration. The plugin is purchase-agnostic — it doesn't know about products or prices. You implement a `PaywallService` against RevenueCat, StoreKit, or a custom backend; the plugin handles state. Check `store.paywall.isGateSatisfied` before running a pro feature. See [Add a Paywall](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddapaywall).
+Manage paywall presentation, entitlement observation, and purchase restoration. The plugin is purchase-agnostic — it doesn't know about products or prices. You implement a `PaywallService` against StoreKit, RevenueCat, or a custom backend; the plugin handles state. For RevenueCat, drop in the ready-made adapter from [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — it ships `RevenueCatPaywallService` and a SwiftUI sheet built on RevenueCatUI. Check `store.paywall.isGateSatisfied` before running a pro feature. See [Add a Paywall](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddapaywall).
 
 ```swift
 plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extractAction: { if case .paywall(let a) = $0 { return a }; return nil }, service: RevenueCatPaywallService()))
 ```
+
+### Companion packages
+
+- [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — RevenueCat adapter for `SwiduxPaywall`. Ships `RevenueCatPaywallService` (drop-in `PaywallService`), a mock for previews, and a SwiftUI sheet built on RevenueCatUI.
 
 ## Macros
 

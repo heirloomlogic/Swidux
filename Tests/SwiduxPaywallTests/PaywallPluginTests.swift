@@ -5,6 +5,7 @@
 //  Tests for the PaywallPlugin reducer.
 //
 
+import Foundation
 import Swidux
 import Testing
 
@@ -23,7 +24,8 @@ struct PaywallPluginTests {
     }
 
     func makePlugin(
-        service: any PaywallService = MockPaywallService()
+        service: any PaywallService = MockPaywallService(),
+        openURL: @escaping @Sendable (URL) async -> Void = { _ in }
     ) -> PaywallPlugin<TestState, TestAction> {
         PaywallPlugin(
             state: \.paywall,
@@ -33,9 +35,24 @@ struct PaywallPluginTests {
                 return nil
             },
             service: service,
-            openURL: { _ in }
+            openURL: openURL
         )
     }
+
+    private func collectActions(
+        from effect: Effect<TestAction>?
+    ) async -> [PaywallAction] {
+        guard let effect else { return [] }
+        var collected: [PaywallAction] = []
+        await effect { action in
+            if case .paywall(let a) = action {
+                collected.append(a)
+            }
+        }
+        return collected
+    }
+
+    // MARK: - Reducer state transitions
 
     @Test("request presents paywall")
     func requestPresentsPaywall() {
@@ -127,4 +144,262 @@ struct PaywallPluginTests {
         #expect(state.paywall.isLoading == true)
         #expect(effect != nil)
     }
+
+    @Test("presentCustomerCenter sets isCustomerCenterPresented")
+    func presentCustomerCenter() {
+        let plugin = makePlugin()
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.presentCustomerCenter)
+        )
+        #expect(effect == nil)
+        #expect(state.paywall.isCustomerCenterPresented == true)
+    }
+
+    @Test("dismissCustomerCenter clears isCustomerCenterPresented")
+    func dismissCustomerCenter() {
+        let plugin = makePlugin()
+        var state = TestState()
+        state.paywall.isCustomerCenterPresented = true
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.dismissCustomerCenter)
+        )
+        #expect(effect == nil)
+        #expect(state.paywall.isCustomerCenterPresented == false)
+    }
+
+    @Test("ignores unrelated actions")
+    func ignoresUnrelatedActions() {
+        let plugin = makePlugin()
+        var state = TestState()
+        let effect = plugin.reduce(state: &state, action: .unrelated)
+        #expect(effect == nil)
+        #expect(state == TestState())
+    }
+
+    @Test("refreshCustomerInfo sets loading and returns effect")
+    func refreshCustomerInfoSetsLoading() {
+        let plugin = makePlugin()
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.refreshCustomerInfo)
+        )
+        #expect(state.paywall.isLoading == true)
+        #expect(effect != nil)
+    }
+
+    @Test("observeCustomerInfo returns effect without changing state")
+    func observeCustomerInfoReturnsEffect() {
+        let plugin = makePlugin()
+        var state = TestState()
+        let before = state
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.observeCustomerInfo)
+        )
+        #expect(effect != nil)
+        #expect(state == before)
+    }
+
+    // MARK: - Effects: dismiss
+
+    @Test("dismiss effect dispatches refreshCustomerInfo")
+    func dismissEffectDispatchesRefresh() async {
+        let plugin = makePlugin()
+        var state = TestState()
+        state.paywall.isPresented = true
+        let effect = plugin.reduce(state: &state, action: .paywall(.dismiss))
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.count == 1)
+        if case .refreshCustomerInfo = actions.first {
+        } else {
+            Issue.record("Expected refreshCustomerInfo, got \(actions)")
+        }
+    }
+
+    // MARK: - Effects: refreshCustomerInfo
+
+    @Test("refreshCustomerInfo success dispatches customerInfoUpdated")
+    func refreshCustomerInfoSuccess() async {
+        let service = MockPaywallService(isPro: true, hasPermanentLicense: false)
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.refreshCustomerInfo)
+        )
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.count == 1)
+        if case .customerInfoUpdated(let snapshot) = actions.first {
+            #expect(snapshot.isPro == true)
+            #expect(snapshot.hasPermanentLicense == false)
+        } else {
+            Issue.record("Expected customerInfoUpdated, got \(actions)")
+        }
+    }
+
+    @Test("refreshCustomerInfo failure dispatches refreshFailed")
+    func refreshCustomerInfoFailure() async {
+        let service = ThrowingPaywallService(error: TestError.boom)
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.refreshCustomerInfo)
+        )
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.count == 1)
+        if case .refreshFailed(let message) = actions.first {
+            #expect(message.isEmpty == false)
+        } else {
+            Issue.record("Expected refreshFailed, got \(actions)")
+        }
+    }
+
+    // MARK: - Effects: restorePurchases
+
+    @Test("restorePurchases success dispatches customerInfoUpdated")
+    func restorePurchasesSuccess() async {
+        let service = MockPaywallService(isPro: false, hasPermanentLicense: true)
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.restorePurchases)
+        )
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.count == 1)
+        if case .customerInfoUpdated(let snapshot) = actions.first {
+            #expect(snapshot.isPro == false)
+            #expect(snapshot.hasPermanentLicense == true)
+        } else {
+            Issue.record("Expected customerInfoUpdated, got \(actions)")
+        }
+    }
+
+    @Test("restorePurchases failure dispatches refreshFailed")
+    func restorePurchasesFailure() async {
+        let service = ThrowingPaywallService(error: TestError.boom)
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.restorePurchases)
+        )
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.count == 1)
+        if case .refreshFailed(let message) = actions.first {
+            #expect(message.isEmpty == false)
+        } else {
+            Issue.record("Expected refreshFailed, got \(actions)")
+        }
+    }
+
+    // MARK: - Effects: observeCustomerInfo
+
+    @Test("observeCustomerInfo emits one customerInfoUpdated per stream value")
+    func observeCustomerInfoStreamsUpdates() async {
+        let snapshots = [
+            EntitlementSnapshot(isPro: false),
+            EntitlementSnapshot(isPro: true),
+            EntitlementSnapshot(isPro: true, hasPermanentLicense: true),
+        ]
+        let service = StreamingPaywallService(snapshots: snapshots)
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.observeCustomerInfo)
+        )
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.count == snapshots.count)
+        let received = actions.compactMap { action -> EntitlementSnapshot? in
+            if case .customerInfoUpdated(let snapshot) = action { return snapshot }
+            return nil
+        }
+        #expect(received == snapshots)
+    }
+
+    @Test("observeCustomerInfo finishes cleanly when stream is empty")
+    func observeCustomerInfoEmptyStream() async {
+        let plugin = makePlugin(service: MockPaywallService())
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.observeCustomerInfo)
+        )
+
+        let actions = await collectActions(from: effect)
+        #expect(actions.isEmpty)
+    }
+
+    // MARK: - Effects: openManageSubscriptions
+
+    @Test("openManageSubscriptions opens the App Store subscriptions URL")
+    func openManageSubscriptionsCallsOpenURL() async {
+        let captured = URLCaptureBox()
+        let plugin = makePlugin(openURL: { url in await captured.record(url) })
+        var state = TestState()
+        let effect = plugin.reduce(
+            state: &state,
+            action: .paywall(.openManageSubscriptions)
+        )
+        _ = await collectActions(from: effect)
+
+        let urls = await captured.urls
+        #expect(urls.count == 1)
+        #expect(urls.first?.absoluteString == "itms-apps://apps.apple.com/account/subscriptions")
+    }
+}
+
+// MARK: - Test fixtures
+
+private enum TestError: Error {
+    case boom
+}
+
+private struct ThrowingPaywallService: PaywallService {
+    let error: any Error
+
+    func customerInfo() async throws -> EntitlementSnapshot { throw error }
+    func customerInfoStream() -> AsyncStream<EntitlementSnapshot> {
+        AsyncStream { $0.finish() }
+    }
+    func restorePurchases() async throws -> EntitlementSnapshot { throw error }
+}
+
+private struct StreamingPaywallService: PaywallService {
+    let snapshots: [EntitlementSnapshot]
+
+    func customerInfo() async throws -> EntitlementSnapshot {
+        snapshots.last ?? EntitlementSnapshot()
+    }
+
+    func customerInfoStream() -> AsyncStream<EntitlementSnapshot> {
+        let snapshots = self.snapshots
+        return AsyncStream { continuation in
+            for snapshot in snapshots {
+                continuation.yield(snapshot)
+            }
+            continuation.finish()
+        }
+    }
+
+    func restorePurchases() async throws -> EntitlementSnapshot {
+        snapshots.last ?? EntitlementSnapshot()
+    }
+}
+
+private actor URLCaptureBox {
+    private(set) var urls: [URL] = []
+    func record(_ url: URL) { urls.append(url) }
 }

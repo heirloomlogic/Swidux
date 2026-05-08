@@ -266,12 +266,12 @@ struct StoreTests {
 
         let entity = TestEntity(name: "Tracked")
         store.send(.insert(entity))
-        try await Task.sleep(for: .milliseconds(50))
+        await persistencePlugin.flush()
 
         await collector.reset()
 
         store.undo()
-        try await Task.sleep(for: .milliseconds(50))
+        await persistencePlugin.flush()
 
         let deletes = await collector.deletes
         #expect(deletes.contains(entity.id))
