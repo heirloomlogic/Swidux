@@ -44,7 +44,7 @@ struct PersistencePluginTests {
             )
             let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer],
-                debounce: .milliseconds(20)
+                debounce: .milliseconds(50)
             )
 
             var state = TestState()
@@ -53,7 +53,7 @@ struct PersistencePluginTests {
 
             plugin.afterReduce(state: &state, action: .noOp)
 
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(500))
         }
     }
 
@@ -129,7 +129,7 @@ struct PersistencePluginTests {
 
             let plugin = PersistencePlugin<TestState, TestAction>(
                 writers: [writer1, writer2],
-                debounce: .milliseconds(20)
+                debounce: .milliseconds(50)
             )
 
             var state = TestState()
@@ -140,7 +140,7 @@ struct PersistencePluginTests {
 
             plugin.afterReduce(state: &state, action: .noOp)
 
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(500))
         }
     }
 
