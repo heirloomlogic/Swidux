@@ -84,8 +84,8 @@ struct PersistencePluginTests {
                 try? await Task.sleep(for: .milliseconds(10))
             }
 
-            // Wait for the single debounced flush
-            try? await Task.sleep(for: .milliseconds(150))
+            // Wait for the single debounced flush — generous margin for slow CI runners
+            try? await Task.sleep(for: .milliseconds(500))
         }
 
         #expect(flushCount.value == 1)
