@@ -3,3 +3,9 @@
 .swiftpm/
 Package.resolved
 xcuserdata/
+
+# SPM build-tool plugin artifacts that leak out of .build/ into the package root
+_swift_format_probe.*
+resource_bundle_accessor.*
+*.swiftdeps
+*.dia
