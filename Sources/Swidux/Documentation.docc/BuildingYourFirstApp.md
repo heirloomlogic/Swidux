@@ -19,7 +19,7 @@ A small macOS/iOS app with:
 
 ## What you'll learn
 
-- Defining state with `@SwiduxState` and `@SwiduxNested`.
+- Defining state with `@Swidux` and `@Slice`.
 - Designing actions as nested enums.
 - Writing reducers that mutate state via `inout`.
 - Returning effects for async work.
@@ -55,7 +55,7 @@ nonisolated struct Counter: Identifiable, Equatable, Sendable {
 
 ## Step 3: Define the state
 
-There are two state slices: a collection of counters, and a UI slice that tracks which counter is selected. Both get `@SwiduxState`. The parent uses `@SwiduxNested` on the UI slice so the macro wires it as a separate observer instead of an opaque leaf — see <doc:MacrosReference> for the why.
+There are two state slices: a collection of counters, and a UI slice that tracks which counter is selected. Both get `@Swidux`. The parent uses `@Slice` on the UI slice so the macro wires it as a separate observer instead of an opaque leaf — see <doc:MacrosReference> for the why.
 
 This file is the one place you import Swidux. Re-export it so no other file has to.
 
@@ -64,10 +64,10 @@ This file is the one place you import Swidux. Re-export it so no other file has 
 import Foundation
 @_exported import Swidux
 
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
     var counters: EntityStore<Counter> = .init()
-    @SwiduxNested var ui: UIState = .init()
+    @Slice var ui: UIState = .init()
 
     init(counters: EntityStore<Counter> = EntityStore(), ui: UIState = UIState()) {
         self.counters = counters
@@ -75,7 +75,7 @@ nonisolated struct AppState: Equatable, Sendable {
     }
 }
 
-@SwiduxState
+@Swidux
 nonisolated struct UIState: Equatable, Sendable {
     var selectedCounterID: UUID? = nil
 }
@@ -431,6 +431,6 @@ The async increment shows the round trip. A button click dispatches `.counter(.i
 - <doc:HowToAddAPaywall> — gate features behind a subscription.
 - <doc:HowToAddAVersionKillswitch> — force-update unsupported app versions.
 - <doc:HowToAddAParentalGate> — block underage purchases.
-- <doc:MacrosReference> — full reference for `@SwiduxState` and `@SwiduxNested`.
+- <doc:MacrosReference> — full reference for `@Swidux` and `@Slice`.
 - <doc:ArchitectureGuide> — the snapshot/observer pattern and its performance characteristics.
 - <doc:PluginArchitecture> — write your own plugin.

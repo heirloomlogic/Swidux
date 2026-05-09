@@ -6,18 +6,18 @@ import XCTest
 import SwiduxMacros
 #endif
 
-// MARK: - @SwiduxNested Marker
+// MARK: - @Slice Marker
 
-final class SwiduxNestedMacroTests: XCTestCase {
+final class SliceMacroTests: XCTestCase {
     let macros: [String: Macro.Type] = [
-        "SwiduxNested": SwiduxNestedMacro.self
+        "Slice": SliceMacro.self
     ]
 
     func testNestedGeneratesNothing() throws {
         assertMacroExpansion(
             """
             struct Parent {
-                @SwiduxNested var ui: UIState = .init()
+                @Slice var ui: UIState = .init()
             }
             """,
             expandedSource: """
@@ -30,12 +30,12 @@ final class SwiduxNestedMacroTests: XCTestCase {
     }
 }
 
-// MARK: - @SwiduxState
+// MARK: - @Swidux
 
-final class SwiduxStateMacroTests: XCTestCase {
+final class SwiduxMacroTests: XCTestCase {
     let macros: [String: Macro.Type] = [
-        "SwiduxState": SwiduxStateMacro.self,
-        "SwiduxNested": SwiduxNestedMacro.self,
+        "Swidux": SwiduxMacro.self,
+        "Slice": SliceMacro.self,
     ]
 
     // MARK: Leaf Properties
@@ -43,7 +43,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testSingleLeafProperty() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct SimpleState: Equatable, Sendable {
                 var count: Int = 0
             }
@@ -96,7 +96,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testMultipleLeafProperties() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct MultiState: Equatable, Sendable {
                 var name: String = ""
                 var age: Int = 0
@@ -167,7 +167,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testEntityStoreProperty() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct StoreState: Equatable, Sendable {
                 var items: EntityStore<Item> = .init()
             }
@@ -220,7 +220,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testMultipleEntityStores() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct MultiEntityState: Equatable, Sendable {
                 var decks: EntityStore<Deck> = .init()
                 var cards: EntityStore<Card> = .init()
@@ -283,10 +283,10 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testNestedProperty() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct ParentState: Equatable, Sendable {
                 var count: Int = 0
-                @SwiduxNested var child: ChildState = .init()
+                @Slice var child: ChildState = .init()
             }
             """,
             expandedSource: """
@@ -346,10 +346,10 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testMixedProperties_fullAppStatePattern() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct AppState: Equatable, Sendable {
                 var counters: EntityStore<Counter> = .init()
-                @SwiduxNested var ui: UIState = .init()
+                @Slice var ui: UIState = .init()
             }
             """,
             expandedSource: """
@@ -409,7 +409,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testNonStructEmitsDiagnostic() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             class BadClass {}
             """,
             expandedSource: """
@@ -417,7 +417,7 @@ final class SwiduxStateMacroTests: XCTestCase {
                 """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: "@SwiduxState can only be applied to structs",
+                    message: "@Swidux can only be applied to structs",
                     line: 1,
                     column: 1
                 )
@@ -431,7 +431,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testPropertyWithNoDefault() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             struct NoDefaultState: Equatable, Sendable {
                 var name: String
             }
@@ -484,7 +484,7 @@ final class SwiduxStateMacroTests: XCTestCase {
     func testPublicAccessControl() throws {
         assertMacroExpansion(
             """
-            @SwiduxState
+            @Swidux
             public struct PublicState: Equatable, Sendable {
                 var count: Int = 0
             }

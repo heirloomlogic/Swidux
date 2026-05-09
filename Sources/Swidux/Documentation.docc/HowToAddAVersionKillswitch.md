@@ -34,9 +34,9 @@ Mount a `KillswitchState` slice on your root state and add an action case that w
 // App/AppState.swift
 import SwiduxKillswitch
 
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
-    @SwiduxNested var killswitch: KillswitchState = .init()
+    @Slice var killswitch: KillswitchState = .init()
     // ... your other slices
 }
 ```

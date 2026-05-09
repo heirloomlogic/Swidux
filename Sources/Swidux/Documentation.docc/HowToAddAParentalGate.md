@@ -39,9 +39,9 @@ Nest a `ParentalGateState` slice on your root state, and add an action case that
 // AppState.swift
 import SwiduxParentalGate
 
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
-    @SwiduxNested var parentalGate: ParentalGateState = .init()
+    @Slice var parentalGate: ParentalGateState = .init()
     // … other slices
 }
 

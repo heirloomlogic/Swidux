@@ -1,6 +1,6 @@
 ---
 name: swidux-ref
-description: Architecture rules and code templates for Swidux — a Redux-style state-management library for SwiftUI. Use when writing Swidux apps, adding actions or reducers, wiring plugins (Persistence, Undo, Killswitch, ParentalGate, Paywall), or designing state with @SwiduxState. Activate on "Swidux", "@SwiduxState", "AppStore", "AppState", "AppReducer", "EntityStore", "PersistencePlugin", "UndoPlugin", "killswitch", "paywall", "parental gate".
+description: Architecture rules and code templates for Swidux — a Redux-style state-management library for SwiftUI. Use when writing Swidux apps, adding actions or reducers, wiring plugins (Persistence, Undo, Killswitch, ParentalGate, Paywall), or designing state with @Swidux. Activate on "Swidux", "@Swidux", "AppStore", "AppState", "AppReducer", "EntityStore", "PersistencePlugin", "UndoPlugin", "killswitch", "paywall", "parental gate".
 ---
 
 # Swidux Reference
@@ -11,17 +11,17 @@ This skill captures the rules, conventions, and dispatch lifecycle. Code templat
 
 ## The 10 architecture rules
 
-### 1. State is a `nonisolated` struct annotated with `@SwiduxState`
+### 1. State is a `nonisolated` struct annotated with `@Swidux`
 
 ```swift
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
     var items: EntityStore<Item> = .init()
-    @SwiduxNested var ui: UIState = .init()
+    @Slice var ui: UIState = .init()
 }
 ```
 
-The macro emits an `@Observable` companion class (`AppStateObserver`) and a `SwiduxObservable` extension with `init(observer:)`, `makeObserver(from:)`, `apply(_:to:)`, and `applyRestore(from:to:)`. Don't hand-write the observer. Mark nested struct properties with `@SwiduxNested` so they get their own observer class for per-property observation.
+The macro emits an `@Observable` companion class (`AppStateObserver`) and a `SwiduxObservable` extension with `init(observer:)`, `makeObserver(from:)`, `apply(_:to:)`, and `applyRestore(from:to:)`. Don't hand-write the observer. Mark nested struct properties with `@Slice` so they get their own observer class for per-property observation.
 
 ### 2. Actions are `Sendable` enums, never `async` and never `throws`
 
@@ -210,7 +210,7 @@ This is the contract — plugins never assume your root types.
 | Task | Tool |
 |---|---|
 | New struct field on AppState | Just add it; macro re-runs |
-| New nested struct slice | `@SwiduxNested var slice: SliceState = .init()` |
+| New nested struct slice | `@Slice var slice: SliceState = .init()` |
 | New mutation | New `AppAction` case + reducer arm |
 | New async operation | Reducer returns an `Effect` that calls service and `await send(.someResult(…))` |
 | Persist a new entity collection | Add `EntityStore<NewEntity>` to AppState, add `StateWriter(keyPath: \.newEntities) { … }` to PersistencePlugin |
@@ -224,13 +224,13 @@ This is the contract — plugins never assume your root types.
 ## Anti-patterns
 
 - ❌ Calling `await` or `try` inside a reducer
-- ❌ Hand-writing an observer class when you could use `@SwiduxState`
+- ❌ Hand-writing an observer class when you could use `@Swidux`
 - ❌ Calling `db.save()` or other I/O from inside a reducer
 - ❌ Mutating state from inside an effect closure (effects dispatch actions, never mutate directly)
 - ❌ Owning the store with `@StateObject` (use `@State` — `Store` is `@Observable`, not `ObservableObject`)
 - ❌ Importing `Swidux` in every feature file (re-export from AppState.swift)
 - ❌ Registering `PersistencePlugin` before `UndoPlugin` (snapshot must happen before any mutation)
-- ❌ Using regular `var` for state slices that should be `@SwiduxNested` (loses per-property observation)
+- ❌ Using regular `var` for state slices that should be `@Slice` (loses per-property observation)
 - ❌ Reading from `KeyValueStore` inside a reducer (reads are for hydration only — pull values into state at startup, then observe state)
 - ❌ Touching `UserDefaults.standard` directly anywhere in app code (use `KeyValueStore` so tests can inject `InMemoryKeyValueStore`)
 

@@ -27,15 +27,15 @@ Re-export Swidux from `AppState.swift` so no other file needs `import Swidux`:
 import Foundation
 @_exported import Swidux
 
-@SwiduxState
+@Swidux
 struct AppState: Equatable, Sendable {
     var items = EntityStore<Item>()
     var tags  = EntityStore<Tag>()
-    @SwiduxNested var ui = UIState()
+    @Slice var ui = UIState()
 }
 ```
 
-`@SwiduxState` generates an `@Observable` companion class and `SwiduxObservable` conformance. `@SwiduxNested` marks nested state slices that get their own observer class for per-property observation granularity.
+`@Swidux` generates an `@Observable` companion class and `SwiduxObservable` conformance. `@Slice` marks nested state slices that get their own observer class for per-property observation granularity.
 
 Specialize the generic effect system with your action type:
 
