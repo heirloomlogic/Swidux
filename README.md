@@ -5,7 +5,7 @@
 ## Why Swidux
 
 - **Predictable mutations.** Reducers are pure and synchronous. Async work is explicit, off the MainActor, and dispatches results back through actions.
-- **No observer-class boilerplate.** `@SwiduxState` writes the `@Observable` companion class for you. SwiftUI gets per-property observation without hand-maintained class trees.
+- **No observer-class boilerplate.** `@Swidux` writes the `@Observable` companion class for you. SwiftUI gets per-property observation without hand-maintained class trees.
 - **Persistence is invisible.** `EntityStore` tracks every change; `PersistencePlugin` debounces and batches them. You never write `save()` in a feature. Scalar preferences (theme, sort order) get a separate testable abstraction — `KeyValueStore` — instead of reaching for `UserDefaults.standard`.
 - **Batteries included.** Undo/redo, version killswitches, parental gates, and RevenueCat-shaped paywalls are one `plugins.register(...)` away.
 - **Strict-concurrency-native.** Built for Swift 6 from the ground up. `Sendable`, `@MainActor`, and `@concurrent` are wired into the dispatch cycle so your app composes safely with async/await and SwiftData.
@@ -40,7 +40,7 @@ The shape of a Swidux app, condensed:
 import SwiftUI
 @_exported import Swidux
 
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
     var counters: EntityStore<Counter> = .init()
 }
@@ -99,21 +99,23 @@ plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extr
 
 ## Macros
 
-`@SwiduxState` and `@SwiduxNested` eliminate the observer-class boilerplate that would otherwise sit between your value-type state and SwiftUI's `@Observable` requirement.
+`@Swidux` and `@Slice` eliminate the observer-class boilerplate that would otherwise sit between your value-type state and SwiftUI's `@Observable` requirement.
 
 ```swift
 // Before — you'd hand-write an @Observable class mirroring AppState plus
 // a SwiduxObservable conformance with pack/unpack/restore methods.
 
 // After:
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
     var items: EntityStore<Item> = .init()
-    @SwiduxNested var ui: UIState = .init()
+    @Slice var ui: UIState = .init()
 }
 ```
 
-The macros emit an `AppStateObserver` class and a `SwiduxObservable` extension. `@SwiduxNested` ensures composed state slices keep per-property observation. See [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference).
+The macros emit an `AppStateObserver` class and a `SwiduxObservable` extension. `@Slice` ensures composed state slices keep per-property observation. See [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference).
+
+> **Note for Redux users:** `@Slice` is not Redux Toolkit's `createSlice`. Swidux slices don't own reducers — `@Slice` is a structural marker for nested `@Swidux` properties so SwiftUI gets per-property observation. Apologies for the term overload; we picked it for memorability over literal equivalence.
 
 ## Documentation
 

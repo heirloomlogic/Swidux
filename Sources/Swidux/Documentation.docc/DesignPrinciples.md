@@ -10,9 +10,9 @@ Swidux's surface area looks small — a `Store`, a reducer protocol, a plugin pr
 
 State is a struct. Mutations go through `inout State`, which is predictable, snapshottable, and testable. SwiftUI observation needs an `@Observable` reference type. Reconciling these two requires a class that mirrors the struct.
 
-`@SwiduxState` generates that class for you (`<StructName>Observer`) and wires up the `SwiduxObservable` conformance that bridges the two. Don't hand-write the observer. The `pack → reduce → unpack-diff → observe` cycle is what gives you per-property re-renders without coupling reducers to a class.
+`@Swidux` generates that class for you (`<StructName>Observer`) and wires up the `SwiduxObservable` conformance that bridges the two. Don't hand-write the observer. The `pack → reduce → unpack-diff → observe` cycle is what gives you per-property re-renders without coupling reducers to a class.
 
-`@SwiduxNested` extends this to nested struct slices: each slice gets its own observer class so observation stays granular even across composition.
+`@Slice` extends this to nested struct slices: each slice gets its own observer class so observation stays granular even across composition.
 
 ## 2. Reducers are pure and synchronous
 
@@ -91,7 +91,7 @@ The store owns one job: take an action, produce a new state, run effects. Everyt
 ## Anti-patterns
 
 - ❌ `await` or `try` inside a reducer — return an effect instead.
-- ❌ Hand-writing the observer class when you could use `@SwiduxState`.
+- ❌ Hand-writing the observer class when you could use `@Swidux`.
 - ❌ Calling `db.save()` from inside a reducer — use ``StateWriter``.
 - ❌ Mutating state from inside an effect — effects dispatch actions; the reducer mutates.
 - ❌ Owning the store with `@StateObject` — use `@State` (`Store` is `@Observable`, not `ObservableObject`).

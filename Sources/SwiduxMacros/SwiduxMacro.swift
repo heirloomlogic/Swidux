@@ -3,9 +3,9 @@ import SwiftSyntax
 import SwiftSyntaxMacros
 
 /// Generates an `@Observable` companion class and `SwiduxObservable` conformance for state structs.
-public struct SwiduxStateMacro {}
+public struct SwiduxMacro {}
 
-extension SwiduxStateMacro: PeerMacro {
+extension SwiduxMacro: PeerMacro {
     /// Generates the `@Observable` observer class as a peer of the annotated struct.
     public static func expansion(
         of node: AttributeSyntax,
@@ -14,7 +14,7 @@ extension SwiduxStateMacro: PeerMacro {
     ) throws -> [DeclSyntax] {
         guard let structDecl = declaration.as(StructDeclSyntax.self) else {
             context.diagnose(
-                Diagnostic(node: node, message: SwiduxStateDiagnostic.requiresStruct))
+                Diagnostic(node: node, message: SwiduxDiagnostic.requiresStruct))
             return []
         }
 
@@ -38,7 +38,7 @@ extension SwiduxStateMacro: PeerMacro {
     }
 }
 
-extension SwiduxStateMacro: ExtensionMacro {
+extension SwiduxMacro: ExtensionMacro {
     /// Generates the `SwiduxObservable` protocol conformance extension.
     public static func expansion(
         of node: AttributeSyntax,

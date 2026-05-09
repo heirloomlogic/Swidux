@@ -14,9 +14,9 @@ The pattern exists for two reasons:
 
 1. **`@Observable` equality checking.** The `set` accessor checks `Equatable` and suppresses no-op notifications. Swift's `_modify` accessor (used by `inout`) fires notifications unconditionally. The snapshot pattern routes through `set`.
 
-2. **Cross-slice observation isolation.** The `@SwiduxState` macro generates a separate `@Observable` class for each `@SwiduxNested` property. A view reading `store.items` won't re-render when only `store.ui` changes, because they live on different observer objects.
+2. **Cross-slice observation isolation.** The `@Swidux` macro generates a separate `@Observable` class for each `@Slice` property. A view reading `store.items` won't re-render when only `store.ui` changes, because they live on different observer objects.
 
-The `@SwiduxState` macro generates the observer class tree and `SwiduxObservable` conformance automatically. Hand-written conformance is still possible for advanced cases — see ``SwiduxObservable``.
+The `@Swidux` macro generates the observer class tree and `SwiduxObservable` conformance automatically. Hand-written conformance is still possible for advanced cases — see ``SwiduxObservable``.
 
 > Note: Explicit equality guards (`if x != state.x { x = state.x }`) are unnecessary. `@Observable` already checks equality on `set`. Unconditional assignment is safe.
 

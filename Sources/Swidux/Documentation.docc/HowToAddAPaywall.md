@@ -31,15 +31,15 @@ Add the `SwiduxPaywall` product to your app target in `Package.swift`:
 
 ## Step 2: Add state and actions
 
-Add a paywall slice to `AppState` with `@SwiduxNested`, and a paywall case to `AppAction`:
+Add a paywall slice to `AppState` with `@Slice`, and a paywall case to `AppAction`:
 
 ```swift
 // AppState.swift
 import SwiduxPaywall
 
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
-    @SwiduxNested var paywall: PaywallState = .init()
+    @Slice var paywall: PaywallState = .init()
     // … other slices
 }
 ```

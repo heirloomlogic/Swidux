@@ -15,14 +15,14 @@
 /// ## Conformance
 ///
 /// ```swift
-/// @SwiduxState  // Phase 2: macro generates this automatically
+/// @Swidux
 /// struct AppState: SwiduxObservable {
 ///     var counters = EntityStore<Counter>()
 ///     var ui = UIState()
 /// }
 /// ```
 ///
-/// In Phase 1, conformance is hand-written.
+/// `@Swidux` generates this conformance automatically; hand-writing it is supported for advanced cases.
 @MainActor
 public protocol SwiduxObservable: Equatable, Sendable {
     /// The `@Observable` class (or class tree) that provides observation.

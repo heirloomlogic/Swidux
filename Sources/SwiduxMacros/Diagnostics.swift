@@ -1,6 +1,6 @@
 import SwiftDiagnostics
 
-enum SwiduxStateDiagnostic: String, DiagnosticMessage {
+enum SwiduxDiagnostic: String, DiagnosticMessage {
     case requiresStruct
 
     var severity: DiagnosticSeverity { .error }
@@ -8,7 +8,7 @@ enum SwiduxStateDiagnostic: String, DiagnosticMessage {
     var message: String {
         switch self {
         case .requiresStruct:
-            return "@SwiduxState can only be applied to structs"
+            return "@Swidux can only be applied to structs"
         }
     }
 

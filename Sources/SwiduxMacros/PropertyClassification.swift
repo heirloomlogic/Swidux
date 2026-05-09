@@ -47,7 +47,7 @@ func classifyProperties(of structDecl: StructDeclSyntax) -> [ClassifiedProperty]
             guard case .attribute(let attrSyntax) = attr,
                 let identifier = attrSyntax.attributeName.as(IdentifierTypeSyntax.self)
             else { return false }
-            return identifier.name.text == "SwiduxNested"
+            return identifier.name.text == "Slice"
         }
 
         let isEntityStore: Bool = {

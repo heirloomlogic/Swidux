@@ -7,7 +7,7 @@ Copy-pasteable templates for every layer of a Swidux app. Pair with `SKILL.md` f
 ```
 MyApp/
 ├── App/
-│   ├── AppState.swift       // @SwiduxState struct + @_exported import Swidux
+│   ├── AppState.swift       // @Swidux struct + @_exported import Swidux
 │   ├── AppAction.swift      // root AppAction enum, feature action enums
 │   ├── AppReducer.swift     // root reducer that routes to feature reducers
 │   ├── AppStore.swift       // typealias + Store.configured() factory
@@ -28,10 +28,10 @@ MyApp/
 import Foundation
 @_exported import Swidux
 
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
     var items: EntityStore<Item> = .init()
-    @SwiduxNested var ui: UIState = .init()
+    @Slice var ui: UIState = .init()
 
     init(items: EntityStore<Item> = .init(), ui: UIState = .init()) {
         self.items = items
@@ -39,7 +39,7 @@ nonisolated struct AppState: Equatable, Sendable {
     }
 }
 
-@SwiduxState
+@Swidux
 nonisolated struct UIState: Equatable, Sendable {
     var selectedItemID: UUID? = nil
 }
@@ -307,9 +307,9 @@ Add a state slice + action case, then register the plugin:
 
 ```swift
 // AppState.swift
-@SwiduxState
+@Swidux
 nonisolated struct AppState: Equatable, Sendable {
-    @SwiduxNested var killswitch: KillswitchState = .init()
+    @Slice var killswitch: KillswitchState = .init()
     // … other slices
 }
 
@@ -359,7 +359,7 @@ UI keeps a usable verdict while exposing the error.
 
 ```swift
 // AppState.swift
-@SwiduxNested var paywall: PaywallState = .init()
+@Slice var paywall: PaywallState = .init()
 
 // AppAction.swift
 case paywall(PaywallAction)
@@ -397,7 +397,7 @@ Button("Pro Feature") {
 
 ```swift
 // AppState.swift
-@SwiduxNested var parentalGate: ParentalGateState = .init()
+@Slice var parentalGate: ParentalGateState = .init()
 
 // AppAction.swift
 case parentalGate(ParentalGateAction)
