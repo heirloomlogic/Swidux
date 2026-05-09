@@ -46,6 +46,7 @@ Your domain types and database stay in your app. Swidux provides the contracts, 
 - <doc:PluginPaywallReference>
 - <doc:EntityStoreGuide>
 - <doc:PersistenceMiddlewareGuide>
+- <doc:KeyValueStoreGuide>
 - <doc:UndoRedo>
 - <doc:GettingStarted>
 
@@ -74,6 +75,13 @@ Your domain types and database stay in your app. Swidux provides the contracts, 
 - ``PersistencePlugin``
 - ``StateWriter``
 - ``UndoPlugin``
+
+### Preferences
+
+- ``KeyValueStore``
+- ``KVKey``
+- ``UserDefaultsKeyValueStore``
+- ``InMemoryKeyValueStore``
 
 ### Plugin Protocol
 

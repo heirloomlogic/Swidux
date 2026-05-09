@@ -42,5 +42,10 @@ enum TestAction: Sendable, Equatable {
 
 // MARK: - Test Environment
 
-/// Empty environment for reducer tests.
-struct TestEnvironment: Sendable {}
+/// Minimal environment for reducer tests.
+///
+/// Includes a shared `InMemoryKeyValueStore` so tests that exercise effects
+/// touching preferences can assert against the same instance.
+struct TestEnvironment: Sendable {
+    var keyValue: any KeyValueStore = InMemoryKeyValueStore()
+}
