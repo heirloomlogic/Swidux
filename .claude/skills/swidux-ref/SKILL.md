@@ -115,6 +115,35 @@ let persistencePlugin = PersistencePlugin<AppState, AppAction>(
 
 `EntityStore.modify(_:_:)`, `removeAll(where:)`, and `sort(by:)` track changes. The plugin debounces and batches them; you never call `save()` from a reducer. Reducers stay pure; persistence is observed.
 
+**Scalar preferences (UserDefaults) use a different mechanism.** `EntityStore` is for collections of identifiable entities. For one-off scalar values (theme, sort order, last-seen version), inject a `KeyValueStore` through `Environment`, declare type-safe keys on `KVKey`, hydrate state at startup, and write from effects:
+
+```swift
+extension KVKey where Value == Theme {
+    static let theme = KVKey<Theme>("theme")
+}
+
+struct AppEnvironment: Sendable {
+    var keyValue: any KeyValueStore  // production: UserDefaultsKeyValueStore()
+
+    static func live() -> Self { .init(keyValue: UserDefaultsKeyValueStore()) }
+}
+
+extension AppState {
+    static func hydrated(from store: any KeyValueStore) -> AppState {
+        AppState(theme: store.value(.theme) ?? .system)
+    }
+}
+
+// Reducer arm — no try?, no throws. Encode errors are logged + assertionFailure in DEBUG.
+case .themeChanged(let theme):
+    state.theme = theme
+    return { @Sendable _ in
+        environment.keyValue.setValue(theme, for: .theme)
+    }
+```
+
+Reads are for **hydration only** — don't read from a reducer mid-cycle. Tests inject `InMemoryKeyValueStore`. Values are JSON-encoded as `Data`, so `@AppStorage` cannot observe them (intentional — Swidux state is the source of truth).
+
 ### 9. Undo is opt-in via `UndoPlugin`
 
 ```swift
@@ -185,6 +214,7 @@ This is the contract — plugins never assume your root types.
 | New mutation | New `AppAction` case + reducer arm |
 | New async operation | Reducer returns an `Effect` that calls service and `await send(.someResult(…))` |
 | Persist a new entity collection | Add `EntityStore<NewEntity>` to AppState, add `StateWriter(keyPath: \.newEntities) { … }` to PersistencePlugin |
+| Persist a scalar preference (theme, last-seen version) | Inject `KeyValueStore` via `Environment`; hydrate at startup, write from an effect |
 | Add undo for an action | Make `isUndoable` return `true` for that case |
 | Block on app version | Wire `KillswitchPlugin` (see `swidux-patterns.md`) |
 | Gate a feature on subscription | Wire `PaywallPlugin`; check `store.paywall.isGateSatisfied` |
@@ -201,6 +231,8 @@ This is the contract — plugins never assume your root types.
 - ❌ Importing `Swidux` in every feature file (re-export from AppState.swift)
 - ❌ Registering `PersistencePlugin` before `UndoPlugin` (snapshot must happen before any mutation)
 - ❌ Using regular `var` for state slices that should be `@SwiduxNested` (loses per-property observation)
+- ❌ Reading from `KeyValueStore` inside a reducer (reads are for hydration only — pull values into state at startup, then observe state)
+- ❌ Touching `UserDefaults.standard` directly anywhere in app code (use `KeyValueStore` so tests can inject `InMemoryKeyValueStore`)
 
 ## Requirements
 

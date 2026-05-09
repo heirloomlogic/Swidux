@@ -6,7 +6,7 @@
 
 - **Predictable mutations.** Reducers are pure and synchronous. Async work is explicit, off the MainActor, and dispatches results back through actions.
 - **No observer-class boilerplate.** `@SwiduxState` writes the `@Observable` companion class for you. SwiftUI gets per-property observation without hand-maintained class trees.
-- **Persistence is invisible.** `EntityStore` tracks every change; `PersistencePlugin` debounces and batches them. You never write `save()` in a feature.
+- **Persistence is invisible.** `EntityStore` tracks every change; `PersistencePlugin` debounces and batches them. You never write `save()` in a feature. Scalar preferences (theme, sort order) get a separate testable abstraction — `KeyValueStore` — instead of reaching for `UserDefaults.standard`.
 - **Batteries included.** Undo/redo, version killswitches, parental gates, and RevenueCat-shaped paywalls are one `plugins.register(...)` away.
 - **Strict-concurrency-native.** Built for Swift 6 from the ground up. `Sendable`, `@MainActor`, and `@concurrent` are wired into the dispatch cycle so your app composes safely with async/await and SwiftData.
 
@@ -121,7 +121,7 @@ Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swid
 
 - **I want to learn** — [Build Your First Swidux App](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingyourfirstapp)
 - **I want to add a paywall / killswitch / parental gate** — the three how-tos linked above
-- **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Middleware Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
+- **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Middleware Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [KeyValueStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/keyvaluestoreguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
 - **I want to understand the design** — [Architecture Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/architectureguide), [Plugin Architecture](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginarchitecture), [Design Principles](https://heirloomlogic.github.io/Swidux/documentation/swidux/designprinciples)
 - **I want to write my own plugin** — [Building a Domain Plugin](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingadomainplugin)
 
