@@ -514,3 +514,100 @@ struct ItemReducerTests {
     }
 }
 ```
+
+## FeatureFlagsPlugin wiring
+
+Feature flags + A/B variants + remote-tunable values from one JSON wire format.
+
+### State slice
+
+```swift
+import SwiduxFeatureFlags
+
+@Swidux
+nonisolated struct AppState: Equatable, Sendable {
+    @Slice var featureFlags: FeatureFlagsState = .init()
+    // ... your other slices
+}
+```
+
+### Action case
+
+```swift
+enum AppAction: Sendable {
+    case featureFlags(FeatureFlagsAction)
+    // ...
+}
+```
+
+### Plugin registration
+
+```swift
+let kv: any KeyValueStore = UserDefaultsKeyValueStore()
+let initial = AppState(featureFlags: .hydrated(from: kv))
+let store = AppStore(initialState: initial, reducer: AppReducer())
+
+let flags = FeatureFlagsPlugin<AppState, AppAction>(
+    state: \.featureFlags,
+    action: AppAction.featureFlags,
+    extractAction: { if case .featureFlags(let a) = $0 { return a } else { return nil } },
+    service: HTTPFeatureFlagsService(url: configURL),
+    userIDKeyPath: \.session.userID,
+    refreshPolicy: .automatic,
+    keyValueStore: kv,
+    onExposure: { key, value in
+        Task { @MainActor in
+            store.send(.analytics(.track(AnalyticsEvent("feature_flag_exposed", [
+                "flag_key": .string(key)
+            ]))))
+        }
+    }
+)
+store.register(plugin: flags)
+```
+
+### Typed flag-key declarations
+
+```swift
+extension BoolFlag {
+    static let newOnboarding = BoolFlag("new_onboarding")
+}
+
+enum CheckoutVariant: String { case control, treatment }
+
+extension VariantFlag where Variant == CheckoutVariant {
+    static let checkoutLayout = VariantFlag("checkout_layout", default: .control)
+}
+
+extension ValueFlag where Value == Int {
+    static let maxFreeUploads = ValueFlag("max_free_uploads", default: 5)
+}
+```
+
+### Reading at a call site
+
+```swift
+if store.featureFlags.isEnabled(.newOnboarding) { NewOnboardingView() }
+
+let layout = store.featureFlags.variant(of: .checkoutLayout)
+let cap = store.featureFlags.value(of: .maxFreeUploads)
+```
+
+### Exposure tracking
+
+```swift
+WizardView()
+    .recordsExposure(of: .checkoutLayout, store: store, action: AppAction.featureFlags)
+```
+
+Plugin dedupes per session. Wire `onExposure` (above) to forward exposures to your analytics plugin.
+
+### Foreground refresh
+
+```swift
+.onChange(of: scenePhase) { _, phase in
+    if phase == .active { store.send(.featureFlags(.refresh)) }
+}
+```
+
+`.automatic` refresh policy debounces against `lastFetchedAt + minInterval` (default 300s) so this is safe to dispatch frequently.

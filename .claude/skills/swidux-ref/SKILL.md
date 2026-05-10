@@ -219,6 +219,7 @@ This is the contract — plugins never assume your root types.
 | Block on app version | Wire `KillswitchPlugin` (see `swidux-patterns.md`) |
 | Gate a feature on subscription | Wire `PaywallPlugin`; check `store.paywall.isGateSatisfied` |
 | Gate an action on parent approval | Wire `ParentalGatePlugin`; dispatch `.parentalGate(.request(reason:))` |
+| Add feature flags / A/B variants / remote config | Wire `FeatureFlagsPlugin`; declare typed flags via `BoolFlag` / `VariantFlag` / `ValueFlag`; read with `store.featureFlags.isEnabled(.myFlag)` |
 | Custom cross-cutting feature | Write a `SwiduxPlugin` (see DocC `BuildingADomainPlugin`) |
 
 ## Anti-patterns
@@ -246,3 +247,5 @@ This is the contract — plugins never assume your root types.
 - `SwiduxKillswitch` — version-blocking plugin
 - `SwiduxParentalGate` — math-challenge gate plugin
 - `SwiduxPaywall` — paywall + entitlement plugin (RevenueCat or StoreKit-shaped)
+- `SwiduxAnalytics` — provider-agnostic analytics plugin with declarative event mapping
+- `SwiduxFeatureFlags` — feature flags + A/B variants + remote-tunable values from a JSON wire format
