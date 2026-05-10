@@ -52,10 +52,19 @@ extension SwiduxMacro: ExtensionMacro {
         }
 
         let properties = classifyProperties(of: structDecl)
+        let accessLevel = structDecl.modifiers.first { modifier in
+            switch modifier.name.tokenKind {
+            case .keyword(.public), .keyword(.package), .keyword(.internal):
+                return true
+            default:
+                return false
+            }
+        }?.name.text
         return [
             generateConformanceExtension(
                 structName: structDecl.name.text,
-                properties: properties
+                properties: properties,
+                accessLevel: accessLevel
             )
         ]
     }

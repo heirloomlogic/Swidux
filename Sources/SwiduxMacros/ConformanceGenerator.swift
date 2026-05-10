@@ -4,9 +4,11 @@ import SwiftSyntaxBuilder
 
 func generateConformanceExtension(
     structName: String,
-    properties: [ClassifiedProperty]
+    properties: [ClassifiedProperty],
+    accessLevel: String?
 ) -> ExtensionDeclSyntax {
     let observerName = "\(structName)Observer"
+    let accessPrefix = accessLevel.map { "\($0) " } ?? ""
 
     let initLines = properties.map { prop -> String in
         switch prop.kind {
@@ -48,27 +50,27 @@ func generateConformanceExtension(
 
     let source = """
         extension \(structName): SwiduxObservable {
-            typealias Observer = \(observerName)
+            \(accessPrefix)typealias Observer = \(observerName)
 
             @MainActor
-            init(observer: \(observerName)) {
+            \(accessPrefix)init(observer: \(observerName)) {
         \(initLines)
             }
 
             @MainActor
-            static func makeObserver(from state: \(structName)) -> \(observerName) {
+            \(accessPrefix)static func makeObserver(from state: \(structName)) -> \(observerName) {
                 \(observerName)(
         \(makeArgs)
                 )
             }
 
             @MainActor
-            static func apply(_ snapshot: \(structName), to observer: \(observerName)) {
+            \(accessPrefix)static func apply(_ snapshot: \(structName), to observer: \(observerName)) {
         \(applyLines)
             }
 
             @MainActor
-            static func applyRestore(from snapshot: \(structName), to current: inout \(structName)) {
+            \(accessPrefix)static func applyRestore(from snapshot: \(structName), to current: inout \(structName)) {
         \(restoreLines)
             }
         }
