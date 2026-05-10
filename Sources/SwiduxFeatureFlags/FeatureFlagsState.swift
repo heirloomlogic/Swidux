@@ -87,3 +87,78 @@ extension KVKey where Value == FeatureFlagsConfig {
     /// Last successfully fetched feature-flags config. Hydrated at startup.
     public static let featureFlagsConfig = KVKey<FeatureFlagsConfig>("swidux.featureFlags.config")
 }
+
+// MARK: - Read API
+
+extension FeatureFlagsState {
+    /// Reads a boolean flag.
+    ///
+    /// Evaluation order:
+    /// 1. Local override (if any),
+    /// 2. Remote config (rollout bucketing against `bucketingID`),
+    /// 3. Swift-side `default`.
+    public func isEnabled(
+        _ flag: BoolFlag,
+        bucketingID: String? = nil,
+        default defaultValue: Bool = false
+    ) -> Bool {
+        if case .bool(let v) = localOverrides[flag.key] { return v }
+        guard case .boolean(let rollout) = config.flags[flag.key] else {
+            return defaultValue
+        }
+        if rollout >= 100 { return true }
+        if rollout <= 0 { return false }
+        let id = bucketingID ?? installID.uuidString
+        return Bucketing.bucket(id: id, flagKey: flag.key) < rollout
+    }
+
+    /// Reads a variant flag.
+    ///
+    /// Returns the host's `defaultValue` if the flag is missing or the JSON
+    /// ships a string the enum doesn't recognize.
+    public func variant<Variant>(
+        of flag: VariantFlag<Variant>,
+        bucketingID: String? = nil
+    ) -> Variant where Variant: RawRepresentable & Sendable, Variant.RawValue == String {
+        if case .string(let raw) = localOverrides[flag.key],
+            let parsed = Variant(rawValue: raw)
+        {
+            return parsed
+        }
+        guard case .variant(let variants) = config.flags[flag.key], !variants.isEmpty else {
+            return flag.defaultValue
+        }
+        let id = bucketingID ?? installID.uuidString
+        let bucket = Bucketing.bucket(id: id, flagKey: flag.key)
+        let index = Bucketing.variantIndex(bucket: bucket, weights: variants.map(\.weight))
+        return Variant(rawValue: variants[index].value) ?? flag.defaultValue
+    }
+
+    /// Reads a value flag (`Bool`).
+    public func value(of flag: ValueFlag<Bool>) -> Bool {
+        if case .bool(let v) = localOverrides[flag.key] { return v }
+        if case .value(.bool(let v)) = config.flags[flag.key] { return v }
+        return flag.defaultValue
+    }
+
+    /// Reads a value flag (`Int`).
+    public func value(of flag: ValueFlag<Int>) -> Int {
+        if case .int(let v) = localOverrides[flag.key] { return v }
+        if case .value(.int(let v)) = config.flags[flag.key] { return v }
+        return flag.defaultValue
+    }
+
+    /// Reads a value flag (`Double`).
+    public func value(of flag: ValueFlag<Double>) -> Double {
+        if case .double(let v) = localOverrides[flag.key] { return v }
+        if case .value(.double(let v)) = config.flags[flag.key] { return v }
+        return flag.defaultValue
+    }
+
+    /// Reads a value flag (`String`).
+    public func value(of flag: ValueFlag<String>) -> String {
+        if case .string(let v) = localOverrides[flag.key] { return v }
+        if case .value(.string(let v)) = config.flags[flag.key] { return v }
+        return flag.defaultValue
+    }
+}
