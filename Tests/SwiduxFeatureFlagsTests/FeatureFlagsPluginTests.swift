@@ -145,4 +145,100 @@ struct FeatureFlagsPluginTests {
 
         #expect(service.fetchCount == 1)
     }
+
+    // MARK: - Overrides
+
+    @Test("setLocalOverride writes into state")
+    func setLocalOverride() {
+        let plugin = makePlugin()
+        var state = TestState()
+
+        _ = plugin.reduce(
+            state: &state,
+            action: .featureFlags(.setLocalOverride(key: "k", value: .bool(true)))
+        )
+
+        #expect(state.featureFlags.localOverrides["k"] == .bool(true))
+    }
+
+    @Test("clearLocalOverride removes a single key")
+    func clearLocalOverride() {
+        let plugin = makePlugin()
+        var state = TestState()
+        state.featureFlags.localOverrides = ["a": .bool(true), "b": .int(1)]
+
+        _ = plugin.reduce(state: &state, action: .featureFlags(.clearLocalOverride(key: "a")))
+
+        #expect(state.featureFlags.localOverrides == ["b": .int(1)])
+    }
+
+    @Test("clearAllLocalOverrides empties the map")
+    func clearAllLocalOverrides() {
+        let plugin = makePlugin()
+        var state = TestState()
+        state.featureFlags.localOverrides = ["a": .bool(true)]
+
+        _ = plugin.reduce(state: &state, action: .featureFlags(.clearAllLocalOverrides))
+
+        #expect(state.featureFlags.localOverrides.isEmpty)
+    }
+
+    // MARK: - Exposure
+
+    @Test("recordExposure inserts key and fires onExposure once")
+    func recordExposureFiresOnce() async {
+        let counter = ExposureCounter()
+        let plugin = makePlugin(onExposure: { key, value in
+            Task { @MainActor in counter.record(key: key, value: value) }
+        })
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["k": .boolean(rollout: 100)]
+        )
+
+        let effect1 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        await effect1?({ _ in })
+        await Task.yield()
+
+        #expect(state.featureFlags.exposedKeys.contains("k"))
+        #expect(counter.count == 1)
+
+        let effect2 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        await effect2?({ _ in })
+        await Task.yield()
+
+        #expect(counter.count == 1)
+    }
+
+    @Test("recordExposure for unknown key does not fire callback")
+    func recordExposureUnknownKey() async {
+        let counter = ExposureCounter()
+        let plugin = makePlugin(onExposure: { key, value in
+            Task { @MainActor in counter.record(key: key, value: value) }
+        })
+        var state = TestState()
+
+        let effect = plugin.reduce(
+            state: &state,
+            action: .featureFlags(.recordExposure(key: "nope"))
+        )
+        await effect?({ _ in })
+        await Task.yield()
+
+        #expect(counter.count == 0)
+        #expect(state.featureFlags.exposedKeys.contains("nope") == false)
+    }
+}
+
+// MARK: - Helpers
+
+@MainActor
+final class ExposureCounter {
+    private(set) var count = 0
+    private(set) var records: [(String, FlagValue)] = []
+    func record(key: String, value: FlagValue) {
+        count += 1
+        records.append((key, value))
+    }
 }
