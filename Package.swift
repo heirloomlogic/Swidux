@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "SwiduxParentalGate", targets: ["SwiduxParentalGate"]),
         .library(name: "SwiduxPaywall", targets: ["SwiduxPaywall"]),
         .library(name: "SwiduxAnalytics", targets: ["SwiduxAnalytics"]),
+        .library(name: "SwiduxFeatureFlags", targets: ["SwiduxFeatureFlags"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
@@ -68,6 +69,13 @@ let package = Package(
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
         ),
+        .target(
+            name: "SwiduxFeatureFlags",
+            dependencies: ["Swidux"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
         .testTarget(
             name: "SwiduxTests",
             dependencies: ["Swidux"],
@@ -99,6 +107,13 @@ let package = Package(
         .testTarget(
             name: "SwiduxAnalyticsTests",
             dependencies: ["Swidux", "SwiduxAnalytics"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxFeatureFlagsTests",
+            dependencies: ["Swidux", "SwiduxFeatureFlags"],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
