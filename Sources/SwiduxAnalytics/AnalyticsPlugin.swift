@@ -33,8 +33,10 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let mapper: AnalyticsMapper<RootState, RootAction>
     private let identity: AnalyticsIdentity<RootState>?
 
-    /// Pending fire-and-forget service calls awaited by ``flush()``.
-    private var pendingTasks: [Task<Void, Never>] = []
+    /// Number of fire-and-forget service calls in flight.
+    private var inflightCount: Int = 0
+    /// Continuations parked in ``flush()`` waiting for inflight work to drain to zero.
+    private var flushWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Creates an analytics plugin wired into the host app.
     ///
@@ -188,10 +190,10 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// Call during app shutdown (`scenePhase == .background`,
     /// `applicationWillTerminate`) to avoid losing in-flight events.
     public func flush() async {
-        let pending = pendingTasks
-        pendingTasks.removeAll()
-        for task in pending {
-            await task.value
+        if inflightCount > 0 {
+            await withCheckedContinuation { continuation in
+                flushWaiters.append(continuation)
+            }
         }
         await service.flush()
     }
@@ -208,11 +210,24 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 
     /// Spawns a tracked Task on a background executor so afterReduce stays
-    /// fast and tests can drain via ``flush()``.
+    /// fast and ``flush()`` can deterministically wait for completion.
+    /// Tracking is by counter — Task references are not retained — so
+    /// memory stays bounded across long sessions between flushes.
     private func spawn(_ work: @escaping @Sendable () async -> Void) {
-        let task = Task { @concurrent in
+        inflightCount += 1
+        Task { @concurrent in
             await work()
+            await self.markCompleted()
         }
-        pendingTasks.append(task)
+    }
+
+    private func markCompleted() {
+        inflightCount -= 1
+        guard inflightCount == 0 else { return }
+        let waiters = flushWaiters
+        flushWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 }
