@@ -19,17 +19,16 @@ public enum Bucketing {
     public static func bucket(id: String, flagKey: String) -> Int {
         var hash: UInt32 = 0x811c_9dc5
         let prime: UInt32 = 0x0100_0193
-
-        func feed(_ s: String) {
-            for byte in s.utf8 {
-                hash ^= UInt32(byte)
-                hash = hash &* prime
-            }
+        for byte in id.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* prime
         }
-        feed(id)
-        feed(":")
-        feed(flagKey)
-
+        hash ^= UInt32(UInt8(ascii: ":"))
+        hash = hash &* prime
+        for byte in flagKey.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* prime
+        }
         return Int(hash % 100)
     }
 

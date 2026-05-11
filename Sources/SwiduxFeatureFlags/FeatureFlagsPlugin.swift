@@ -29,10 +29,9 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
 
     /// Creates the plugin and wires it into the host's root state and action types.
     ///
-    /// - Parameter defaultConfig: bundled fallback config consumed at host
-    ///   wiring time via ``FeatureFlagsState/hydrated(from:defaultConfig:)``.
-    ///   Stored here for symmetry with other plugin inits but not used by the
-    ///   plugin itself.
+    /// Bundled fallback configs are consumed by
+    /// ``FeatureFlagsState/hydrated(from:defaultConfig:)`` at host wiring
+    /// time, not by the plugin.
     public init(
         state: WritableKeyPath<RootState, FeatureFlagsState>,
         action toRootAction: @escaping @Sendable (FeatureFlagsAction) -> RootAction,
@@ -40,7 +39,6 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         service: any FeatureFlagsService,
         userIDKeyPath: KeyPath<RootState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .automatic,
-        defaultConfig: FeatureFlagsConfig? = nil,
         keyValueStore: any KeyValueStore,
         onExposure: (@Sendable (String, FlagValue) -> Void)? = nil
     ) {
@@ -52,7 +50,6 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.refreshPolicy = refreshPolicy
         self.keyValueStore = keyValueStore
         self.onExposure = onExposure
-        _ = defaultConfig
     }
 
     public func reduce(state: inout RootState, action: RootAction) -> Effect<RootAction>? {
@@ -86,9 +83,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             state.isFetching = false
             let store = self.keyValueStore
             return { _ in
-                await MainActor.run {
-                    store.setValue(config, for: .featureFlagsConfig)
-                }
+                store.setValue(config, for: .featureFlagsConfig)
             }
 
         case .refreshFailed(let message):
@@ -109,8 +104,6 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             return nil
 
         case .recordExposure(let key):
-            // Dedup. Only fire callback for known flags whose evaluation
-            // resolves to a concrete value.
             guard !state.exposedKeys.contains(key) else { return nil }
             guard let evaluation = evaluateForExposure(state: state, key: key) else {
                 return nil
@@ -118,7 +111,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             state.exposedKeys.insert(key)
             let callback = self.onExposure
             return { _ in
-                await MainActor.run { callback?(key, evaluation) }
+                callback?(key, evaluation)
             }
         }
     }

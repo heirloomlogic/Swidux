@@ -28,7 +28,6 @@ struct FeatureFlagsPluginTests {
         service: any FeatureFlagsService = MockFeatureFlagsService(outcome: .success(.empty)),
         userIDKeyPath: KeyPath<TestState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .manual,
-        defaultConfig: FeatureFlagsConfig? = nil,
         keyValueStore: any KeyValueStore = InMemoryKeyValueStore(),
         onExposure: (@Sendable (String, FlagValue) -> Void)? = nil
     ) -> FeatureFlagsPlugin<TestState, TestAction> {
@@ -42,7 +41,6 @@ struct FeatureFlagsPluginTests {
             service: service,
             userIDKeyPath: userIDKeyPath,
             refreshPolicy: refreshPolicy,
-            defaultConfig: defaultConfig,
             keyValueStore: keyValueStore,
             onExposure: onExposure
         )
