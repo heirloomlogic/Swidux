@@ -176,9 +176,14 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
 
         let currentScreen = analyticsState.currentScreen
         let service = self.service
-        for event in events {
-            let enriched = enrich(event, currentScreen: currentScreen)
-            spawn { await service.track(enriched) }
+        let enrichedEvents = events.map { enrich($0, currentScreen: currentScreen) }
+        // Single task iterates in order so events from one afterReduce
+        // reach the service in mapper-declared sequence (otherwise N
+        // racing tasks deliver them non-deterministically).
+        spawn {
+            for event in enrichedEvents {
+                await service.track(event)
+            }
         }
     }
 
