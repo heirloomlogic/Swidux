@@ -12,6 +12,13 @@ import Testing
 struct FeatureFlagsReadTests {
     enum CheckoutVariant: String { case control, treatment }
 
+    static let fixedInstallID = UUID(
+        uuid: (
+            0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+            0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11
+        )
+    )
+
     func makeState(
         flags: [String: FlagDefinition],
         overrides: [String: FlagValue] = [:]
@@ -19,7 +26,7 @@ struct FeatureFlagsReadTests {
         FeatureFlagsState(
             config: FeatureFlagsConfig(version: 1, flags: flags),
             localOverrides: overrides,
-            installID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+            installID: Self.fixedInstallID
         )
     }
 

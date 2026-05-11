@@ -34,6 +34,8 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
     /// resolves to a non-nil value.
     public var installID: UUID
 
+    /// Creates a state slice with explicit values for every property.
+    /// Use ``hydrated(from:defaultConfig:)`` for the typical app-launch path.
     public init(
         config: FeatureFlagsConfig = .empty,
         lastFetchedAt: Date? = nil,

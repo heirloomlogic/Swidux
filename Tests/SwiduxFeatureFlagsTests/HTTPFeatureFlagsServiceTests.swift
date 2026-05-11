@@ -61,10 +61,20 @@ private enum StubURLSession {
 
 extension HTTPURLResponse {
     fileprivate static func ok(url: URL) -> HTTPURLResponse {
-        HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+        status(200, url: url)
     }
     fileprivate static func status(_ code: Int, url: URL) -> HTTPURLResponse {
-        HTTPURLResponse(url: url, statusCode: code, httpVersion: "HTTP/1.1", headerFields: nil)!
+        guard
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: code,
+                httpVersion: "HTTP/1.1",
+                headerFields: nil
+            )
+        else {
+            preconditionFailure("HTTPURLResponse(\(code)) construction failed for \(url)")
+        }
+        return response
     }
 }
 

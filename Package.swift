@@ -11,11 +11,11 @@ let package = Package(
     ],
     products: [
         .library(name: "Swidux", targets: ["Swidux"]),
+        .library(name: "SwiduxAnalytics", targets: ["SwiduxAnalytics"]),
+        .library(name: "SwiduxFeatureFlags", targets: ["SwiduxFeatureFlags"]),
         .library(name: "SwiduxKillswitch", targets: ["SwiduxKillswitch"]),
         .library(name: "SwiduxParentalGate", targets: ["SwiduxParentalGate"]),
         .library(name: "SwiduxPaywall", targets: ["SwiduxPaywall"]),
-        .library(name: "SwiduxAnalytics", targets: ["SwiduxAnalytics"]),
-        .library(name: "SwiduxFeatureFlags", targets: ["SwiduxFeatureFlags"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
@@ -26,9 +26,9 @@ let package = Package(
         .macro(
             name: "SwiduxMacros",
             dependencies: [
-                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
                 .product(name: "SwiftParser", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
             ],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
@@ -37,6 +37,20 @@ let package = Package(
         .target(
             name: "Swidux",
             dependencies: ["SwiduxMacros"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .target(
+            name: "SwiduxAnalytics",
+            dependencies: ["Swidux"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .target(
+            name: "SwiduxFeatureFlags",
+            dependencies: ["Swidux"],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
@@ -62,44 +76,9 @@ let package = Package(
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
         ),
-        .target(
-            name: "SwiduxAnalytics",
-            dependencies: ["Swidux"],
-            plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
-            ]
-        ),
-        .target(
-            name: "SwiduxFeatureFlags",
-            dependencies: ["Swidux"],
-            plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
-            ]
-        ),
         .testTarget(
             name: "SwiduxTests",
             dependencies: ["Swidux"],
-            plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
-            ]
-        ),
-        .testTarget(
-            name: "SwiduxKillswitchTests",
-            dependencies: ["Swidux", "SwiduxKillswitch"],
-            plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
-            ]
-        ),
-        .testTarget(
-            name: "SwiduxParentalGateTests",
-            dependencies: ["Swidux", "SwiduxParentalGate"],
-            plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
-            ]
-        ),
-        .testTarget(
-            name: "SwiduxPaywallTests",
-            dependencies: ["Swidux", "SwiduxPaywall"],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]
@@ -119,11 +98,32 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "SwiduxKillswitchTests",
+            dependencies: ["Swidux", "SwiduxKillswitch"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
             name: "SwiduxMacrosTests",
             dependencies: [
                 "SwiduxMacros",
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxParentalGateTests",
+            dependencies: ["Swidux", "SwiduxParentalGate"],
+            plugins: [
+                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxPaywallTests",
+            dependencies: ["Swidux", "SwiduxPaywall"],
             plugins: [
                 .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
             ]

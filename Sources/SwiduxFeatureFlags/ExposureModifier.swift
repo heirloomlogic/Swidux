@@ -3,8 +3,8 @@
 //  SwiduxFeatureFlags
 //
 
-import SwiftUI
 import Swidux
+import SwiftUI
 
 extension View {
     /// Records an exposure for the given variant flag when this view appears.

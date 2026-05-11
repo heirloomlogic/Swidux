@@ -21,10 +21,12 @@ public protocol FeatureFlagsService: Sendable {
 /// Apps host their flags JSON wherever convenient — static file on a CDN,
 /// Cloudflare Worker, their own backend. Zero infrastructure required.
 public struct HTTPFeatureFlagsService: FeatureFlagsService {
+    /// URL of the JSON config endpoint.
     public let url: URL
     private let session: URLSession
     private let decoder: JSONDecoder
 
+    /// Creates a service that fetches the feature-flags JSON from `url`.
     public init(
         url: URL,
         session: URLSession = .shared,
@@ -35,6 +37,8 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
         self.decoder = decoder
     }
 
+    /// Fetches and decodes the wire-format config. Throws on transport
+    /// failures, non-2xx responses, and decode errors.
     public func fetch() async throws -> FeatureFlagsConfig {
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData

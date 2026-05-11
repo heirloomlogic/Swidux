@@ -15,7 +15,9 @@ import Swidux
 /// in `KeyValueStore`.
 @MainActor
 public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
+    /// Host app's root state type.
     public typealias State = RootState
+    /// Host app's root action type.
     public typealias Action = RootAction
 
     private let stateKeyPath: WritableKeyPath<RootState, FeatureFlagsState>
@@ -52,6 +54,8 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.onExposure = onExposure
     }
 
+    /// Routes feature-flags actions and returns effects for service fetches,
+    /// cache writes, and exposure callbacks.
     public func reduce(state: inout RootState, action: RootAction) -> Effect<RootAction>? {
         guard let local = extractAction(action) else { return nil }
         return reduceLocal(state: &state[keyPath: stateKeyPath], action: local)

@@ -20,11 +20,13 @@ public struct FeatureFlagsConfig: Sendable, Equatable, Codable {
     /// An empty config — no flags. Used as initial state and as a safe fallback.
     public static let empty = FeatureFlagsConfig(version: 1, flags: [:])
 
+    /// Creates a config with the given version and flag definitions.
     public init(version: Int = 1, flags: [String: FlagDefinition]) {
         self.version = version
         self.flags = flags
     }
 
+    /// Decodes a wire-format config. Throws if `version` is not `1`.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .version)
@@ -55,10 +57,14 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
     /// Remote-config scalar value.
     case value(FlagValue)
 
+    /// One weighted choice in a variant flag.
     public struct Variant: Sendable, Equatable, Codable {
+        /// Raw string value decoded into the host's variant enum.
         public let value: String
+        /// Weight in `0...100`. Sum of variants must equal `100`.
         public let weight: Int
 
+        /// Creates a variant entry.
         public init(value: String, weight: Int) {
             self.value = value
             self.weight = weight
@@ -67,6 +73,7 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
 
     private enum CodingKeys: String, CodingKey { case type, rollout, variants, value }
 
+    /// Decodes a flag definition by branching on the `type` discriminator.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(String.self, forKey: .type)
@@ -89,6 +96,7 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
         }
     }
 
+    /// Encodes the flag definition with its `type` discriminator.
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {

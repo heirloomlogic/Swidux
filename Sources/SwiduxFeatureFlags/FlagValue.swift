@@ -16,6 +16,8 @@ public enum FlagValue: Sendable, Equatable, Codable {
     case double(Double)
     case string(String)
 
+    /// Decodes a single JSON scalar — `Bool`, `Int`, `Double`, or `String`.
+    /// Order matters: `Bool` is checked before `Int` so `true` doesn't decode as `1`.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let v = try? container.decode(Bool.self) {
@@ -40,6 +42,7 @@ public enum FlagValue: Sendable, Equatable, Codable {
         )
     }
 
+    /// Encodes the underlying scalar as a single JSON value.
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
