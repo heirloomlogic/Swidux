@@ -52,39 +52,113 @@ struct FeatureFlagsDemoView: View {
 
     var body: some View {
         Form {
-            Section("Boolean flag") {
-                let enabled = store.featureFlags.isEnabled(.showCelebrationEmoji)
-                LabeledContent("show_celebration_emoji") {
-                    Text(enabled ? "ON 🎉" : "OFF")
+            Section {
+                Toggle(
+                    isOn: Binding(
+                        get: { store.featureFlags.isEnabled(.showCelebrationEmoji) },
+                        set: { newValue in
+                            store.send(
+                                .featureFlags(
+                                    .setLocalOverride(
+                                        key: BoolFlag.showCelebrationEmoji.key,
+                                        value: .bool(newValue)
+                                    )))
+                        }
+                    )
+                ) {
+                    Text(BoolFlag.showCelebrationEmoji.key).monospaced()
                 }
+            } header: {
+                Text("Boolean")
+            } footer: {
+                Text("Decorates non-zero counters with a 🎉 emoji beside their count.")
             }
 
-            Section("Variant flag") {
-                let style = store.featureFlags.variant(of: .counterButtonStyle)
-                LabeledContent("counter_button_style") {
-                    Text(style.rawValue)
+            Section {
+                Picker(
+                    selection: Binding(
+                        get: { store.featureFlags.variant(of: .counterButtonStyle) },
+                        set: { newValue in
+                            store.send(
+                                .featureFlags(
+                                    .setLocalOverride(
+                                        key: VariantFlag<CounterButtonStyle>.counterButtonStyle.key,
+                                        value: .string(newValue.rawValue)
+                                    )))
+                        }
+                    )
+                ) {
+                    Text("control").tag(CounterButtonStyle.control)
+                    Text("treatment").tag(CounterButtonStyle.treatment)
+                } label: {
+                    Text(VariantFlag<CounterButtonStyle>.counterButtonStyle.key).monospaced()
                 }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Variant")
+            } footer: {
+                Text("A/B visual for the +/- buttons: outlined (control) or bordered chrome (treatment).")
             }
 
-            Section("Value flag") {
-                let cap = store.featureFlags.value(of: .maxCounters)
-                LabeledContent("max_counters") {
-                    Text("\(cap)")
+            Section {
+                Stepper(
+                    value: Binding(
+                        get: { store.featureFlags.value(of: .maxCounters) },
+                        set: { newValue in
+                            store.send(
+                                .featureFlags(
+                                    .setLocalOverride(
+                                        key: ValueFlag<Int>.maxCounters.key,
+                                        value: .int(newValue)
+                                    )))
+                        }
+                    ), in: 1...20
+                ) {
+                    LabeledContent {
+                        Text("\(store.featureFlags.value(of: .maxCounters))").monospaced()
+                    } label: {
+                        Text(ValueFlag<Int>.maxCounters.key).monospaced()
+                    }
                 }
+            } header: {
+                Text("Value")
+            } footer: {
+                Text("Maximum number of counters a user can create.")
             }
 
-            Section("Refresh") {
-                Button("Refresh from bundle") {
-                    store.send(.featureFlags(.refresh))
+            Section {
+                Button("Clear local overrides") {
+                    store.send(.featureFlags(.clearAllLocalOverrides))
                 }
-                if let lastFetched = store.featureFlags.lastFetchedAt {
-                    LabeledContent("Last fetched", value: lastFetched.formatted(date: .omitted, time: .standard))
-                }
+                .disabled(store.featureFlags.localOverrides.isEmpty)
+            } footer: {
+                Text("Local overrides beat the bundled config. Clear them to fall back to feature-flags.json.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Feature Flags")
+        .toolbar {
+            ToolbarItemGroup {
                 if store.featureFlags.isFetching {
                     ProgressView().controlSize(.small)
                 }
+                Button {
+                    store.send(.featureFlags(.refresh))
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help(refreshHelpText)
             }
         }
-        .navigationTitle("Feature Flags")
+    }
+
+    /// Tooltip text exposing the last-fetched timestamp without giving it
+    /// permanent screen real estate.
+    private var refreshHelpText: String {
+        if let last = store.featureFlags.lastFetchedAt {
+            "Last fetched at \(last.formatted(date: .omitted, time: .standard))"
+        } else {
+            "Refresh from bundle"
+        }
     }
 }

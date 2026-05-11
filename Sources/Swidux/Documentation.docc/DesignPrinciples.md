@@ -51,7 +51,7 @@ The decision rule: *does this need to know your action type?* If no, write core 
 
 ## 7. Bind to the store, not to `@State`
 
-Form inputs use `Binding(get:set:)` to read from the store and dispatch on `set`. Don't buffer mutable form state in `@State` and write back on a button.
+Form inputs read from the store and dispatch on write. Use ``Store/binding(_:sending:)`` for the common case (read one property, dispatch one action), and fall back to `Binding(get:set:)` when the read is a transformation (optional unwraps, derived values) or the setter wraps the dispatch in animation or branching. Don't buffer mutable form state in `@State` and write back on a button.
 
 Why: every mutation flows through the reducer, which means undo/redo, persistence, and any plugin that watches the dispatch cycle sees every keystroke (subject to coalescing). If you stash state in `@State`, those plugins are blind to it.
 

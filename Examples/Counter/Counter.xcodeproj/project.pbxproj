@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		9C0946822FB21118000AAF35 /* SwiduxFeatureFlags in Frameworks */ = {isa = PBXBuildFile; productRef = 9C8EB9DE2F61A43D007BA15C /* SwiduxFeatureFlags */; };
 		9C8EB9AF2F61A43C007BA15C /* Swidux in Frameworks */ = {isa = PBXBuildFile; productRef = 9C8EB9AE2F61A43C007BA15C /* Swidux */; };
 /* End PBXBuildFile section */
 
@@ -43,6 +44,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9C0946822FB21118000AAF35 /* SwiduxFeatureFlags in Frameworks */,
 				9C8EB9AF2F61A43C007BA15C /* Swidux in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -89,7 +91,7 @@
 			buildRules = (
 			);
 			dependencies = (
-				9C8EB9CE2F61AC6F007BA15C /* PBXTargetDependency */,
+				9C2357E52FB2820900643C74 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				9C8EB9852F61A350007BA15C /* Counter */,
@@ -114,7 +116,7 @@
 			buildRules = (
 			);
 			dependencies = (
-				9C8EB9D02F61AC74007BA15C /* PBXTargetDependency */,
+				9C2357E72FB2821200643C74 /* PBXTargetDependency */,
 				9C8EB9922F61A352007BA15C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
@@ -157,7 +159,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				9C8EB9AD2F61A43C007BA15C /* XCLocalSwiftPackageReference "../.." */,
-				9C8EB9CC2F61AC64007BA15C /* XCRemoteSwiftPackageReference "SwiftFormatPlugin" */,
+				9C2357E32FB281F900643C74 /* XCRemoteSwiftPackageReference "Persnicket" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9C8EB9842F61A350007BA15C /* Products */;
@@ -205,18 +207,18 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		9C2357E52FB2820900643C74 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 9C2357E42FB2820900643C74 /* Persnoop */;
+		};
+		9C2357E72FB2821200643C74 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 9C2357E62FB2821200643C74 /* Persnoop */;
+		};
 		9C8EB9922F61A352007BA15C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 9C8EB9822F61A350007BA15C /* Counter */;
 			targetProxy = 9C8EB9912F61A352007BA15C /* PBXContainerItemProxy */;
-		};
-		9C8EB9CE2F61AC6F007BA15C /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			productRef = 9C8EB9CD2F61AC6F007BA15C /* SwiftFormatBuildToolPlugin */;
-		};
-		9C8EB9D02F61AC74007BA15C /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			productRef = 9C8EB9CF2F61AC74007BA15C /* SwiftFormatBuildToolPlugin */;
 		};
 /* End PBXTargetDependency section */
 
@@ -525,17 +527,27 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		9C8EB9CC2F61AC64007BA15C /* XCRemoteSwiftPackageReference "SwiftFormatPlugin" */ = {
+		9C2357E32FB281F900643C74 /* XCRemoteSwiftPackageReference "Persnicket" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/HeirloomLogic/SwiftFormatPlugin.git";
+			repositoryURL = "https://github.com/heirloomlogic/Persnicket";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.1.0;
+				minimumVersion = 2.0.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		9C2357E42FB2820900643C74 /* Persnoop */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9C2357E32FB281F900643C74 /* XCRemoteSwiftPackageReference "Persnicket" */;
+			productName = "plugin:Persnoop";
+		};
+		9C2357E62FB2821200643C74 /* Persnoop */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9C2357E32FB281F900643C74 /* XCRemoteSwiftPackageReference "Persnicket" */;
+			productName = "plugin:Persnoop";
+		};
 		9C8EB9AE2F61A43C007BA15C /* Swidux */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Swidux;
@@ -543,16 +555,6 @@
 		9C8EB9DE2F61A43D007BA15C /* SwiduxFeatureFlags */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwiduxFeatureFlags;
-		};
-		9C8EB9CD2F61AC6F007BA15C /* SwiftFormatBuildToolPlugin */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9C8EB9CC2F61AC64007BA15C /* XCRemoteSwiftPackageReference "SwiftFormatPlugin" */;
-			productName = "plugin:SwiftFormatBuildToolPlugin";
-		};
-		9C8EB9CF2F61AC74007BA15C /* SwiftFormatBuildToolPlugin */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9C8EB9CC2F61AC64007BA15C /* XCRemoteSwiftPackageReference "SwiftFormatPlugin" */;
-			productName = "plugin:SwiftFormatBuildToolPlugin";
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

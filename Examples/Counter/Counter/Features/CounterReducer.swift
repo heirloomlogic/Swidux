@@ -1,4 +1,5 @@
 import Foundation
+import SwiduxFeatureFlags
 
 /// Handles all counter CRUD and mutation actions.
 ///
@@ -13,6 +14,12 @@ struct CounterReducer: SwiduxReducer {
     ) -> Effect? {
         switch action {
         case .add:
+            // Honour the `max_counters` feature flag — drop the add when at the
+            // cap. The UI also disables the + button at the limit, so this is a
+            // belt-and-braces guard (a stray dispatch from a hotkey, an effect,
+            // etc. still can't exceed the cap).
+            let cap = state.featureFlags.value(of: .maxCounters)
+            guard state.counters.count < cap else { break }
             let counter = Counter(name: "Counter \(state.counters.count + 1)")
             state.counters[counter.id] = counter
 
@@ -26,10 +33,12 @@ struct CounterReducer: SwiduxReducer {
             state.counters.modify(id) { $0.count = max(0, $0.count - 1) }
 
         case .incrementAsync(let id):
-            // Return an effect — an async closure that runs off the MainActor.
-            // After the delay, it dispatches a synchronous increment.
+            // Capture the user-tunable delay by value: the slider position at
+            // dispatch time is what this in-flight effect uses, even if the
+            // slider moves before the effect completes.
+            let delay = state.ui.asyncDelay
             return { send in
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .seconds(delay))
                 await send(.counter(.increment(id)))
             }
 

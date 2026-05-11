@@ -22,4 +22,9 @@ nonisolated struct AppState: Equatable, Sendable {
 @Swidux
 nonisolated struct UIState: Equatable, Sendable {
     var selectedCounterID: UUID? = nil
+
+    /// Delay (in seconds) that the `incrementAsync` effect waits before
+    /// dispatching its increment. Tunable from the toolbar slider in
+    /// ``ContentView`` to demonstrate ``Store/binding(_:sending:)``.
+    var asyncDelay: TimeInterval = 1.0
 }

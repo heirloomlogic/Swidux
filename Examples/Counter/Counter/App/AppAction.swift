@@ -9,6 +9,10 @@ enum AppAction: Sendable {
     /// Set or clear the selected counter for row highlighting.
     case selectCounter(UUID?)
 
+    /// Update the delay used by ``CounterAction/incrementAsync(_:)``.
+    /// Dispatched from the toolbar slider in ``ContentView``.
+    case setAsyncDelay(TimeInterval)
+
     /// Feature flags refresh / overrides / exposure actions.
     case featureFlags(FeatureFlagsAction)
 }
