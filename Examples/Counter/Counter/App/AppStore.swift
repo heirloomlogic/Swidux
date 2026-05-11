@@ -1,3 +1,4 @@
+import SwiduxFeatureFlags
 import SwiftUI
 import os
 
@@ -17,7 +18,7 @@ extension Store where State == AppState, Action == AppAction {
                 .counter(.increment), .counter(.decrement),
                 .counter(.setName):
                 true
-            case .counter(.incrementAsync), .selectCounter:
+            case .counter(.incrementAsync), .selectCounter, .featureFlags:
                 false
             }
         }
@@ -44,9 +45,23 @@ extension Store where State == AppState, Action == AppAction {
             logger: logger
         )
 
+        let keyValueStore = InMemoryKeyValueStore()
+        let featureFlagsPlugin = FeatureFlagsPlugin<AppState, AppAction>(
+            state: \.featureFlags,
+            action: AppAction.featureFlags,
+            extractAction: {
+                if case .featureFlags(let a) = $0 { return a }
+                return nil
+            },
+            service: BundledFeatureFlagsService(),
+            refreshPolicy: .manual,
+            keyValueStore: keyValueStore
+        )
+
         let plugins = PluginHost<AppState, AppAction>()
         plugins.register(undoPlugin)
         plugins.register(persistencePlugin)
+        plugins.register(featureFlagsPlugin)
 
         return Store(
             initialState: AppState(),

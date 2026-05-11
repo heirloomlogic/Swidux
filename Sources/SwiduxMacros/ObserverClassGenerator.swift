@@ -11,7 +11,7 @@ func generateObserverClass(
 
     let memberLines = properties.map { prop -> String in
         let binding = prop.kind == .nested ? "let" : "var"
-        return "    \(binding) \(prop.name): \(prop.observerTypeName)"
+        return "    \(accessPrefix)\(binding) \(prop.name): \(prop.observerTypeName)"
     }.joined(separator: "\n")
 
     let initParams = properties.map { prop -> String in
@@ -35,7 +35,7 @@ func generateObserverClass(
         \(accessPrefix)final class \(className): @unchecked Sendable {
         \(memberLines)
 
-            init(\(initParams)) {
+            \(accessPrefix)init(\(initParams)) {
         \(initAssignments)
             }
         }

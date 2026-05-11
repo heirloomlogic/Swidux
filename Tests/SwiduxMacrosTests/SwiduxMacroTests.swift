@@ -497,9 +497,9 @@ final class SwiduxMacroTests: XCTestCase {
                 @Observable
                 @MainActor
                 public final class PublicStateObserver: @unchecked Sendable {
-                    var count: Int
+                    public var count: Int
 
-                    init(count: Int = 0) {
+                    public init(count: Int = 0) {
                         self.count = count
                     }
                 }

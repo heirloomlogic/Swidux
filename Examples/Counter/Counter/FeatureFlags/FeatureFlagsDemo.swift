@@ -2,23 +2,10 @@
 //  FeatureFlagsDemo.swift
 //  Counter
 //
-//  Self-contained demo of SwiduxFeatureFlags.
-//
-//  To wire into the Counter Xcode app:
-//
-//  1. Add the SwiduxFeatureFlags package product to the Counter target.
-//  2. Add this file and `feature-flags.json` to the Counter target.
-//  3. In `AppState.swift`, add: `@Slice var featureFlags: FeatureFlagsState = .init()`.
-//  4. In `AppAction.swift`, add: `case featureFlags(FeatureFlagsAction)`.
-//  5. In `AppReducer.swift`, route `.featureFlags` to a reducer arm that returns nil
-//     (the plugin handles all state mutation).
-//  6. In `AppStore.configured(...)`, register a `FeatureFlagsPlugin` with the
-//     `BundledFeatureFlagsService` below.
-//  7. In `ContentView.swift`, add a `NavigationLink` to `FeatureFlagsDemoView()`.
 
 import Foundation
-import SwiftUI
 import SwiduxFeatureFlags
+import SwiftUI
 
 // MARK: - Bundled service
 
@@ -68,7 +55,7 @@ struct FeatureFlagsDemoView: View {
             Section("Boolean flag") {
                 let enabled = store.featureFlags.isEnabled(.showCelebrationEmoji)
                 LabeledContent("show_celebration_emoji") {
-                    Text(enabled ? "ON \(enabled ? "🎉" : "")" : "OFF")
+                    Text(enabled ? "ON 🎉" : "OFF")
                 }
             }
 

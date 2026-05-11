@@ -1,4 +1,5 @@
 import Foundation
+import SwiduxFeatureFlags
 
 /// Root action type. Every user interaction and effect callback is expressed as an `AppAction`.
 enum AppAction: Sendable {
@@ -7,6 +8,9 @@ enum AppAction: Sendable {
 
     /// Set or clear the selected counter for row highlighting.
     case selectCounter(UUID?)
+
+    /// Feature flags refresh / overrides / exposure actions.
+    case featureFlags(FeatureFlagsAction)
 }
 
 /// Actions handled by ``CounterReducer``.

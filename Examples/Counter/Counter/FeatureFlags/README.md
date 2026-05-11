@@ -1,76 +1,29 @@
 # Counter — Feature Flags Demo
 
-A self-contained demo of `SwiduxFeatureFlags` for the Counter example app.
+`SwiduxFeatureFlags` demo wired into the Counter example app.
 
-The Swift sources here are **not** linked into the Counter Xcode target by default — the
-`SwiduxFeatureFlags` product needs to be added to the project first, and these files
-need to be added to the target's Compile Sources / Copy Bundle Resources phases.
+## What's here
 
-## Files
+- `FeatureFlagsDemo.swift` — `BundledFeatureFlagsService`, typed flag keys, and a `FeatureFlagsDemoView` that reads all three flag types.
+- `feature-flags.json` — the wire-format config shipped in the app bundle.
 
-- `FeatureFlagsDemo.swift` — `BundledFeatureFlagsService`, typed flag keys, and a SwiftUI
-  `FeatureFlagsDemoView` that reads all three flag types.
-- `feature-flags.json` — the wire-format config to ship in the app bundle.
+The Counter Xcode project's "Counter" target already links the `SwiduxFeatureFlags`
+package product and uses a synchronized folder group, so this folder is picked up
+automatically.
 
-## Wiring it in (manual Xcode steps)
+## How it's wired
 
-1. **Add the package product** to the Counter target: File → Add Packages → select the
-   local `Swidux` package and add `SwiduxFeatureFlags` to the Counter target.
-2. **Add this folder** to the Counter target so the sources compile and the JSON is copied
-   into the bundle: drag `FeatureFlags/` into the Counter group in Xcode, ensure
-   "Add to targets: Counter" is checked, and verify `feature-flags.json` appears under
-   "Copy Bundle Resources".
-3. **Add the slice** to `AppState`:
+- `AppState` has `@Slice var featureFlags: FeatureFlagsState`.
+- `AppAction` has `case featureFlags(FeatureFlagsAction)`.
+- `AppReducer` routes the case (the plugin owns all state mutation).
+- `AppStore.configured(...)` registers a `FeatureFlagsPlugin` backed by `BundledFeatureFlagsService`.
+- `ContentView`'s toolbar has a "Flags" `NavigationLink` to `FeatureFlagsDemoView`.
 
-   ```swift
-   import SwiduxFeatureFlags
+Build the Counter scheme and tap the flag icon in the toolbar. Use "Refresh from bundle"
+to fetch the local JSON; the three sections render the boolean, variant, and value flags.
 
-   @Swidux nonisolated struct AppState: Equatable, Sendable {
-       var counters: EntityStore<Counter> = .init()
-       @Slice var ui: UIState = .init()
-       @Slice var featureFlags: FeatureFlagsState = .init()
-   }
-   ```
+## Customizing
 
-4. **Add the action case** to `AppAction`:
-
-   ```swift
-   enum AppAction: Sendable {
-       case counter(CounterAction)
-       case selectCounter(UUID?)
-       case featureFlags(FeatureFlagsAction)
-   }
-   ```
-
-5. **Route the action** in `AppReducer.reduce(...)`:
-
-   ```swift
-   case .featureFlags:
-       return nil  // plugin handles it
-   ```
-
-6. **Register the plugin** in `Store.configured(...)`:
-
-   ```swift
-   let kv = InMemoryKeyValueStore()  // or UserDefaultsKeyValueStore() in real apps
-   let flags = FeatureFlagsPlugin<AppState, AppAction>(
-       state: \.featureFlags,
-       action: AppAction.featureFlags,
-       extractAction: { if case .featureFlags(let a) = $0 { return a } else { return nil } },
-       service: BundledFeatureFlagsService(),
-       refreshPolicy: .manual,
-       keyValueStore: kv
-   )
-   plugins.register(flags)
-   ```
-
-7. **Add a navigation entry** in `ContentView` so the demo is reachable, e.g.
-
-   ```swift
-   .toolbar {
-       NavigationLink("Flags") { FeatureFlagsDemoView() }
-   }
-   ```
-
-8. Build and run. Tap "Flags", then "Refresh from bundle" — all three flag values will
-   render from the JSON shipped in the bundle.
+Edit `feature-flags.json` to change rollout percentages, variant weights, or value
+defaults — the demo re-reads on every `.refresh` dispatch. Typed key declarations
+live at the bottom of `FeatureFlagsDemo.swift` for easy extension.

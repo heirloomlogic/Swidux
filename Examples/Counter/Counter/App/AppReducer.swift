@@ -18,6 +18,9 @@ struct AppReducer: SwiduxReducer {
 
         case .selectCounter(let id):
             state.ui.selectedCounterID = id
+
+        case .featureFlags:
+            break
         }
 
         return nil
