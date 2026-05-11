@@ -24,6 +24,11 @@ struct ContentView: View {
                 Button("Add Counter", systemImage: "plus") {
                     store.send(.counter(.add))
                 }
+                NavigationLink {
+                    FeatureFlagsDemoView()
+                } label: {
+                    Label("Flags", systemImage: "flag.checkered")
+                }
             }
             .overlay {
                 if store.counters.isEmpty {

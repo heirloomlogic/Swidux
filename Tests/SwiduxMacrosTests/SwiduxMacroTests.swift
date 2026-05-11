@@ -497,35 +497,35 @@ final class SwiduxMacroTests: XCTestCase {
                 @Observable
                 @MainActor
                 public final class PublicStateObserver: @unchecked Sendable {
-                    var count: Int
+                    public var count: Int
 
-                    init(count: Int = 0) {
+                    public init(count: Int = 0) {
                         self.count = count
                     }
                 }
 
                 extension PublicState: SwiduxObservable {
-                    typealias Observer = PublicStateObserver
+                    public typealias Observer = PublicStateObserver
 
                     @MainActor
-                    init(observer: PublicStateObserver) {
+                    public init(observer: PublicStateObserver) {
                         self.count = observer.count
                     }
 
                     @MainActor
-                    static func makeObserver(from state: PublicState) -> PublicStateObserver {
+                    public static func makeObserver(from state: PublicState) -> PublicStateObserver {
                         PublicStateObserver(
                             count: state.count
                         )
                     }
 
                     @MainActor
-                    static func apply(_ snapshot: PublicState, to observer: PublicStateObserver) {
+                    public static func apply(_ snapshot: PublicState, to observer: PublicStateObserver) {
                         observer.count = snapshot.count
                     }
 
                     @MainActor
-                    static func applyRestore(from snapshot: PublicState, to current: inout PublicState) {
+                    public static func applyRestore(from snapshot: PublicState, to current: inout PublicState) {
                         current.count = snapshot.count
                     }
                 }

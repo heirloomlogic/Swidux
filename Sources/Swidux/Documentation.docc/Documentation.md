@@ -36,6 +36,7 @@ Your domain types and database stay in your app. Swidux provides the contracts, 
 - <doc:HowToAddAVersionKillswitch>
 - <doc:HowToAddAParentalGate>
 - <doc:HowToAddAnalytics>
+- <doc:HowToAddFeatureFlags>
 - <doc:BuildingADomainPlugin>
 - <doc:AgentSkill>
 
@@ -46,6 +47,7 @@ Your domain types and database stay in your app. Swidux provides the contracts, 
 - <doc:PluginParentalGateReference>
 - <doc:PluginPaywallReference>
 - <doc:PluginAnalyticsReference>
+- <doc:PluginFeatureFlagsReference>
 - <doc:EntityStoreGuide>
 - <doc:PersistenceMiddlewareGuide>
 - <doc:KeyValueStoreGuide>
