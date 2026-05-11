@@ -22,7 +22,7 @@ jobs:
         run: |
           if [ ! -f .swift-format ]; then
             swift package resolve
-            cp .build/checkouts/SwiftFormatPlugin/.swift-format .swift-format
+            cp .build/checkouts/Persnicket/.swift-format .swift-format
           fi
 
       - uses: wearerequired/lint-action@v2
