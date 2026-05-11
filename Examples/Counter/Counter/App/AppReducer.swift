@@ -19,6 +19,9 @@ struct AppReducer: SwiduxReducer {
         case .selectCounter(let id):
             state.ui.selectedCounterID = id
 
+        case .setAsyncDelay(let seconds):
+            state.ui.asyncDelay = seconds
+
         case .featureFlags:
             break
         }

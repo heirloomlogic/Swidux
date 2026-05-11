@@ -1,3 +1,4 @@
+import SwiduxFeatureFlags
 import SwiftUI
 
 /// A single counter row with an editable name, count display, and action buttons.
@@ -5,6 +6,12 @@ import SwiftUI
 /// This is a **controlled component**: the `TextField` is bound directly to the
 /// store via `Binding(get:set:)`. No local `@State` — the store is the single
 /// source of truth.
+///
+/// Two feature flags shape the row's appearance:
+///
+/// - ``BoolFlag/showCelebrationEmoji`` decorates non-zero counts with a 🎉.
+/// - ``VariantFlag/counterButtonStyle`` swaps borderless icons (`control`)
+///   for bordered chrome (`treatment`).
 ///
 /// Takes a `counterID` rather than the full `Counter` value so that SwiftUI's
 /// child-view diffing can skip re-evaluation when the parent's body runs but
@@ -17,6 +24,9 @@ struct CounterRow: View {
 
     var body: some View {
         if let counter = store.counters[counterID] {
+            let celebrate = store.featureFlags.isEnabled(.showCelebrationEmoji)
+            let buttonVariant = store.featureFlags.variant(of: .counterButtonStyle)
+
             HStack {
                 TextField(
                     "Name",
@@ -30,9 +40,9 @@ struct CounterRow: View {
 
                 Spacer()
 
-                Text("\(counter.count)")
+                Text(celebrate && counter.count > 0 ? "\(counter.count) 🎉" : "\(counter.count)")
                     .font(.title2.monospacedDigit())
-                    .frame(minWidth: 40)
+                    .frame(minWidth: 60, alignment: .trailing)
 
                 Button {
                     store.send(.counter(.decrement(counterID)))
@@ -53,7 +63,22 @@ struct CounterRow: View {
                 }
                 .help("Increment after 1 second delay")
             }
-            .buttonStyle(.borderless)
+            .counterButtonStyle(buttonVariant)
+        }
+    }
+}
+
+extension View {
+    /// Applies the button style selected by the `counter_button_style` variant
+    /// flag. `@ViewBuilder` lets us return different concrete styled views
+    /// from each branch under a single opaque return type.
+    @ViewBuilder
+    fileprivate func counterButtonStyle(_ variant: CounterButtonStyle) -> some View {
+        switch variant {
+        case .control:
+            buttonStyle(.borderless)
+        case .treatment:
+            buttonStyle(.bordered)
         }
     }
 }

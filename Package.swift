@@ -19,7 +19,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
-        .package(url: "https://github.com/HeirloomLogic/SwiftFormatPlugin", from: "1.6.0"),
+        .package(url: "https://github.com/heirloomlogic/persnicket", from: "2.0.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax", "600.0.0"..<"700.0.0"),
     ],
     targets: [
@@ -31,77 +31,77 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
             ],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .target(
             name: "Swidux",
             dependencies: ["SwiduxMacros"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .target(
             name: "SwiduxAnalytics",
             dependencies: ["Swidux"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .target(
             name: "SwiduxFeatureFlags",
             dependencies: ["Swidux"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .target(
             name: "SwiduxKillswitch",
             dependencies: ["Swidux"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .target(
             name: "SwiduxParentalGate",
             dependencies: ["Swidux"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .target(
             name: "SwiduxPaywall",
             dependencies: ["Swidux"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
             name: "SwiduxTests",
             dependencies: ["Swidux"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
             name: "SwiduxAnalyticsTests",
             dependencies: ["Swidux", "SwiduxAnalytics"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
             name: "SwiduxFeatureFlagsTests",
             dependencies: ["Swidux", "SwiduxFeatureFlags"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
             name: "SwiduxKillswitchTests",
             dependencies: ["Swidux", "SwiduxKillswitch"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
@@ -111,21 +111,21 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
             name: "SwiduxParentalGateTests",
             dependencies: ["Swidux", "SwiduxParentalGate"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
             name: "SwiduxPaywallTests",
             dependencies: ["Swidux", "SwiduxPaywall"],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
     ]

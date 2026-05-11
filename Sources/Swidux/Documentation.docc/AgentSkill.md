@@ -6,49 +6,58 @@ Install the bundled `swidux-ref` skill so your AI coding assistant has Swidux's 
 
 Swidux ships a companion agent skill (`swidux-ref`) for AI coding assistants like Claude Code. It contains the architecture rules, conventions, and code templates an assistant needs to generate correct Swidux code without you re-explaining the patterns.
 
-The skill files live in this repo at `.claude/skills/swidux-ref/`:
+The skill is published in [heirloomlogic/skills](https://github.com/heirloomlogic/skills) — Heirloom Logic's public skills repo — alongside any future Heirloom skills. Two files:
 
 - `SKILL.md` — architecture rules (the 10 rules, the dispatch lifecycle, plugin shapes, anti-patterns).
 - `swidux-patterns.md` — copy-pasteable code templates for `AppState`, `AppAction`, reducers, `AppStore` factory, views, plugin wiring, and Swift Testing reducer tests.
 
 ## Installing the skill
 
-Claude Code does **not** auto-discover skills inside Swift Package dependencies. SwiftPM resolves checkouts into `.build/checkouts/...` (CLI) or hashed DerivedData paths (Xcode), and Claude Code only loads skills from a fixed set of locations:
+### GitHub CLI (recommended)
 
-| Scope | Path |
-|---|---|
-| Personal | `~/.claude/skills/<skill-name>/SKILL.md` |
-| Project | `<project>/.claude/skills/<skill-name>/SKILL.md` |
-| Plugin | bundled inside an installed Claude Code plugin |
-
-Pick one of the three install methods below.
-
-### Option 1 — Symlink from a Swidux clone (recommended for personal use)
-
-Clone Swidux somewhere stable, then symlink the skill folder into your personal scope:
+Requires `gh` ≥ v2.90.0 ([install](https://cli.github.com)).
 
 ```bash
-git clone https://github.com/heirloomlogic/Swidux ~/code/Swidux
-ln -s ~/code/Swidux/.claude/skills/swidux-ref ~/.claude/skills/swidux-ref
+gh skill install heirloomlogic/skills swidux-ref --agent claude-code --scope user
 ```
 
-The skill stays in sync as you `git pull` the Swidux clone.
+- `--scope user` installs to `~/.claude/skills/swidux-ref/` (loads in every project).
+- `--scope project` installs to `<cwd>/.claude/skills/swidux-ref/` (commit it so the whole team gets it).
+- Pin a version with `swidux-ref@v1.2.3`. List tags with `git ls-remote --tags https://github.com/heirloomlogic/skills`.
+- Other agents: pass `--agent codex`, `--agent cursor`, `--agent gemini-cli`, etc. Run `gh skill install --help` for the full list.
 
-### Option 2 — Commit a copy in your project (recommended for teams)
-
-If you want everyone on your team to get the skill without per-developer setup, copy the folder into your project's `.claude/skills/`:
+### skills.sh
 
 ```bash
-mkdir -p .claude/skills
-cp -R path/to/Swidux-clone/.claude/skills/swidux-ref .claude/skills/swidux-ref
-git add .claude/skills/swidux-ref
+npx skillsadd heirloomlogic/skills
 ```
 
-Now the skill loads whenever anyone opens the project in Claude Code. Re-copy when you upgrade Swidux.
+Indexes the same source repo. Works without a GitHub CLI install.
 
-### Option 3 — Other AI assistants
+### Manual (no `gh`, no `npx`)
 
-The skill files are plain Markdown. Point your assistant's context, system prompt, or rules file at `swidux-ref/SKILL.md` and `swidux-ref/swidux-patterns.md` to load the architecture reference and code templates.
+Claude Code uses `.claude/skills/`. Codex, Cursor, Gemini CLI, and others use `.agents/skills/`. Pick the directory that matches your agent:
+
+```bash
+# Claude Code — project install
+mkdir -p .claude/skills && \
+  curl -fsSL https://github.com/heirloomlogic/skills/archive/refs/heads/main.tar.gz | \
+  tar -xz --strip-components=2 -C .claude/skills skills-main/swidux-ref
+
+# Codex / Cursor / Gemini CLI — project install
+mkdir -p .agents/skills && \
+  curl -fsSL https://github.com/heirloomlogic/skills/archive/refs/heads/main.tar.gz | \
+  tar -xz --strip-components=2 -C .agents/skills skills-main/swidux-ref
+```
+
+Swap `.claude/skills` / `.agents/skills` for `~/.claude/skills` etc. for a user-wide install. `tar` overwrites by default, so re-running either command updates the skill in place. To pin a version, replace `main` in the URL with the tag name (e.g. `swidux-ref@v1.0.0`).
+
+### Loading content directly (assistants without a skill loader)
+
+The skill files are plain Markdown. Point your assistant's system prompt or rules file at:
+
+- `https://raw.githubusercontent.com/heirloomlogic/skills/main/swidux-ref/SKILL.md`
+- `https://raw.githubusercontent.com/heirloomlogic/skills/main/swidux-ref/swidux-patterns.md`
 
 ## What it helps with
 
@@ -57,7 +66,7 @@ The skill files are plain Markdown. Point your assistant's context, system promp
 | Add a new feature | Generates the full stack: state slice, action enum, reducer, view binding |
 | Wire ``EntityStore`` mutations | Uses ``EntityStore/modify(_:_:)`` for in-place edits and the subscript setter for inserts/deletes |
 | Configure persistence | Uses ``StateWriter`` per slice; never writes `save()` in a reducer |
-| Build form inputs | Uses controlled `Binding(get:set:)` instead of `@State` buffering |
+| Build form inputs | Uses ``Store/binding(_:sending:)`` for keypath reads, `Binding(get:set:)` for transformed reads; never buffers in `@State` |
 | Write effects | Specializes ``Effect`` and ``Send``; runs work with `Task { @concurrent in }` |
 | Add undo/redo | Wires ``UndoPlugin`` with `isUndoable` and `coalescing` predicates |
 | Wire a paywall | Wires `PaywallPlugin` against a `PaywallService` conformer |
@@ -79,9 +88,6 @@ With the skill loaded, these requests produce correct Swidux code on the first t
 
 ## Updating the skill
 
-When Swidux releases a new version, refresh whichever copy of the skill you're using:
+Re-run whichever install command you used originally — `gh skill install ...`, `npx skillsadd ...`, or the `curl | tar` one-liner. Each overwrites the existing copy in place.
 
-- **Symlinked install:** `git pull` the Swidux clone.
-- **Project-committed install:** re-copy the `swidux-ref` folder.
-
-Skill files version with the rest of the package.
+The skill versions independently of the Swidux Swift package: tags on `heirloomlogic/skills` follow the form `swidux-ref@vX.Y.Z`. Pass a tag explicitly (`gh skill install heirloomlogic/skills swidux-ref@v1.2.3 ...`, or substitute the tag for `main` in the curl URL) to lock to a known version.

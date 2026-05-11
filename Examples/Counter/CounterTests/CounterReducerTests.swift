@@ -30,6 +30,20 @@ struct CounterReducerTests {
         #expect(names == ["Counter 1", "Counter 2"])
     }
 
+    @Test("add is dropped when at the max_counters cap")
+    func addRespectsMaxCountersFlag() {
+        var state = AppState()
+        // Default ValueFlag fallback is 3 (declared in FeatureFlagsDemo.swift).
+        _ = reducer.reduce(state: &state, action: .add, environment: env)
+        _ = reducer.reduce(state: &state, action: .add, environment: env)
+        _ = reducer.reduce(state: &state, action: .add, environment: env)
+        #expect(state.counters.count == 3)
+
+        // Fourth add should be a no-op.
+        _ = reducer.reduce(state: &state, action: .add, environment: env)
+        #expect(state.counters.count == 3)
+    }
+
     @Test("remove deletes the counter from the EntityStore")
     func remove() {
         var state = AppState()

@@ -129,24 +129,23 @@ Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swid
 
 ## Installing the agent skill
 
-Swidux ships an AI-assistant skill at `.claude/skills/swidux-ref/` containing the architecture rules and copy-pasteable code templates. Claude Code does **not** auto-discover skills inside Swift Package dependencies — you have to install it explicitly.
+Swidux ships a companion agent skill, `swidux-ref`, with the architecture rules and copy-pasteable code templates your AI coding assistant needs. It lives in the public [heirloomlogic/skills](https://github.com/heirloomlogic/skills) repo.
 
-**Personal install (all your projects):**
-
-```bash
-git clone https://github.com/heirloomlogic/Swidux ~/code/Swidux
-ln -s ~/code/Swidux/.claude/skills/swidux-ref ~/.claude/skills/swidux-ref
-```
-
-**Project install (commit for the team):**
+**Install (GitHub CLI, recommended):**
 
 ```bash
-mkdir -p .claude/skills
-cp -R path/to/Swidux/.claude/skills/swidux-ref .claude/skills/
-git add .claude/skills/swidux-ref
+gh skill install heirloomlogic/skills swidux-ref --agent claude-code --scope user
 ```
 
-For other AI assistants, point your context at `swidux-ref/SKILL.md` and `swidux-ref/swidux-patterns.md`. See the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article for details.
+`--scope user` installs to `~/.claude/skills/`. Pass `--scope project` to commit it to the current project's `.claude/skills/` so the whole team gets it. Pin a version with `swidux-ref@v1.2.3`. Requires `gh` ≥ v2.90.0.
+
+**Install (skills.sh):**
+
+```bash
+npx skillsadd heirloomlogic/skills
+```
+
+For Codex, Cursor, Gemini CLI, and other agents — plus a `curl`-only fallback — see the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article.
 
 ## Requirements
 

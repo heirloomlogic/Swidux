@@ -381,6 +381,30 @@ struct CounterRow: View {
 }
 ```
 
+### A shorter binding helper
+
+The `TextField` above reads `counter.name` after an optional unwrap and dispatches `setName(counterID, ...)`. That's a *transformed read* — the keypath doesn't fit cleanly — so the explicit `Binding(get:set:)` is the right tool.
+
+When the read is a plain keypath into the store, prefer ``Store/binding(_:sending:)``. The Counter example demonstrates this with a toolbar slider that tunes the delay used by `incrementAsync`:
+
+```swift
+// In ContentView's toolbar
+Slider(
+    value: store.binding(\.ui.asyncDelay) { .setAsyncDelay($0) },
+    in: 0.1...3.0,
+    step: 0.1
+)
+```
+
+The keypath is resolved against the generated observer tree, so SwiftUI registers a fine-grained dependency on `ui.asyncDelay` only — mutations to other slices don't invalidate this view. The trailing closure keeps the action constructor visible at the call site.
+
+This closes the unidirectional loop in one tour: slider → `setAsyncDelay` action → reducer mutates `state.ui.asyncDelay` → next tap on the async button reads the new value when constructing its `Effect`.
+
+Two cases that still want raw `Binding(get:set:)`:
+
+- **Transformed reads:** `counter?.name ?? ""`, `!store.analytics.isOptedOut`, EntityStore subscript lookups.
+- **Setter side effects:** wrapping the dispatch in `withAnimation`, branching, or guard logic.
+
 ## Step 9: Wire the app entry
 
 Own the store with `@State` so it survives `Scene` body re-evaluations. Inject it via `.environment()`. On macOS, replace the standard undo command group so cmd-Z talks to ``Store/undo()`` instead of the system undo manager.

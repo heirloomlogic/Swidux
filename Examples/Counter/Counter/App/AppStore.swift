@@ -7,10 +7,15 @@ typealias AppStore = Store<AppState, AppAction>
 extension Store where State == AppState, Action == AppAction {
     static func configured(environment: AppEnvironment = .live()) -> AppStore {
         let reducer = AppReducer()
-        let logger = Logger(
-            subsystem: Bundle.main.bundleIdentifier ?? "counter",
-            category: "persistence"
-        )
+        let subsystem = Bundle.main.bundleIdentifier ?? "counter"
+        let logger = Logger(subsystem: subsystem, category: "persistence")
+        let dispatchLogger = Logger(subsystem: subsystem, category: "dispatch")
+
+        // Logs every dispatched action. Wired first so the log line precedes
+        // undo snapshots and persistence drains for a given action.
+        let loggingPlugin = LoggingPlugin<AppState, AppAction>(log: { action in
+            dispatchLogger.info("dispatch: \(String(describing: action), privacy: .public)")
+        })
 
         let isUndoable: @Sendable (AppAction) -> Bool = { action in
             switch action {
@@ -18,7 +23,8 @@ extension Store where State == AppState, Action == AppAction {
                 .counter(.increment), .counter(.decrement),
                 .counter(.setName):
                 true
-            case .counter(.incrementAsync), .selectCounter, .featureFlags:
+            case .counter(.incrementAsync), .selectCounter, .setAsyncDelay,
+                .featureFlags:
                 false
             }
         }
@@ -59,6 +65,7 @@ extension Store where State == AppState, Action == AppAction {
         )
 
         let plugins = PluginHost<AppState, AppAction>()
+        plugins.register(loggingPlugin)
         plugins.register(undoPlugin)
         plugins.register(persistencePlugin)
         plugins.register(featureFlagsPlugin)
