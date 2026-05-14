@@ -164,7 +164,7 @@ let identity = AnalyticsIdentity<AppState>(
 )
 ```
 
-`userProperties` is snapshotted at identify time — so derived people-properties (subscription tier, plan, etc.) update on the analytics service whenever the userID transitions. If you want them to update on *every* property change, dispatch `.analytics(.identify(...))` explicitly when those properties change.
+`userProperties` is re-evaluated each non-analytics dispatch. The plugin re-fires `service.identify` whenever the returned dictionary changes — so derived people-properties (subscription tier, paywall entitlements, feature flags, A/B variants) stay in sync with state without any explicit `.identify` plumbing.
 
 ## Step 6: Wire the plugin
 

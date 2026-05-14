@@ -20,8 +20,13 @@ public struct AnalyticsState: Sendable, Equatable {
     /// identity keypath each dispatch to detect transitions.
     public internal(set) var lastIdentifiedUserID: String?
 
-    /// Creates an analytics state slice. `lastIdentifiedUserID` always
-    /// starts at `nil`; the plugin manages it from there.
+    /// The properties most recently passed to `service.identify` (auto or
+    /// explicit). Compared against the configured identity's `userProperties`
+    /// each dispatch to detect content changes that should re-fire identify.
+    public internal(set) var lastIdentifiedProperties: [String: AnalyticsValue]
+
+    /// Creates an analytics state slice. `lastIdentified*` fields always
+    /// start empty; the plugin manages them from there.
     public init(
         isOptedOut: Bool = false,
         currentScreen: String? = nil
@@ -29,5 +34,18 @@ public struct AnalyticsState: Sendable, Equatable {
         self.isOptedOut = isOptedOut
         self.currentScreen = currentScreen
         self.lastIdentifiedUserID = nil
+        self.lastIdentifiedProperties = [:]
+    }
+}
+
+extension AnalyticsState {
+    mutating func recordIdentified(userID: String, properties: [String: AnalyticsValue]) {
+        lastIdentifiedUserID = userID
+        lastIdentifiedProperties = properties
+    }
+
+    mutating func clearIdentified() {
+        lastIdentifiedUserID = nil
+        lastIdentifiedProperties = [:]
     }
 }
