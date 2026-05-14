@@ -159,8 +159,9 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         }
 
         let nextProperties = identity.userProperties(state)
-        guard userID != analyticsState.lastIdentifiedUserID
-            || nextProperties != analyticsState.lastIdentifiedProperties
+        guard
+            userID != analyticsState.lastIdentifiedUserID
+                || nextProperties != analyticsState.lastIdentifiedProperties
         else { return }
 
         state[keyPath: stateKeyPath].recordIdentified(userID: userID, properties: nextProperties)
