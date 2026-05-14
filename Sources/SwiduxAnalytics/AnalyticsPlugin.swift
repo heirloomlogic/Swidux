@@ -15,10 +15,10 @@ import Swidux
 /// - **`AnalyticsAction`** (explicit): screen views, identify/alias/reset,
 ///   ad-hoc tracks, opt-out toggling.
 ///
-/// Plus auto-identify via an optional ``AnalyticsIdentity`` keypath: the
-/// plugin watches the userID closure across dispatches and fires
-/// `service.identify` / `service.reset` on transitions, with `userProperties`
-/// snapshotted at identify time.
+/// Plus auto-identify via an optional ``AnalyticsIdentity``: the plugin
+/// re-evaluates `userID` and `userProperties` each non-analytics dispatch
+/// and fires `service.identify` whenever either side changes;
+/// `service.reset` fires on `userID → nil`.
 @MainActor
 public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// Root state type of the host app.
@@ -107,7 +107,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
             return { _ in await service.track(event) }
 
         case .identify(let userID, let properties):
-            state.lastIdentifiedUserID = userID
+            state.recordIdentified(userID: userID, properties: properties)
             guard !state.isOptedOut else { return nil }
             let service = self.service
             return { _ in
@@ -120,14 +120,14 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
             return { _ in await service.alias(newID: newID, previousID: previousID) }
 
         case .reset:
-            state.lastIdentifiedUserID = nil
+            state.clearIdentified()
             let service = self.service
             return { _ in await service.reset() }
 
         case .setOptedOut(let optedOut):
             state.isOptedOut = optedOut
             guard optedOut else { return nil }
-            state.lastIdentifiedUserID = nil
+            state.clearIdentified()
             let service = self.service
             return { _ in await service.reset() }
         }
@@ -139,11 +139,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// Skipped entirely when the action is an ``AnalyticsAction`` (those are
     /// handled by `reduce`) or when the user is opted out.
     public func afterReduce(state: inout RootState, action: RootAction) {
-        // Explicit analytics actions are handled by `reduce`. Skip mapper and
-        // auto-identify so we don't double-track or clobber `lastIdentifiedUserID`
-        // that the explicit handler just set.
         if extractAction(action) != nil { return }
-
         runAutoIdentify(state: &state)
         runMapper(state: state, action: action)
     }
@@ -153,18 +149,22 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         let analyticsState = state[keyPath: stateKeyPath]
         guard !analyticsState.isOptedOut else { return }
 
-        let currentUserID = identity.userID(state)
-        guard currentUserID != analyticsState.lastIdentifiedUserID else { return }
-
-        state[keyPath: stateKeyPath].lastIdentifiedUserID = currentUserID
         let service = self.service
 
-        if let userID = currentUserID {
-            let properties = identity.userProperties(state)
-            spawn { await service.identify(userID: userID, properties: properties) }
-        } else {
+        guard let userID = identity.userID(state) else {
+            guard analyticsState.lastIdentifiedUserID != nil else { return }
+            state[keyPath: stateKeyPath].clearIdentified()
             spawn { await service.reset() }
+            return
         }
+
+        let nextProperties = identity.userProperties(state)
+        guard userID != analyticsState.lastIdentifiedUserID
+            || nextProperties != analyticsState.lastIdentifiedProperties
+        else { return }
+
+        state[keyPath: stateKeyPath].recordIdentified(userID: userID, properties: nextProperties)
+        spawn { await service.identify(userID: userID, properties: nextProperties) }
     }
 
     private func runMapper(state: RootState, action: RootAction) {

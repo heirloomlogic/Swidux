@@ -233,16 +233,17 @@ Returning an empty array is the no-op case. The mapper closure is allowed to rea
 
 ## Auto-identify semantics
 
-When configured with an `AnalyticsIdentity`, the plugin watches the userID closure across every non-analytics dispatch:
+When configured with an `AnalyticsIdentity`, the plugin re-evaluates both the `userID` and `userProperties` closures each non-analytics dispatch and diffs the pair `(userID, userProperties)` against the last value sent to the service:
 
-- `nil → "u1"` (sign-in): updates `lastIdentifiedUserID`, fires `service.identify(userID:"u1", properties:)`.
-- `"u1" → "u2"` (account switch): updates `lastIdentifiedUserID`, fires `service.identify(userID:"u2", properties:)`.
-- `"u1" → nil` (sign-out): updates `lastIdentifiedUserID`, fires `service.reset()`.
-- Stable userID: no-op.
+- `nil → "u1"` (sign-in): updates `lastIdentifiedUserID` / `lastIdentifiedProperties`, fires `service.identify(userID:"u1", properties:)`.
+- `"u1" → "u2"` (account switch): updates both, fires `service.identify(userID:"u2", properties:)`.
+- Stable userID, `userProperties` content changed: updates `lastIdentifiedProperties`, fires `service.identify(userID:, properties:)` with the new dictionary.
+- `"u1" → nil` (sign-out): clears both, fires `service.reset()`.
+- Stable userID and stable `userProperties`: no-op.
 
-`userProperties` is snapshotted from current state at identify time, so any state-derived people properties (e.g. subscription tier) flow with the identify call.
+`userProperties` is re-evaluated every non-analytics dispatch; dictionary equality decides whether to re-fire `identify`. This keeps derived people-properties (subscription tier, paywall entitlements, feature flags) in sync with state without any explicit `.identify` plumbing.
 
-When opted out, auto-identify is paused: `lastIdentifiedUserID` is **not** updated. This way, opting back in re-establishes identity correctly on the next dispatch.
+When opted out, auto-identify is paused: neither `lastIdentifiedUserID` nor `lastIdentifiedProperties` is updated. Opting back in re-establishes identity correctly on the next dispatch.
 
 ## Flushing
 
