@@ -5,9 +5,10 @@ Persist scalar preferences like theme, sort order, or last-seen version — test
 ## Overview
 
 ``KeyValueStore`` is a small protocol for one-shot scalar values that don't fit
-the ``EntityStore`` model. Two implementations ship:
+the ``EntityStore`` model. Three implementations ship:
 
 - ``UserDefaultsKeyValueStore`` — production, backed by any `UserDefaults` suite
+- ``KeychainKeyValueStore`` — production, backed by the system Keychain (survives reinstall)
 - ``InMemoryKeyValueStore`` — tests, dictionary-backed, reference semantics
 
 Inject through your `Environment`, hydrate state at startup, and write from
@@ -30,11 +31,61 @@ which pairs a backing-store name with its `Codable` value type at compile time.
 | Need | Use |
 |---|---|
 | Collection of identifiable entities (decks, cards, sessions) | ``EntityStore`` + ``PersistencePlugin`` |
-| Scalar preference (theme, sort order, last-seen version) | ``KeyValueStore`` |
+| Scalar preference (theme, sort order, last-seen version) | ``KeyValueStore`` (UserDefaults) |
+| Anonymous device identity that must survive reinstall | ``KeyValueStore`` (Keychain) |
 
 `EntityStore` is for many-of-a-kind data with change tracking and batched
 writes. `KeyValueStore` is for one-of-a-kind values that you read once at
 startup and overwrite on change.
+
+### UserDefaults vs Keychain
+
+| | ``UserDefaultsKeyValueStore`` | ``KeychainKeyValueStore`` |
+|---|---|---|
+| Survives reinstall? | No | Yes (this-device-only by default) |
+| Backup / device migration | Included | Excluded with default accessibility |
+| Throughput | Fast (in-memory cache) | Slower (system call) |
+| Visible to other apps? | No (per app/group) | Optionally (App Groups via `accessGroup:`) |
+| Best for | Theme, sort order, feature toggles, last-seen version | Anonymous device ID, opaque tokens |
+
+The Keychain costs more per access — hydrate once at launch and observe state
+afterward, never read inside a reducer.
+
+## Device-Identity Pattern
+
+The original motivation for ``KeychainKeyValueStore`` was apps without user
+auth that still want stable identity for analytics. Stash a UUID once, hydrate
+into `AppState` at launch, feed it to `AnalyticsIdentity`:
+
+```swift
+extension KVKey where Value == String {
+    static let deviceID = KVKey<String>("device-id")
+}
+
+// In Store.configured(), before constructing the store:
+let kv = KeychainKeyValueStore(service: "com.example.myapp")
+let deviceID = kv.value(.deviceID) ?? {
+    let new = UUID().uuidString
+    kv.setValue(new, for: .deviceID)
+    return new
+}()
+
+let initialState = AppState(deviceID: deviceID, /* … */)
+```
+
+Then in the analytics plugin wiring:
+
+```swift
+AnalyticsPlugin(
+    service: analytics,
+    identity: AnalyticsIdentity(userID: \.deviceID, properties: { _ in [:] }),
+    // …
+)
+```
+
+The closure-based `userID` keypath runs on every dispatch, so the value
+**must** live in state — never call into the Keychain from the closure. Hydrate
+once; observe state.
 
 ## Type-safe Keys
 
@@ -226,4 +277,5 @@ Old keys can be cleaned up at startup with ``KeyValueStore/removeValue(for:)``
 ### Implementations
 
 - ``UserDefaultsKeyValueStore``
+- ``KeychainKeyValueStore``
 - ``InMemoryKeyValueStore``
