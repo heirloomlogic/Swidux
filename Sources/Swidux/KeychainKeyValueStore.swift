@@ -46,6 +46,52 @@ import os
 /// the protocol's `Codable` surface is fine for short opaque tokens but not
 /// designed for secrets that require Face ID / Touch ID gating.
 ///
+/// ## Sandboxing & entitlements (macOS)
+///
+/// This store uses the data-protection keychain
+/// (`kSecUseDataProtectionKeychain`), so it **never** triggers a user-facing
+/// prompt: no legacy "Always Allow / Deny" dialog, no prompt on a locked
+/// keychain, and — because no `kSecAttrAccessControl` is requested — no
+/// Touch ID / Face ID / password challenge.
+///
+/// A *sandboxed* macOS app must still be entitled to use that keychain. It
+/// needs either an `application-identifier` entitlement (Xcode adds this
+/// automatically for provisioning-profile–signed builds) or an explicit
+/// `keychain-access-groups` entry. Without one, ``setValue(_:for:)`` fails
+/// with `errSecMissingEntitlement` (`OSStatus` −34018). This is a
+/// build/signing condition surfaced at runtime, **not** a user prompt:
+///
+/// ```xml
+/// <key>keychain-access-groups</key>
+/// <array>
+///     <string>$(AppIdentifierPrefix)com.example.myapp</string>
+/// </array>
+/// ```
+///
+/// iOS / iPadOS / tvOS / watchOS only have the data-protection keychain and
+/// supply the access group implicitly — no extra entitlement is required.
+///
+/// ### Which entitlement, for privacy
+///
+/// Encryption, this-device-only accessibility, iCloud-sync exclusion, and
+/// backup exclusion are identical whichever path you take — the access group
+/// only governs *which of your own apps* can read an item, never third
+/// parties or the cloud. For app-private identifiers, in order of strictness:
+///
+/// 1. **Most private:** a provisioning-profile–signed build with
+///    `accessGroup: nil`, relying on the implicit `application-identifier`
+///    group (`<TeamPrefix>.<bundle-id>`). No other app — even one you sign
+///    under the same team — can ever be entitled to it. Mirrors the iOS
+///    default exactly; zero sharing surface.
+/// 2. **Practically equivalent:** a `keychain-access-groups` array whose
+///    *only* entry is the team-prefixed bundle id (the snippet above). Use
+///    this when a profile-signed build isn't available (unsigned local / CI
+///    dev, where −34018 bites). The one delta from (1): another app you sign
+///    under the same team could also declare that string and read the items.
+/// 3. **Intentional sharing only:** a deliberately shared group string. The
+///    *first* element of `keychain-access-groups` becomes the default group
+///    for new items, so never put a shared group first for private data.
+///
 /// ## Sendable
 ///
 /// Marked `@unchecked Sendable`. The `Security` framework's `SecItem*` calls
@@ -100,8 +146,9 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     ///     reverse-DNS string.
     ///   - accessGroup: Optional `kSecAttrAccessGroup`. Set to share items
     ///     across apps or extensions in the same Keychain access group.
-    ///     Requires the `keychain-access-groups` entitlement to be
-    ///     configured. `nil` (default) uses the app's private keychain.
+    ///     `nil` (default) uses the app's private keychain. Either way, a
+    ///     sandboxed macOS app needs a keychain entitlement — see
+    ///     *Sandboxing & entitlements (macOS)* in the type overview.
     ///   - accessibility: When items become readable. See ``Accessibility``.
     ///   - encoder: JSON encoder used to serialize values.
     ///   - decoder: JSON decoder used to deserialize values.

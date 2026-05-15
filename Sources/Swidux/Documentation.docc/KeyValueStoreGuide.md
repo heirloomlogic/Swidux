@@ -51,6 +51,44 @@ startup and overwrite on change.
 The Keychain costs more per access — hydrate once at launch and observe state
 afterward, never read inside a reducer.
 
+### macOS sandbox & entitlements
+
+`KeychainKeyValueStore` uses the data-protection keychain, so it never raises
+a user prompt — no "Always Allow / Deny" dialog, no locked-keychain prompt, no
+Touch ID / Face ID challenge.
+
+> Tip: A *sandboxed* macOS app still needs a keychain entitlement, even when
+> not sharing items across an access group. Xcode supplies an
+> `application-identifier` automatically for provisioning-profile–signed
+> builds; otherwise add an explicit `keychain-access-groups` entry:
+>
+> ```xml
+> <key>keychain-access-groups</key>
+> <array>
+>     <string>$(AppIdentifierPrefix)com.example.myapp</string>
+> </array>
+> ```
+>
+> Without it, the first `setValue` fails with `errSecMissingEntitlement`
+> (`OSStatus` −34018). This is a build/signing condition, not a runtime
+> prompt. iOS / iPadOS / tvOS / watchOS need no extra entitlement.
+
+Encryption, accessibility, iCloud-sync exclusion, and backup exclusion are
+identical whichever entitlement you use — the access group only controls
+*which of your own apps* can read an item, never third parties or the cloud.
+For a private device ID, in order of strictness:
+
+1. **Most private:** profile-signed build + `accessGroup: nil`, relying on the
+   implicit `application-identifier` group. No other app — even same-team —
+   can be entitled to it. Mirrors the iOS default; zero sharing surface.
+2. **Practically equivalent:** a `keychain-access-groups` array whose only
+   entry is the team-prefixed bundle id (the snippet above). Use when a
+   profile-signed build isn't available (unsigned local / CI dev). Only delta:
+   a same-team app you sign could also declare that string.
+3. **Intentional sharing only:** a shared group string. The *first* element
+   becomes the default group for new items — never put a shared group first
+   for private data.
+
 ## Device-Identity Pattern
 
 The original motivation for ``KeychainKeyValueStore`` was apps without user
