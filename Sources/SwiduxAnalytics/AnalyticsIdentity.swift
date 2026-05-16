@@ -41,9 +41,26 @@ public struct AnalyticsIdentity<State>: Sendable {
 }
 
 extension AnalyticsIdentity {
-    /// KeyPath convenience: `AnalyticsIdentity(userID: \.auth.currentUserID)`.
+    /// KeyPath convenience for an ID that may be absent for part of the
+    /// lifecycle (signed-out auth): `AnalyticsIdentity(userID: \.auth.currentUserID)`.
+    /// `nil → value` fires `identify`; `value → nil` fires `reset`. For an
+    /// always-present ID, use the `KeyPath<State, String>` overload.
     public init(
         userID keyPath: KeyPath<State, String?> & Sendable,
+        userProperties: @escaping @Sendable (State) -> [String: AnalyticsValue] = { _ in [:] }
+    ) {
+        self.init(
+            userID: { state in state[keyPath: keyPath] },
+            userProperties: userProperties
+        )
+    }
+
+    /// KeyPath convenience for an always-present ID (device-stable identity):
+    /// `AnalyticsIdentity(userID: \.deviceID)`. State holds a non-optional
+    /// `String`. Use the `KeyPath<State, String?>` overload for IDs that may
+    /// be absent (signed-out auth).
+    public init(
+        userID keyPath: KeyPath<State, String> & Sendable,
         userProperties: @escaping @Sendable (State) -> [String: AnalyticsValue] = { _ in [:] }
     ) {
         self.init(
