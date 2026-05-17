@@ -46,7 +46,11 @@ extension ObservedPaywallState: SwiduxObservable {
     @MainActor static func apply(
         _ snapshot: ObservedPaywallState, to observer: ObservedPaywallObserver
     ) {
-        if observer.paywall != snapshot.paywall { observer.paywall = snapshot.paywall }
+        // Unconditional plain assignment — mirrors the generated `apply`
+        // (ConformanceGenerator) and the other Store test mocks. The
+        // suppression under test must come from @Observable's setter
+        // equality-gating an equal value, NOT from a guard in this mock.
+        observer.paywall = snapshot.paywall
     }
     @MainActor static func applyRestore(
         from snapshot: ObservedPaywallState, to current: inout ObservedPaywallState
