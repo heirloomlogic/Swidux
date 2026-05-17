@@ -1,10 +1,44 @@
 # Service-result reconcile: suppress redundant entitlement/verdict/config signals
 
 Date: 2026-05-16
-Status: Approved design (pre-implementation)
-Scope: **code change: `SwiduxPaywall` only**; documented convention: all three
+Status: **Superseded by Revision 2 — documentation-only outcome, no plugin code change**
+Scope: **no plugin code change**; documented convention: all three
 
-## Revision 2026-05-16 — scope narrowed to Paywall
+## Revision 2 (2026-05-16) — no code change; the guard is inert for all three
+
+Execution-time verification falsified the technical premise of Approach A
+(and of Revision 1's "Approach A works for Paywall"). The "revert the guard
+and watch the Tier 2 test fail" step showed the test *still passed* without
+the guard.
+
+Mechanism: `Store.send` does **not** mutate the observed property through
+`inout`. It packs `var state = State(observer: observer)`, the plugin
+mutates that **local struct copy**, then `State.apply(state, to: observer)`
+writes back. The generated `apply` for a leaf slice
+(`ConformanceGenerator.swift:36`) is a **plain assignment**
+`observer.paywall = snapshot.paywall`, and `@Observable`'s synthesized
+setter **equality-gates `Equatable` values** (see [[observable-findings]],
+Experiment 1 / root cause #1). So a redundant cycle leaves the local struct
+equal → `apply` assigns an equal value → `@Observable` suppresses the
+notification, **with or without any reducer guard**.
+
+The "`inout` bypasses `@Observable` equality" rationale describes
+Experiment 2 (a Store that does `reduce(state: &observedProperty)`
+directly). Swidux deliberately does not do that — it uses pack/unpack +
+plain-assignment `apply` (Experiment 3; the memory concluded "equality
+guards can be removed"). Therefore the reducer reconcile guard is inert for
+**Paywall, Killswitch, and FeatureFlags alike** — Paywall is not special.
+
+State observation is already deduplicated by the Store before any change.
+The downstream's `paywall_entitlement_snapshot`-on-every-snapshot is caused
+by mapping the **action** (whose cadence no guard changes), not state.
+
+**Decision (supersedes Revision 1): no plugin code change to any of the
+three. The fix is the documented convention only. A Store-level
+`@Observable`/`apply` suppression regression test is kept (it pins Store
+behavior, not a plugin guard).**
+
+## Revision 1 (2026-05-16) — scope narrowed to Paywall *(superseded by Revision 2)*
 
 The initial design applied Approach A to all three plugins. Tracing how
 observation actually works (`SwiduxObservable` / `Store.apply`, precedent in
@@ -60,7 +94,13 @@ Precedents already in the repo: `AnalyticsPlugin` diffs
 (`FeatureFlagsPlugin.swift:110`) already uses the
 `guard !already else { return nil }` "suppress redundant signal" idiom.
 
-## Why a guard is required (not cosmetic)
+## Why a guard is required (not cosmetic) *(WRONG — superseded by Revision 2)*
+
+> This section's premise is false for the Swidux `Store`. Retained only to
+> document the reasoning that the execution-time verification falsified. See
+> Revision 2: `Store.send` mutates a local struct copy, not the observed
+> property; `State.apply`'s plain assignment is `@Observable`
+> equality-gated, so no reducer guard is required or effective.
 
 Plugins mutate through `state: inout RootState` → `state[keyPath:]`. Per the
 project finding (`memory/observable-findings.md`), the `inout`/`_modify`
@@ -76,7 +116,11 @@ never suppress there; only writing `state.verdict` on real change yields a
 clean verdict transition. Hence the comparison must be scoped to the
 **meaningful field only** and must exclude bookkeeping fields.
 
-## Approach (chosen: A — reducer reconciliation guard)
+## Approach (chosen: A — reducer reconciliation guard) *(NOT IMPLEMENTED — superseded by Revision 2)*
+
+> No reducer guard was shipped. The guard is inert under the Swidux Store
+> (see Revision 2). The sections below are the original proposal, retained
+> for the decision trail only.
 
 Unified rule, applied identically to all three service-result reducer cases:
 
@@ -117,20 +161,24 @@ consumers). They are covered by the documented convention only.
 
 ## Documented convention
 
-Add a "Service-result actions and transition observation" subsection to
+This is the **entire fix** (Revision 2). Add a "Service-result actions and
+transition observation" subsection to
 `Sources/Swidux/Documentation.docc/PluginArchitecture.md`, cross-referenced
 from `PluginPaywallReference.md`, `PluginKillswitchReference.md`, and the
-FeatureFlags reference. Update the `customerInfoUpdated` /
-`verdictReceived` / `refreshSucceeded` action-semantics bullets to state the
-reconcile-on-change behavior. Convention text:
+FeatureFlags reference. Convention text:
 
-> A service-result action fires on every fetch/stream tick, not only when
-> the value changed. It always performs per-cycle bookkeeping (resolve
-> loading, advance cache gates, clear errors) and reconciles its meaningful
-> payload only on change. Derive analytics and side effects from the state
-> slice transition, never from the raw service-result action. This mirrors
-> how `AnalyticsPlugin` derives identity from state via `AnalyticsIdentity`,
-> not from raw actions.
+> A service-result action (`customerInfoUpdated`, `verdictReceived`,
+> `refreshSucceeded`) fires on **every** fetch/stream tick, not only when
+> the value changed, and unconditionally writes its payload. Do **not** map
+> analytics or side effects to the raw action — it fires duplicates by
+> design. Observe the **state slice** (or a value derived from it) instead:
+> the Swidux `Store` packs state, lets reducers mutate a copy, then writes
+> back via `State.apply`, whose plain assignment is `@Observable`
+> equality-gated — so a slice whose value did not change emits no
+> notification, and a value-diffing consumer (`AnalyticsIdentity.userProperties`,
+> which `AnalyticsPlugin` re-evaluates and diffs every dispatch) sees
+> exactly the real transitions. This dedup is a property of the Store, not
+> of any per-plugin guard.
 
 ## Testing (Paywall only)
 
@@ -141,33 +189,32 @@ Tier 1 — reducer behavior (existing harness style):
 - Transition: a `customerInfoUpdated` snapshot whose entitlement differs from
   current → `isPro`/`hasPermanentLicense` updated **and** bookkeeping applied
   (`isLoading == false`, `error == nil`).
-- Redundant: from a non-loading state, an identical-entitlement
-  `customerInfoUpdated` → entitlement unchanged **and** bookkeeping still ran
-  (`isLoading == false`, `error == nil`).
+- Redundant: from a dirty state (`isLoading == true`, `error` set), an
+  identical-entitlement `customerInfoUpdated` → entitlement unchanged
+  **and** bookkeeping still ran (`isLoading == false`, `error == nil`).
 
-Tier 2 — suppression regression guard (pins `if changed`; Tier 1 value
-assertions cannot, since the value is identical either way): host
-`PaywallPlugin` in a real `Store` via `PluginHost` (precedent:
-`StoreBindingTests` `withObservationTracking` + `TrackingFlag`). Requires a
-local `SwiduxObservable` test state with an `@Observable` observer holding
-`var paywall: PaywallState` (hand-written conformance, mirroring
-`StoreTests.swift`). On the stream path (entitlement steady, not loading):
-redundant `customerInfoUpdated` `send` → tracking does **not** re-fire;
-genuine entitlement change `send` → it **does**. `await Task.yield()` before
-asserting (Observation callbacks fire next runloop tick).
+Tier 2 — **Store-level suppression regression guard** (not a plugin-guard
+pin; per Revision 2 there is no plugin guard). Host `PaywallPlugin` in a
+real `Store` via `PluginHost` (precedent: `StoreBindingTests`
+`withObservationTracking` + `TrackingFlag`; hand-written `SwiduxObservable`
+conformance mirroring `StoreTests.swift`). Redundant `customerInfoUpdated`
+`send` → tracking does **not** re-fire; genuine entitlement change `send` →
+it **does**. `await Task.yield()` before asserting. This pins the Store's
+pack/unpack + plain-assignment `apply` + `@Observable` equality behavior, so
+a regression there (or losing `Equatable` on `PaywallState`) is caught.
+Shipped as `Tests/SwiduxPaywallTests/PaywallPluginSuppressionTests.swift`.
 
 ## Out of scope
 
-- **No code change to `KillswitchPlugin` / `FeatureFlagsPlugin`** (see
-  Revision — a guard there is inert; convention doc covers them).
-- No `PaywallAction` enum, `PaywallService` protocol, or factory changes.
-  API surface unchanged.
-- No state-shape decomposition (rejected option 3 — separately-observed
-  fields).
+- **No code change to any of the three plugins** (see Revision 2 — the
+  guard is inert under the Swidux Store; the convention doc is the fix).
+- No `*Action` enum, `*Service` protocol, or factory changes. API surface
+  unchanged.
+- No state-shape decomposition.
 - `recordExposure` unchanged (already correct; cited as precedent).
 - No shared `reconcile` helper.
-- `AnalyticsPlugin` untouched (identity diff already handles identify; this
-  makes the Paywall state it derives from truthful).
+- `AnalyticsPlugin` untouched (identity diff already handles identify;
+  state observation is already deduplicated by the Store).
 
 ## Downstream impact
 

@@ -1,5 +1,14 @@
 # Paywall Entitlement Reconcile Implementation Plan
 
+> **SUPERSEDED (2026-05-16, Revision 2 of the design doc).** Execution
+> verification proved the reducer guard inert in the Swidux Store
+> (`Store.send` mutates a local struct copy; `State.apply` plain assignment
+> is `@Observable` equality-gated — dedup is a Store property, not a plugin
+> guard). The guard (Task 1) was reverted in commit 6252fb7. Task 2's test
+> is retained but reframed as a Store-level suppression regression test.
+> The real fix is Task 3 (convention docs) only. Tasks 1–2 below are
+> retained for the decision trail; do not re-implement the guard.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make `PaywallPlugin.customerInfoUpdated` reconcile the entitlement only when it actually changed, so a steady-state stream tick no longer propagates a spurious entitlement transition, while keeping per-cycle bookkeeping unconditional.
