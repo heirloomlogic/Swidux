@@ -219,7 +219,7 @@ The plugin only handles its own actions. Any action that `extractAction` returns
 
 The combination of `.forceFetch`'s cached-fallback behavior and `.fetch`'s cache-freshness gate is the basis for the plugin's offline tolerance: a launch on a flaky network still yields a verdict (cached) and an error indicator (`fetchError`), without leaving the UI stuck on `.unknown`.
 
-> Note: `.verdictReceived` is dispatched on every `.fetch`/`.forceFetch` (cache hit or network), usually with an unchanged verdict. Consume verdict transitions by observing `KillswitchState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture> § "Service-result actions and transition observation".
+> Note: `.verdictReceived` is dispatched on every `.fetch`/`.forceFetch` (cache hit or network), usually with an unchanged verdict. Consume verdict transitions by observing `KillswitchState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
 
 ## Verdict evaluation rules
 

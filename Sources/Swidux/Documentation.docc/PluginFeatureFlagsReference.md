@@ -129,4 +129,4 @@ Reads are pure synchronous functions. Per-property observation works as it does 
 
 ## Action semantics (selected)
 
-`refreshSucceeded(FeatureFlagsConfig, fetchedAt:)` is dispatched on every `.refresh` (including debounced refreshes that return an unchanged config). Consume config transitions by observing `FeatureFlagsState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture> § "Service-result actions and transition observation".
+`refreshSucceeded(FeatureFlagsConfig, fetchedAt:)` is dispatched on every `.refresh` (including debounced refreshes that return an unchanged config). Consume config transitions by observing `FeatureFlagsState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.

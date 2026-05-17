@@ -87,7 +87,7 @@ plugins.register(paywallPlugin)
 
 Undo must come first — it snapshots state in `willReduce`, before the app reducer or any plugin modifies it. Persistence typically comes next so its `afterReduce` drain sees the final state. Domain plugins use only `reduce`, so their relative order rarely matters.
 
-## Service-result actions and transition observation
+## Service-Result Actions and Transition Observation
 
 A *service-result action* — `PaywallPlugin`'s `customerInfoUpdated`,
 `KillswitchPlugin`'s `verdictReceived`, `FeatureFlagsPlugin`'s
@@ -106,7 +106,7 @@ snapshot, then writes back via `State.apply`. For a leaf slice that write
 is a plain assignment whose `@Observable` setter equality-gates `Equatable`
 values, so a slice whose value did not change emits no notification — and a
 value-diffing consumer such as `AnalyticsIdentity.userProperties` (which
-`AnalyticsPlugin` re-evaluates and diffs every dispatch) sees exactly the
+`AnalyticsPlugin` re-evaluates and diffs every non-analytics dispatch) sees exactly the
 real transitions. This dedup is a property of the `Store`, not of any
 per-plugin guard, so a no-op service-result cycle is silent to state
 observers without any extra reducer logic.
