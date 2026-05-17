@@ -24,7 +24,12 @@ Add the product to your target dependencies in `Package.swift` alongside `Swidux
 
 ## Provided implementations
 
-The plugin ships with `MockAnalyticsService` for previews and tests. For production Mixpanel integrations, the [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) companion package provides:
+The plugin ships with two in-repo conformers, both provider-agnostic and SDK-free:
+
+- `MockAnalyticsService` — silent no-op, for previews and tests.
+- `ConsoleAnalyticsService` — logs every call to `os.Logger`. Use this as the default `service:` while the analytics vendor decision is still open: analytics wiring can be developed and QA-tested end to end with no SDK and no vendor commitment. Adopting a real provider later is the usual two-line change in `Store.configured()`.
+
+For production Mixpanel integrations, the [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) companion package provides:
 
 - `MixpanelAnalyticsService` — an `AnalyticsService` conformer that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types.
 - `MockMixpanelAnalyticsService` — a Mixpanel-flavored mock for previews.
@@ -189,6 +194,18 @@ No-op conformer for previews and development.
 public struct MockAnalyticsService: AnalyticsService {
     public init()
     // All methods are no-ops.
+}
+```
+
+### `ConsoleAnalyticsService`
+
+Logs every `track`/`identify`/`alias`/`reset`/`flush` to `os.Logger`, with a recursive pretty-printer for `AnalyticsValue`. The recommended default before a vendor is chosen.
+
+```swift
+public struct ConsoleAnalyticsService: AnalyticsService {
+    public init(subsystem: String = "Swidux", category: String = "Analytics")
+    // Each call logs one structured line; output visible in
+    // the Xcode console and Console.app, quiet in Release.
 }
 ```
 

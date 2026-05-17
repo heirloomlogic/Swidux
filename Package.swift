@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "SwiduxKillswitch", targets: ["SwiduxKillswitch"]),
         .library(name: "SwiduxParentalGate", targets: ["SwiduxParentalGate"]),
         .library(name: "SwiduxPaywall", targets: ["SwiduxPaywall"]),
+        .library(name: "SwiduxDevPaywallUI", targets: ["SwiduxDevPaywallUI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
@@ -76,6 +77,13 @@ let package = Package(
                 .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
+        .target(
+            name: "SwiduxDevPaywallUI",
+            dependencies: ["SwiduxPaywall"],
+            plugins: [
+                .plugin(name: "Persnoop", package: "Persnicket")
+            ]
+        ),
         .testTarget(
             name: "SwiduxTests",
             dependencies: ["Swidux"],
@@ -124,6 +132,13 @@ let package = Package(
         .testTarget(
             name: "SwiduxPaywallTests",
             dependencies: ["Swidux", "SwiduxPaywall"],
+            plugins: [
+                .plugin(name: "Persnoop", package: "Persnicket")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxDevPaywallUITests",
+            dependencies: ["SwiduxPaywall", "SwiduxDevPaywallUI"],
             plugins: [
                 .plugin(name: "Persnoop", package: "Persnicket")
             ]
