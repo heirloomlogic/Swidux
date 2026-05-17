@@ -87,6 +87,30 @@ plugins.register(paywallPlugin)
 
 Undo must come first — it snapshots state in `willReduce`, before the app reducer or any plugin modifies it. Persistence typically comes next so its `afterReduce` drain sees the final state. Domain plugins use only `reduce`, so their relative order rarely matters.
 
+## Service-Result Actions and Transition Observation
+
+A *service-result action* — `PaywallPlugin`'s `customerInfoUpdated`,
+`KillswitchPlugin`'s `verdictReceived`, `FeatureFlagsPlugin`'s
+`refreshSucceeded` — fires on **every** fetch, refresh, or stream tick, not
+only when the value changed, and unconditionally writes its payload to the
+state slice. The payload is frequently identical to what is already there
+(a re-delivered entitlement, an unchanged remote config).
+
+Do **not** map analytics or side effects to the raw service-result action:
+it fires duplicates by design. Observe the **state slice** — or a value
+derived from it — instead.
+
+State observation is already deduplicated by the framework. `Store.send`
+packs the observer into a value-type snapshot, lets reducers mutate the
+snapshot, then writes back via `State.apply`. For a leaf slice that write
+is a plain assignment whose `@Observable` setter equality-gates `Equatable`
+values, so a slice whose value did not change emits no notification — and a
+value-diffing consumer such as `AnalyticsIdentity.userProperties` (which
+`AnalyticsPlugin` re-evaluates and diffs every non-analytics dispatch) sees exactly the
+real transitions. This dedup is a property of the `Store`, not of any
+per-plugin guard, so a no-op service-result cycle is silent to state
+observers without any extra reducer logic.
+
 ## Next Steps
 
 - <doc:BuildingADomainPlugin> — Step-by-step guide to creating a domain plugin

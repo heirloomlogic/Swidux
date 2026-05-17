@@ -101,6 +101,28 @@ struct PaywallPluginTests {
         #expect(state.paywall.error == nil)
     }
 
+    @Test("customerInfoUpdated keeps unchanged entitlement but still clears loading/error")
+    func customerInfoUpdatedRedundantCycleStillBookkeeps() {
+        let plugin = makePlugin()
+        var state = TestState()
+        state.paywall.isPro = true
+        state.paywall.isLoading = true
+        state.paywall.error = "stale"
+
+        let snapshot = EntitlementSnapshot(isPro: true, hasPermanentLicense: false)
+        _ = plugin.reduce(
+            state: &state,
+            action: .paywall(.customerInfoUpdated(snapshot))
+        )
+
+        // Meaningful payload unchanged.
+        #expect(state.paywall.isPro == true)
+        #expect(state.paywall.hasPermanentLicense == false)
+        // Bookkeeping ran unconditionally.
+        #expect(state.paywall.isLoading == false)
+        #expect(state.paywall.error == nil)
+    }
+
     @Test("refreshFailed sets error and clears loading")
     func refreshFailedSetsError() {
         let plugin = makePlugin()
