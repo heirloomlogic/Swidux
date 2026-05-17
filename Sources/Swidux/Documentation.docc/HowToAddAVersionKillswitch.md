@@ -228,7 +228,30 @@ Rules combine. Adding all of them in one document lets you lift the floor *and* 
 }
 ```
 
-Serve the JSON with a short `Cache-Control` (60–300 seconds) — the plugin already caches client-side via `cacheLifetime`, but a short edge-cache TTL keeps your origin from getting hammered after you push a config change.
+### Where to host it
+
+The contract is small: a public `GET` that returns `KillswitchConfig`-shaped JSON. It's read on every cold launch, the plugin is fail-open, and it caches the result client-side — so the backend can be trivial. The one requirement that actually shapes the choice: **a killswitch's value is how fast you can push an emergency block.** Anything that needs a redeploy or a git build to change the config defeats the purpose.
+
+| Option | Change config without redeploy? | Propagation | Notes |
+|---|---|---|---|
+| **Cloudflare Worker + Workers KV** *(recommended)* | ✅ `wrangler kv key put` or dashboard | seconds | Flip in seconds, edge-cached, room to add logic (geo/gradual/per-build) later. Runnable example below. |
+| Static object (R2 / S3 + CDN) | ✅ re-upload object | seconds (after purge) | Zero code. Must set `Cache-Control` as object metadata; no room to grow. |
+| Static site / Pages (git-backed) | ❌ commit + build | ~minutes | The trap: build latency kills the *emergency* use case. |
+| GitHub raw / Gist | ✅ edit file | unpredictable | Not a production CDN; you don't control `Cache-Control`, stale exactly when freshness matters. |
+| Your own app backend | ✅ | instant | The trap: it's the service most likely down precisely when you need the killswitch. |
+
+**Recommended: Cloudflare Worker + KV.** The config lives in a KV key; the Worker returns it with a short `Cache-Control`. You push an emergency block by writing one KV key — no redeploy. A complete, runnable example (Worker, `wrangler.toml`, seed config, setup/deploy/smoke-test steps) is in `Examples/KillswitchWorker/`. The short version: create a KV namespace → seed the config key → `wrangler deploy` → point `KillswitchService.live(endpoint:)` at the Worker URL.
+
+**Minimal alternative: a static object** (Cloudflare R2, S3, any object store fronted by a CDN). Upload `killswitch.json`, set a short `Cache-Control` on the object, re-upload to change it. Zero code; you give up the room to add server-side logic later. Equivalent push-in-seconds latency for this use case.
+
+### Freshness: the backend can't fix client staleness
+
+The plugin caches the fetched config for `cacheLifetime` (**default 3600s**) regardless of how fresh your endpoint is. With the default, a perfectly deployed emergency block still won't reach an already-launched app for up to an hour — and no backend choice changes that. If fast emergency response matters:
+
+- Lower `cacheLifetime` to ~300–900s in `KillswitchService.live(endpoint:fetchTimeout:cacheLifetime:session:)`.
+- Dispatch `.killswitch(.forceFetch)` on app-foreground — it bypasses the freshness gate, so a returning user re-checks immediately.
+
+Keep your endpoint's edge `Cache-Control` at or below `cacheLifetime`; caching longer at the edge than the client will re-ask buys nothing.
 
 ## Testing
 
