@@ -148,7 +148,7 @@ Sets `isLoading = true`. Returns a one-shot effect that calls `PaywallService.cu
 
 ### `customerInfoUpdated(EntitlementSnapshot)`
 
-Sets `isPro` and `hasPermanentLicense` from the snapshot, clears `isLoading`, and clears `error`. Returns no effect. The plugin emits this internally; your code rarely dispatches it directly.
+Sets `isPro` and `hasPermanentLicense` from the snapshot, clears `isLoading`, and clears `error`. Returns no effect. The plugin emits this internally; your code rarely dispatches it directly. Note that the plugin emits this on **every** snapshot (each `customerInfoStream()` value, every `refreshCustomerInfo`/`restorePurchases`), not only on entitlement changes — observe `PaywallState` (or a value derived from it) for transitions rather than mapping this action directly. See <doc:PluginArchitecture> § "Service-result actions and transition observation".
 
 ### `refreshFailed(String)`
 
