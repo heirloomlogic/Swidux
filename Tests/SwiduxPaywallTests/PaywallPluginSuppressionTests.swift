@@ -62,14 +62,21 @@ enum ObservedPaywallAction: Sendable {
 private final class TrackingFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
-    var fired: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func mark() { lock.lock(); value = true; lock.unlock() }
+    var fired: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+    func mark() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
 }
 
 @Suite("PaywallPlugin suppression")
 @MainActor
 struct PaywallPluginSuppressionTests {
-
     private func makeStore() -> Store<ObservedPaywallState, ObservedPaywallAction> {
         let plugin = PaywallPlugin<ObservedPaywallState, ObservedPaywallAction>(
             state: \.paywall,
@@ -93,9 +100,11 @@ struct PaywallPluginSuppressionTests {
     @Test("redundant snapshot does not notify the paywall slice")
     func redundantSnapshotIsSilent() async {
         let store = makeStore()
-        store.send(.paywall(.customerInfoUpdated(
-            EntitlementSnapshot(isPro: true)
-        )))
+        store.send(
+            .paywall(
+                .customerInfoUpdated(
+                    EntitlementSnapshot(isPro: true)
+                )))
         await Task.yield()
 
         let flag = TrackingFlag()
@@ -105,9 +114,11 @@ struct PaywallPluginSuppressionTests {
             flag.mark()
         }
 
-        store.send(.paywall(.customerInfoUpdated(
-            EntitlementSnapshot(isPro: true)
-        )))
+        store.send(
+            .paywall(
+                .customerInfoUpdated(
+                    EntitlementSnapshot(isPro: true)
+                )))
         await Task.yield()
 
         #expect(flag.fired == false)
@@ -116,9 +127,11 @@ struct PaywallPluginSuppressionTests {
     @Test("real entitlement change notifies the paywall slice")
     func realChangeNotifies() async {
         let store = makeStore()
-        store.send(.paywall(.customerInfoUpdated(
-            EntitlementSnapshot(isPro: false)
-        )))
+        store.send(
+            .paywall(
+                .customerInfoUpdated(
+                    EntitlementSnapshot(isPro: false)
+                )))
         await Task.yield()
 
         let flag = TrackingFlag()
@@ -128,9 +141,11 @@ struct PaywallPluginSuppressionTests {
             flag.mark()
         }
 
-        store.send(.paywall(.customerInfoUpdated(
-            EntitlementSnapshot(isPro: true)
-        )))
+        store.send(
+            .paywall(
+                .customerInfoUpdated(
+                    EntitlementSnapshot(isPro: true)
+                )))
         await Task.yield()
 
         #expect(flag.fired == true)
