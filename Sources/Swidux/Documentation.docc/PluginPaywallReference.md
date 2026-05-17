@@ -17,7 +17,12 @@ Add the product to your target dependencies in `Package.swift` alongside `Swidux
 
 ## Provided implementations
 
-The plugin ships with `MockPaywallService` for previews and tests. For production RevenueCat integrations, the [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) companion package provides:
+The plugin ships with two in-repo conformers, both provider-agnostic and SDK-free:
+
+- `MockPaywallService` — fixed snapshot, stream finishes immediately; for previews and tests.
+- `SimulatedPaywallService` — a stateful, fully driveable service. Paired with the `SwiduxDevPaywallUI` debug sheet, it lets a developer or QA tester grant Pro/Trial/Permanent, restore, and simulate failure/latency — all flowing through the real plugin pipeline, with no SDK and no vendor commitment. Use it as the `service:` while the paywall vendor decision is still open.
+
+For production RevenueCat integrations, the [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) companion package provides:
 
 - `RevenueCatPaywallService` — a `PaywallService` conformer that bridges RevenueCat's `CustomerInfo` stream and `restorePurchases()` API.
 - `MockRevenueCatPaywallService` — a RevenueCat-flavored mock for previews.
@@ -125,6 +130,66 @@ public struct MockPaywallService: PaywallService {
     public func restorePurchases() async throws -> EntitlementSnapshot
 }
 ```
+
+### `SimulatedPaywallService`
+
+Stateful `actor` conformer for development and QA. Holds the current entitlement and multicasts changes through `customerInfoStream()`, so simulated grants survive a later `refreshCustomerInfo`/`restorePurchases` exactly as a real service would.
+
+```swift
+public actor SimulatedPaywallService: PaywallService {
+    public init(
+        isPro: Bool = false,
+        hasPermanentLicense: Bool = false,
+        subsystem: String = "Swidux",
+        category: String = "Paywall"
+    )
+
+    // PaywallService: customerInfo / customerInfoStream / restorePurchases
+
+    // Simulation surface (not part of PaywallService — driven by the dev UI):
+    public func grantPro()
+    public func grantTrial()
+    public func grantPermanentLicense()
+    public func setFree()
+    public func setRestoreShouldFail(_ shouldFail: Bool)
+    public func setRefreshShouldFail(_ shouldFail: Bool)
+    public func setArtificialDelay(_ delay: Duration)
+}
+
+public enum SimulatedPaywallError: Error, Equatable {
+    case restoreFailed
+    case refreshFailed
+}
+```
+
+`EntitlementSnapshot` only models `isPro` / `hasPermanentLicense`, so `grantTrial()` yields `isPro == true` and is distinguished from `grantPro()` only in the log line.
+
+### `SwiduxDevPaywallUI`
+
+A separate, opt-in library product (`import SwiduxDevPaywallUI`) providing a bare-bones debug paywall sheet. It mirrors the shape of the vendor paywall UI so the call site is unchanged when a real provider is adopted:
+
+```swift
+someView.devPaywall(
+    state: store.paywall,
+    service: simulatedPaywallService,
+    onAction: { store.send(.paywall($0)) }
+)
+```
+
+The sheet shows the live `PaywallState`, grant buttons, real Restore/Refresh flows, and QA failure/latency toggles. Hold a **single** `SimulatedPaywallService` instance and pass it to both `Store.configured()` (as the plugin's `service:`) and `.devPaywall(...)`:
+
+```swift
+@State private var paywallService = SimulatedPaywallService()
+@State private var store: AppStore
+
+init() {
+    let service = SimulatedPaywallService()
+    _paywallService = State(initialValue: service)
+    _store = State(initialValue: .configured(paywallService: service))
+}
+```
+
+This is the one place a dev/QA service is intentionally constructed outside `Store.configured()`, because the debug UI must drive the same instance the plugin observes. Swapping to a real provider removes the shared-instance wiring and the `SwiduxDevPaywallUI` import along with the two-line `Store.configured()` change.
 
 ## Action semantics
 
