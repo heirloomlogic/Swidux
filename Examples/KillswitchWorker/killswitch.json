@@ -1,0 +1,6 @@
+{
+    "minimumSupportedVersion": "1.2.0",
+    "blockedTitle": "Update required",
+    "blockedMessage": "Please update Counter to keep using it.",
+    "updateURL": "https://apps.apple.com/app/id000000000"
+}

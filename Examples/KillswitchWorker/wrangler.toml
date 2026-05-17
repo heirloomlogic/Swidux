@@ -1,0 +1,15 @@
+name = "swidux-killswitch"
+main = "worker.js"
+compatibility_date = "2026-05-17"
+
+# Create the namespace once, then paste the printed ids below:
+#
+#   wrangler kv namespace create KILLSWITCH
+#   wrangler kv namespace create KILLSWITCH --preview
+#
+# Each command prints an id. `binding` must stay "KILLSWITCH" — the Worker
+# reads `env.KILLSWITCH`.
+[[kv_namespaces]]
+binding = "KILLSWITCH"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"
