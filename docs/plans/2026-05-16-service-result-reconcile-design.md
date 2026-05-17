@@ -2,7 +2,33 @@
 
 Date: 2026-05-16
 Status: Approved design (pre-implementation)
-Scope: `SwiduxPaywall`, `SwiduxKillswitch`, `SwiduxFeatureFlags`
+Scope: **code change: `SwiduxPaywall` only**; documented convention: all three
+
+## Revision 2026-05-16 — scope narrowed to Paywall
+
+The initial design applied Approach A to all three plugins. Tracing how
+observation actually works (`SwiduxObservable` / `Store.apply`, precedent in
+`StoreBindingTests`) showed the observer tree holds each plugin slice as a
+single observed property — granularity is per-slice, not per-field.
+
+`KillswitchPlugin.verdictReceived` writes `state.lastFetch = Date()` every
+poll, and `FeatureFlagsPlugin.refreshSucceeded` writes
+`state.lastFetchedAt = fetchedAt` every refresh (both mandatory bookkeeping).
+So `KillswitchState`/`FeatureFlagsState` is never equal cycle-to-cycle
+regardless of a verdict/config guard: `Store.apply` reassigns the slice and
+the slice notifies on every poll anyway. Meanwhile a value-diffing consumer
+(the recommended `AnalyticsIdentity.userProperties` path) already sees the
+verdict/config payload as `==` on a no-op cycle, with or without a guard.
+
+Therefore a reconcile guard in Killswitch/FeatureFlags has **no observable
+effect** under the current state shape and its suppression test cannot be
+written. Approach A has real effect **only for Paywall's stream path**, where
+a no-op cycle leaves `PaywallState` fully equal yet the `inout` write still
+notifies. Killswitch/FeatureFlags need no code change — their payload is
+already diff-stable on no-op, so the documented consume-by-value-diff
+convention gives them clean transitions for free.
+
+**Decision: code change = Paywall only. Convention doc = all three.**
 
 ## Problem
 
@@ -81,37 +107,13 @@ case .customerInfoUpdated(let snapshot):
     }
 ```
 
-### KillswitchPlugin — `case .verdictReceived(let verdict)`
+### KillswitchPlugin / FeatureFlagsPlugin — no code change
 
-```swift
-case .verdictReceived(let verdict):
-    // Bookkeeping: advance the cache-TTL gate and clear errors on every poll, cache hit or network.
-    state.lastFetch = Date()
-    state.fetchError = nil
-    // Reconcile verdict only on real change; lastFetch churns every poll and must not count as a change.
-    if verdict != state.verdict {
-        state.verdict = verdict
-    }
-```
-
-### FeatureFlagsPlugin — `case .refreshSucceeded(let config, let fetchedAt)`
-
-```swift
-case .refreshSucceeded(let config, let fetchedAt):
-    // Bookkeeping: record the fetch and resolve progress every refresh.
-    state.lastFetchedAt = fetchedAt
-    state.lastFetchError = nil
-    state.isFetching = false
-    // Reconcile config only on real change.
-    if config != state.config {
-        state.config = config
-    }
-```
-
-All three keep the same "always bookkeep, then conditionally assign
-meaningful field, single `return nil`" shape so the convention is visually
-recognizable. All meaningful payload types are `Equatable`
-(`EntitlementSnapshot`, `KillswitchVerdict`, `FeatureFlagsConfig`).
+Per the revision above, a reconcile guard in `verdictReceived` /
+`refreshSucceeded` has no observable effect (the per-poll
+`lastFetch`/`lastFetchedAt` write churns the whole slice regardless, and the
+verdict/config payload is already `==` on a no-op cycle for value-diffing
+consumers). They are covered by the documented convention only.
 
 ## Documented convention
 
@@ -130,33 +132,42 @@ reconcile-on-change behavior. Convention text:
 > how `AnalyticsPlugin` derives identity from state via `AnalyticsIdentity`,
 > not from raw actions.
 
-## Testing
+## Testing (Paywall only)
 
-Two tiers per plugin (no new test target).
+Two tiers in `Tests/SwiduxPaywallTests/PaywallPluginTests.swift` (no new
+test target).
 
-Tier 1 — reducer behavior (existing `*PluginTests.swift` harness style):
-- Transition: differing payload → meaningful field updated **and**
-  bookkeeping applied.
-- Redundant: identical payload → meaningful field still equals expected
-  **and** bookkeeping demonstrably ran (Killswitch `lastFetch` strictly
-  advances; Paywall `isLoading` `true→false`; FeatureFlags `isFetching`
-  `true→false`).
+Tier 1 — reducer behavior (existing harness style):
+- Transition: a `customerInfoUpdated` snapshot whose entitlement differs from
+  current → `isPro`/`hasPermanentLicense` updated **and** bookkeeping applied
+  (`isLoading == false`, `error == nil`).
+- Redundant: from a non-loading state, an identical-entitlement
+  `customerInfoUpdated` → entitlement unchanged **and** bookkeeping still ran
+  (`isLoading == false`, `error == nil`).
 
-Tier 2 — suppression regression guard (pins the `if changed` line; reducer
-value assertions cannot, since the value is identical either way): host the
-plugin in a real `Store` (`@Observable`, `PluginHost` — as in
-`StoreTests.swift`), `withObservationTracking` on the meaningful slice
-field; redundant `send` → tracking does not re-fire; genuine change `send`
-→ it fires. One per plugin, same shape.
+Tier 2 — suppression regression guard (pins `if changed`; Tier 1 value
+assertions cannot, since the value is identical either way): host
+`PaywallPlugin` in a real `Store` via `PluginHost` (precedent:
+`StoreBindingTests` `withObservationTracking` + `TrackingFlag`). Requires a
+local `SwiduxObservable` test state with an `@Observable` observer holding
+`var paywall: PaywallState` (hand-written conformance, mirroring
+`StoreTests.swift`). On the stream path (entitlement steady, not loading):
+redundant `customerInfoUpdated` `send` → tracking does **not** re-fire;
+genuine entitlement change `send` → it **does**. `await Task.yield()` before
+asserting (Observation callbacks fire next runloop tick).
 
 ## Out of scope
 
-- No `*Action` enum, `*Service` protocol, or factory changes. API surface
-  unchanged.
+- **No code change to `KillswitchPlugin` / `FeatureFlagsPlugin`** (see
+  Revision — a guard there is inert; convention doc covers them).
+- No `PaywallAction` enum, `PaywallService` protocol, or factory changes.
+  API surface unchanged.
+- No state-shape decomposition (rejected option 3 — separately-observed
+  fields).
 - `recordExposure` unchanged (already correct; cited as precedent).
 - No shared `reconcile` helper.
 - `AnalyticsPlugin` untouched (identity diff already handles identify; this
-  makes the state it derives from truthful).
+  makes the Paywall state it derives from truthful).
 
 ## Downstream impact
 
