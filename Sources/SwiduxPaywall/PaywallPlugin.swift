@@ -95,20 +95,10 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
             }
 
         case .customerInfoUpdated(let snapshot):
-            // Bookkeeping: every stream tick / refresh / restore resolves
-            // loading and clears errors.
+            state.isPro = snapshot.isPro
+            state.hasPermanentLicense = snapshot.hasPermanentLicense
             state.isLoading = false
             state.error = nil
-            // Reconcile entitlement only on real change so observers see one
-            // transition, not stream noise. The `inout` path bypasses
-            // @Observable equality, so the guard is load-bearing.
-            let changed =
-                snapshot.isPro != state.isPro
-                || snapshot.hasPermanentLicense != state.hasPermanentLicense
-            if changed {
-                state.isPro = snapshot.isPro
-                state.hasPermanentLicense = snapshot.hasPermanentLicense
-            }
 
         case .refreshFailed(let message):
             state.isLoading = false

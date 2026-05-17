@@ -2,7 +2,15 @@
 //  PaywallPluginSuppressionTests.swift
 //  SwiduxPaywallTests
 //
-//  Tier 2: pins the reconcile guard via real Store observation.
+//  Store-level regression guard: a redundant `customerInfoUpdated` (identical
+//  entitlement) must not notify the observed `paywall` slice, while a real
+//  entitlement change must. Suppression is provided by the Store's
+//  pack/unpack cycle — `State.apply` assigns the slice with a plain setter,
+//  and @Observable equality-gates equal values. This pins that behavior so a
+//  regression in `apply`/`@Observable` equality (or losing `Equatable` on
+//  `PaywallState`) is caught. It is NOT a plugin-internal guard test — the
+//  reducer carries no reconcile guard (see
+//  docs/plans/2026-05-16-service-result-reconcile-design.md, Revision 2).
 //
 
 import Foundation
