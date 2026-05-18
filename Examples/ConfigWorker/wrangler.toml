@@ -1,0 +1,17 @@
+name = "swidux-config"
+main = "worker.js"
+compatibility_date = "2026-05-17"
+
+# One namespace holds the whole portfolio. Keys are `<appID>/<resource>`
+# (e.g. "counter/killswitch", "counter/flags"). Create the namespace once,
+# then paste the printed ids below:
+#
+#   wrangler kv namespace create CONFIG
+#   wrangler kv namespace create CONFIG --preview
+#
+# Each command prints an id. `binding` must stay "CONFIG" — the Worker
+# reads `env.CONFIG`.
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"

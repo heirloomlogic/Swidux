@@ -105,7 +105,7 @@ One method. Caching, hydration, evaluation all live in the plugin.
 
 ### Built-in: `HTTPFeatureFlagsService`
 
-`URLSession` + `JSONDecoder`. Apps host their JSON anywhere — static file on a CDN, Cloudflare Worker, their own server. Zero backend infrastructure required.
+`URLSession` + `JSONDecoder`. Apps host their JSON anywhere — static file on a CDN, Cloudflare Worker, their own server. Zero backend infrastructure required. `Examples/ConfigWorker/` is a runnable shared Worker serving flags + killswitch for a whole portfolio from one URL (`GET /<appID>/flags`).
 
 Third-party adapters (LaunchDarkly, GrowthBook, Statsig) conform to the same protocol without changing the plugin.
 
