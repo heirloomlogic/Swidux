@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "flags": {
+    "show_celebration_emoji": {
+      "type": "boolean",
+      "rollout": 100
+    },
+    "counter_button_style": {
+      "type": "variant",
+      "variants": [
+        { "value": "control", "weight": 50 },
+        { "value": "treatment", "weight": 50 }
+      ]
+    },
+    "max_counters": {
+      "type": "value",
+      "value": 5
+    }
+  }
+}

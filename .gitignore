@@ -9,3 +9,6 @@ _swift_format_probe.*
 resource_bundle_accessor.*
 *.swiftdeps
 *.dia
+
+# Cloudflare Wrangler local dev state
+.wrangler/

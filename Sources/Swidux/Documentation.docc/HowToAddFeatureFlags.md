@@ -12,7 +12,7 @@ For an API-level reference, see <doc:PluginFeatureFlagsReference>. For where dom
 
 This guide assumes you have a Swidux app already wired up — `AppState`, `AppAction`, `AppReducer`, and `AppStore` exist and the store is in the SwiftUI environment. If you're not there yet, follow <doc:GettingStarted> first.
 
-You also need somewhere to host a JSON file. Any URL works — Cloudflare Pages, R2, S3, a Worker, your own backend. The plugin doesn't care.
+You also need somewhere to host a JSON file. Any URL works — Cloudflare Pages, R2, S3, a Worker, your own backend. The plugin doesn't care. `Examples/ConfigWorker/` is a runnable Cloudflare Worker that serves feature-flag *and* killswitch config for every app in a portfolio from one URL and one KV namespace, keyed `GET /<appID>/<resource>` — point this plugin at `https://<host>/<appID>/flags`.
 
 ## Step 1: Add the dependency
 
@@ -62,6 +62,10 @@ let initial = AppState(
 )
 
 let store = Store(initialState: initial, reducer: AppReducer())
+
+// With the Examples/ConfigWorker setup this is the shared portfolio URL:
+// "https://<host>/<appID>/flags". Any URL returning FeatureFlagsConfig works.
+let configURL = URL(string: "https://<host>/<appID>/flags")!
 
 let flags = FeatureFlagsPlugin<AppState, AppAction>(
     state: \.featureFlags,
