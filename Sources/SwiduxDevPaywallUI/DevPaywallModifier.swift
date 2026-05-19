@@ -34,6 +34,9 @@ extension View {
         )
         return sheet(isPresented: isPresented) {
             DevPaywallView(state: state, service: service, onAction: onAction)
+                #if os(macOS)
+                    .frame(minWidth: 400, minHeight: 600)
+                #endif
         }
     }
 }
