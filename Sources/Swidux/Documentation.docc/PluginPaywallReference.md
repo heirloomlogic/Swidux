@@ -176,7 +176,7 @@ someView.devPaywall(
 )
 ```
 
-The sheet shows the live `PaywallState`, grant buttons, real Restore/Refresh flows, and QA failure/latency toggles. Hold a **single** `SimulatedPaywallService` instance and pass it to both `Store.configured()` (as the plugin's `service:`) and `.devPaywall(...)`:
+The sheet shows the live `PaywallState`, grant buttons, real Restore/Refresh flows, and QA failure/latency toggles. On macOS the sheet uses a 400×600 minimum, matching the vendor paywall UI. Hold a **single** `SimulatedPaywallService` instance and pass it to both `Store.configured()` (as the plugin's `service:`) and `.devPaywall(...)`:
 
 ```swift
 @State private var paywallService = SimulatedPaywallService()
