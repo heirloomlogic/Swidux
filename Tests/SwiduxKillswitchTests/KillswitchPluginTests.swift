@@ -268,7 +268,7 @@ struct KillswitchPluginTests {
             (
                 .blocked(
                     title: nil, message: nil,
-                    updateURL: URL(string: "https://example.com")
+                    updateURL: URL(static: "https://example.com")
                 ), true
             ),
         ]

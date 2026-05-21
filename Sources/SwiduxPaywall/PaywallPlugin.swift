@@ -125,9 +125,7 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
         case .openManageSubscriptions:
             let openURL = self.openURL
             return { _ in
-                if let url = URL(string: "itms-apps://apps.apple.com/account/subscriptions") {
-                    await openURL(url)
-                }
+                await openURL(URL(static: "itms-apps://apps.apple.com/account/subscriptions"))
             }
         }
         return nil
