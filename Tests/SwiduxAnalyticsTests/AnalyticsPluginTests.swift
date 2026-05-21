@@ -551,6 +551,32 @@ struct AnalyticsPluginTests {
         #expect(state.analytics.lastIdentifiedProperties == ["counter": .int(2)])
     }
 
+    @Test("auto-identify preserves submission order across rapid afterReduce calls")
+    func autoIdentifyPreservesOrderUnderRapidCalls() async {
+        let service = RecordingAnalyticsService()
+        let identity = AnalyticsIdentity<TestState>(
+            userID: { $0.userID },
+            userProperties: { state in ["counter": .int(state.counter)] }
+        )
+        let plugin = makePlugin(service: service, identity: identity)
+        var state = TestState()
+        state.userID = "u1"
+
+        for index in 1...100 {
+            state.counter = index
+            plugin.afterReduce(state: &state, action: .incrementBy(1))
+        }
+        await plugin.flush()
+
+        let calls = await service.identifyCalls
+        #expect(calls.count == 100)
+        let counters: [Int] = calls.compactMap { call in
+            if case .int(let n) = call.properties["counter"] { return n }
+            return nil
+        }
+        #expect(counters == Array(1...100))
+    }
+
     @Test("auto-identify is a no-op when both userID and userProperties are stable")
     func autoIdentifyStableProperties() async {
         let service = RecordingAnalyticsService()
