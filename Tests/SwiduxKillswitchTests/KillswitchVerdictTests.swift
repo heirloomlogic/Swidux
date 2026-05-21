@@ -82,7 +82,7 @@ struct KillswitchVerdictTests {
                 == .blocked(
                     title: "Update Required",
                     message: "Please update to continue.",
-                    updateURL: URL(string: "https://example.com/update")
+                    updateURL: URL(static: "https://example.com/update")
                 )
         )
     }

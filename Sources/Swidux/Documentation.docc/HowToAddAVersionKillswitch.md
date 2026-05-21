@@ -88,7 +88,7 @@ extension Store where State == AppState, Action == AppAction {
                 return nil
             },
             service: KillswitchService.live(
-                endpoint: URL(string: "https://example.com/killswitch.json")!
+                endpoint: URL(static: "https://example.com/killswitch.json")
             ),
             appVersion: {
                 Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"

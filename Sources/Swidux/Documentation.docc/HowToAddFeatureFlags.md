@@ -65,7 +65,7 @@ let store = Store(initialState: initial, reducer: AppReducer())
 
 // With the Examples/ConfigWorker setup this is the shared portfolio URL:
 // "https://<host>/<appID>/flags". Any URL returning FeatureFlagsConfig works.
-let configURL = URL(string: "https://<host>/<appID>/flags")!
+let configURL = URL(static: "https://<host>/<appID>/flags")
 
 let flags = FeatureFlagsPlugin<AppState, AppAction>(
     state: \.featureFlags,

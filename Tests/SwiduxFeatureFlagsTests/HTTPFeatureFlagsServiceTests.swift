@@ -15,7 +15,7 @@ struct HTTPFeatureFlagsServiceTests {
         let json = """
             { "version": 1, "flags": { "f": { "type": "boolean", "rollout": 50 } } }
             """
-        let url = URL(string: "https://example.test/flags.json")!
+        let url = URL(static: "https://example.test/flags.json")
         let session = StubURLSession.with(data: Data(json.utf8), response: .ok(url: url))
 
         let service = HTTPFeatureFlagsService(url: url, session: session)
@@ -27,7 +27,7 @@ struct HTTPFeatureFlagsServiceTests {
 
     @Test("throws on non-2xx response")
     func throwsOnHTTPError() async {
-        let url = URL(string: "https://example.test/flags.json")!
+        let url = URL(static: "https://example.test/flags.json")
         let session = StubURLSession.with(data: Data(), response: .status(500, url: url))
         let service = HTTPFeatureFlagsService(url: url, session: session)
 
@@ -38,7 +38,7 @@ struct HTTPFeatureFlagsServiceTests {
 
     @Test("throws on malformed JSON")
     func throwsOnMalformedJSON() async {
-        let url = URL(string: "https://example.test/flags.json")!
+        let url = URL(static: "https://example.test/flags.json")
         let session = StubURLSession.with(data: Data("not json".utf8), response: .ok(url: url))
         let service = HTTPFeatureFlagsService(url: url, session: session)
 
