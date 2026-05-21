@@ -37,6 +37,10 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     private var inflightCount: Int = 0
     /// Continuations parked in ``flush()`` waiting for inflight work to drain to zero.
     private var flushWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Tail of the chain of spawned service-call tasks. Each new spawn
+    /// awaits this before running, so service calls reach the service
+    /// in submission order even when scheduled on a concurrent executor.
+    private var lastSpawnedTask: Task<Void, Never>?
 
     /// Creates an analytics plugin wired into the host app.
     ///
@@ -217,19 +221,27 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
 
     /// Spawns a tracked Task on a background executor so afterReduce stays
     /// fast and ``flush()`` can deterministically wait for completion.
-    /// Tracking is by counter — Task references are not retained — so
-    /// memory stays bounded across long sessions between flushes.
+    ///
+    /// Each new task awaits ``lastSpawnedTask`` before running, chaining
+    /// spawns into a single FIFO so concurrent dispatch can't reorder
+    /// service calls. The chain holds at most one task at a time: once
+    /// a task finishes its predecessor, the local `previous` reference
+    /// drops, and ``markCompleted()`` clears the tail on drain.
     private func spawn(_ work: @escaping @Sendable () async -> Void) {
         inflightCount += 1
-        Task { @concurrent in
+        let previous = lastSpawnedTask
+        let next = Task { @concurrent in
+            await previous?.value
             await work()
             await self.markCompleted()
         }
+        lastSpawnedTask = next
     }
 
     private func markCompleted() {
         inflightCount -= 1
         guard inflightCount == 0 else { return }
+        lastSpawnedTask = nil
         let waiters = flushWaiters
         flushWaiters.removeAll()
         for waiter in waiters {
