@@ -108,6 +108,18 @@ public actor SimulatedPaywallService: PaywallService {
         update(EntitlementSnapshot(), label: "set free")
     }
 
+    /// Sets the entitlement from independent flags and broadcasts it.
+    ///
+    /// Unlike ``grantPro()`` / ``grantPermanentLicense()`` (which are mutually
+    /// exclusive), this lets the dev paywall toggle each bit without clobbering
+    /// the other.
+    public func setEntitlement(isPro: Bool, hasPermanentLicense: Bool) {
+        update(
+            EntitlementSnapshot(isPro: isPro, hasPermanentLicense: hasPermanentLicense),
+            label: "set entitlement"
+        )
+    }
+
     /// Toggles whether `restorePurchases()` throws.
     public func setRestoreShouldFail(_ shouldFail: Bool) {
         restoreShouldFail = shouldFail

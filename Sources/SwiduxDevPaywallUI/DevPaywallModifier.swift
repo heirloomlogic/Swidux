@@ -41,7 +41,7 @@ extension View {
     }
 }
 
-/// A bare-bones debug paywall: status readout, entitlement-grant buttons,
+/// A bare-bones debug paywall: status readout, entitlement toggles,
 /// real restore/refresh flows, and QA failure/latency toggles.
 public struct DevPaywallView: View {
     private let state: PaywallState
@@ -63,57 +63,112 @@ public struct DevPaywallView: View {
         self.onAction = onAction
     }
 
-    /// The debug paywall content: status, grant buttons, flows, QA toggles.
+    /// The debug paywall content: header, status, entitlement toggles, flows, QA toggles.
     public var body: some View {
-        List {
-            Section("Status") {
-                LabeledContent("Reason", value: state.requestedReason ?? "—")
-                LabeledContent("isPro", value: String(state.isPro))
-                LabeledContent("Permanent license", value: String(state.hasPermanentLicense))
-                LabeledContent("Gate satisfied", value: String(state.isGateSatisfied))
-                LabeledContent("Loading", value: String(state.isLoading))
-                LabeledContent("Error", value: state.error ?? "—")
-            }
-
-            Section("Grant entitlement") {
-                Button("Grant Pro") { Task { await service.grantPro() } }
-                Button("Grant Trial") { Task { await service.grantTrial() } }
-                Button("Grant Permanent License") {
-                    Task { await service.grantPermanentLicense() }
+        VStack(spacing: 0) {
+            header
+            List {
+                Section {
+                    LabeledContent("Reason", value: state.requestedReason ?? "—")
+                    LabeledContent("Gate satisfied", value: state.isGateSatisfied ? "Yes" : "No")
+                    LabeledContent("Loading", value: state.isLoading ? "Yes" : "No")
+                    LabeledContent("Error", value: state.error ?? "—")
                 }
-                Button("Set Free", role: .destructive) {
-                    Task { await service.setFree() }
-                }
-            }
 
-            Section("Flows") {
-                Button("Restore Purchases") { onAction(.restorePurchases) }
-                Button("Refresh Customer Info") { onAction(.refreshCustomerInfo) }
-            }
-
-            Section("QA simulation") {
-                Toggle("Restore fails", isOn: $restoreShouldFail)
-                    .onChange(of: restoreShouldFail) { _, value in
-                        Task { await service.setRestoreShouldFail(value) }
+                Section("Entitlements") {
+                    Toggle("Pro", isOn: isProBinding)
+                    Toggle("Permanent license", isOn: permanentLicenseBinding)
+                    Button {
+                        Task { await service.grantTrial() }
+                    } label: {
+                        Label("Start trial", systemImage: "gift")
                     }
-                Toggle("Refresh fails", isOn: $refreshShouldFail)
-                    .onChange(of: refreshShouldFail) { _, value in
-                        Task { await service.setRefreshShouldFail(value) }
-                    }
-                Stepper(
-                    "Artificial delay: \(delaySeconds, specifier: "%.1f")s",
-                    value: $delaySeconds,
-                    in: 0...5,
-                    step: 0.5
-                )
-                .onChange(of: delaySeconds) { _, value in
-                    Task { await service.setArtificialDelay(.seconds(value)) }
                 }
-            }
 
-            Section {
-                Button("Dismiss") { onAction(.dismiss) }
+                Section("Flows") {
+                    Button {
+                        onAction(.restorePurchases)
+                    } label: {
+                        Label("Restore purchases", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        onAction(.refreshCustomerInfo)
+                    } label: {
+                        Label("Refresh customer info", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
+
+                Section("QA simulation") {
+                    Toggle("Restore fails", isOn: $restoreShouldFail)
+                        .onChange(of: restoreShouldFail) { _, value in
+                            Task { await service.setRestoreShouldFail(value) }
+                        }
+                    Toggle("Refresh fails", isOn: $refreshShouldFail)
+                        .onChange(of: refreshShouldFail) { _, value in
+                            Task { await service.setRefreshShouldFail(value) }
+                        }
+                    Stepper(
+                        "Artificial delay: \(delaySeconds, specifier: "%.1f")s",
+                        value: $delaySeconds,
+                        in: 0...5,
+                        step: 0.5
+                    )
+                    .onChange(of: delaySeconds) { _, value in
+                        Task { await service.setArtificialDelay(.seconds(value)) }
+                    }
+                }
             }
         }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Status")
+                .font(.largeTitle)
+                .fontWeight(.semibold)
+            Spacer()
+            Button {
+                onAction(.dismiss)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityLabel("Close")
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .padding(.bottom, 12)
+    }
+
+    // No `store.binding(_:sending:)` here: this view receives a `PaywallState`
+    // snapshot (no observer tree to bind through) and toggles drive the
+    // simulation surface on `SimulatedPaywallService` rather than dispatching a
+    // `PaywallAction` — neither shape fits the store-binding convenience.
+    private var isProBinding: Binding<Bool> {
+        Binding(
+            get: { state.isPro },
+            set: { newValue in
+                let permanent = state.hasPermanentLicense
+                Task {
+                    await service.setEntitlement(isPro: newValue, hasPermanentLicense: permanent)
+                }
+            }
+        )
+    }
+
+    private var permanentLicenseBinding: Binding<Bool> {
+        Binding(
+            get: { state.hasPermanentLicense },
+            set: { newValue in
+                let isPro = state.isPro
+                Task {
+                    await service.setEntitlement(isPro: isPro, hasPermanentLicense: newValue)
+                }
+            }
+        )
     }
 }

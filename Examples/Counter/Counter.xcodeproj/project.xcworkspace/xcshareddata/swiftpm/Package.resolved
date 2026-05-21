@@ -1,5 +1,5 @@
 {
-  "originHash" : "a9065bf9002d9ebbec4395a70e6171b0439eb797a0892d00811f4f3acf4f4731",
+  "originHash" : "7905da14ad1b41f74acad54b177387844ee0089ff0be96d40cbad627ac29fe4f",
   "pins" : [
     {
       "identity" : "persnicket",
@@ -17,15 +17,6 @@
       "state" : {
         "revision" : "9de99a78f099e59caf2b2beec65a4c45d54b2081",
         "version" : "603.0.1"
-      }
-    },
-    {
-      "identity" : "swiftformatplugin",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/HeirloomLogic/SwiftFormatPlugin",
-      "state" : {
-        "revision" : "93d1b9bfaf64f87c945ef85144cfd7daeaa4e302",
-        "version" : "1.6.1"
       }
     }
   ],
