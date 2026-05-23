@@ -46,9 +46,20 @@ public nonisolated struct EntityStore<
     /// Creates an empty store.
     public init() {}
 
-    /// Creates a store pre-populated from an array (e.g. hydration).
+    /// Creates a store pre-populated from an array (e.g. first-load hydration at app launch).
     ///
     /// Does **not** record changes — the data is already persisted.
+    ///
+    /// > Important: This is **first-load** hydration only. Do not use this initializer
+    /// > to "refresh from disk" mid-session by assigning into a live `EntityStore`
+    /// > (e.g. `state.items = EntityStore(fetched)` from a CloudKit re-hydrate action).
+    /// > In-memory state may hold unflushed writes or live UI bindings; wholesale
+    /// > replacement silently drops them and surfaces as lost keystrokes. Use
+    /// > ``merge(from:preferExisting:)`` for that path — it records no changes and
+    /// > lets you decide per-ID which side wins. Under `NSPersistentCloudKitContainer`
+    /// > the gotcha is especially sharp: `.NSPersistentStoreRemoteChange` fires for
+    /// > local saves too, so a naïve "refresh on remote change" observer feeds the
+    /// > app its own writes.
     public init(_ initialEntities: [Entity]) {
         entities = initialEntities
         for (index, entity) in initialEntities.enumerated() {
