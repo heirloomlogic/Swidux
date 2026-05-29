@@ -8,6 +8,8 @@ Redux-style state management for SwiftUI, with macros for observability and read
 
 ## Overview
 
+![Swidux logo](Swidux-logo)
+
 Swidux is a Redux-style state-management library for SwiftUI. State lives in one observable store, mutations go through reducers, and side effects run as async effects. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Four optional plugins ship ready-made paywalls (RevenueCat or StoreKit-shaped), version killswitches, parental gates, and analytics (Mixpanel or any backend).
 
 The dispatch cycle:

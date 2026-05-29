@@ -1,6 +1,15 @@
+<p align="center">
+  <img src="Sources/Swidux/Documentation.docc/Resources/Swidux-logo@2x.png" alt="Swidux" width="256">
+</p>
+
 # Swidux
 
 **Redux-style state management for SwiftUI.** State lives in one observable store, mutations go through reducers, and side effects run as async closures. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Three optional plugins ship ready-made paywalls, version killswitches, and parental gates.
+
+[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20|%20iOS%20|%20tvOS%20|%20watchOS%20-blue.svg)](https://swift.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Documentation](https://img.shields.io/badge/Documentation-DocC-blue.svg)](https://heirloomlogic.github.io/Swidux/documentation/swidux/)
 
 ## Why Swidux
 
