@@ -50,6 +50,25 @@ private let extractAction: @Sendable (RootAction) -> FeatureAction?
 
 The host app provides these at init — the plugin never assumes a specific root type.
 
+### Importing at call sites
+
+Because each domain plugin ships as a **separate library target**, its state and action types are defined in that module — not in `Swidux`. A common convention is to re-export core Swidux from `AppState.swift` with `@_exported import Swidux`, but that re-exports **core Swidux only**; it does not re-export the plugin modules.
+
+So any file that reads a plugin-owned slice (`store.analytics.*`, `store.paywall.*`, `store.killswitch.*`, …) or dispatches a plugin action (`AnalyticsAction`, `PaywallAction`, …) must import that plugin's module in **that** file:
+
+- touches `store.analytics.*` / `AnalyticsAction` → `import SwiduxAnalytics`
+- touches `store.paywall.*` / `PaywallAction` → `import SwiduxPaywall`
+- touches only `store.ui` / `.ui(...)` (app-module types) → nothing extra
+
+The easy case to forget is a **View** that reads the slice for display — `AppState.swift` and `AppAction.swift` already import the module, but the View is a different file. Without the import you get:
+
+```
+property 'isOptedOut' is not available due to missing import of defining module 'SwiduxAnalytics'
+property 'isPro' is not available due to missing import of defining module 'SwiduxPaywall'
+```
+
+The fix is to add `import Swidux<Plugin>` to that file.
+
 ### Comparison
 
 | | Core Middleware | Domain Plugins |

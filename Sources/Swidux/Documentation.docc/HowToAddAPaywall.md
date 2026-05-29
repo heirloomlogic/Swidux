@@ -54,6 +54,8 @@ enum AppAction: Sendable {
 }
 ```
 
+> Tip: `import SwiduxPaywall` is needed in *every* file that touches `store.paywall.*` or `PaywallAction` — including views that read the slice for display. `@_exported import Swidux` re-exports core Swidux only, not plugin modules. See <doc:PluginArchitecture>.
+
 The plugin owns reducing for `.paywall` actions, so the root reducer should fall through:
 
 ```swift

@@ -51,6 +51,8 @@ enum AppAction: Sendable {
 }
 ```
 
+> Tip: `import SwiduxFeatureFlags` is needed in *every* file that touches `store.featureFlags.*` or `FeatureFlagsAction` — including views that read flags for display. `@_exported import Swidux` re-exports core Swidux only, not plugin modules. See <doc:PluginArchitecture>.
+
 ## Step 3: Hydrate state and register the plugin
 
 At app launch, hydrate state from your `KeyValueStore` (so the install ID and last-known-good config survive cold launches), then register the plugin:

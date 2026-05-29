@@ -132,6 +132,8 @@ struct AppEnvironment: Sendable {
 }
 ```
 
+> Note: This demo builds its store from a `@MainActor` context, so the default argument `= .live()` is evaluated on the main actor and a plain `struct AppEnvironment: Sendable` works. If your app constructs the store from a **nonisolated** context instead — e.g. a `nonisolated static func configured(...)` factory, or building the environment in a detached task — that default-argument expression is evaluated nonisolated, and `.live()` must be callable there. Mark the environment `nonisolated struct AppEnvironment: Sendable` in that case (which makes `live()`/`mock()` nonisolated too).
+
 ## Step 6: Write the reducer
 
 The reducer is a pure function from `(state, action, environment)` to an optional `Effect`. State mutates via `inout`. Any case that doesn't need async work returns `nil`.
