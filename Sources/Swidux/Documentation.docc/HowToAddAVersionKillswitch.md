@@ -51,6 +51,8 @@ enum AppAction: Sendable {
 }
 ```
 
+> Tip: `import SwiduxKillswitch` is needed in *every* file that touches `store.killswitch.*` or `KillswitchAction` — including views that read the verdict for display. `@_exported import Swidux` re-exports core Swidux only, not plugin modules. See <doc:PluginArchitecture>.
+
 The plugin's reducer handles `.killswitch` actions itself. Your root reducer should fall through:
 
 ```swift

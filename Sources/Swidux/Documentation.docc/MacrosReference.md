@@ -160,6 +160,8 @@ If you see **"Type 'X' does not conform to protocol 'Sendable'"** or **"… 'Equ
 
 If your view doesn't update when you change a nested field, you probably forgot `@Slice`. Without it, the nested struct is treated as an opaque leaf and observers higher up the tree fire on every dispatch instead of only when their own slice changes.
 
+If you see **"call to main actor-isolated initializer … in a synchronous nonisolated context"** pointing at a `@Swidux` struct, your target is building in **Swift 5 language mode** with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. In that combination the struct's synthesized memberwise init is treated as MainActor-isolated, so the macro's nonisolated reconstruction code can't call it. Adding an explicit `nonisolated init` does **not** fix it — set `SWIFT_VERSION = 6.0` (both Debug and Release). Under Swift 6 language mode, a `nonisolated struct` gets a nonisolated synthesized init automatically. (See the `nonisolated` restriction below.)
+
 ## Restrictions
 
 - **The struct must be `nonisolated`** in practice. The generated extension methods are `@MainActor`, but reducers run with the struct passed `inout` from non-isolated contexts inside ``Store``. Marking the struct `nonisolated` lets it cross that boundary.

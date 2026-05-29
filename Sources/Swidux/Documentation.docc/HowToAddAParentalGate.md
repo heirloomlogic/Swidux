@@ -52,6 +52,8 @@ enum AppAction: Sendable {
 }
 ```
 
+> Tip: `import SwiduxParentalGate` is needed in *every* file that touches `store.parentalGate.*` or `ParentalGateAction` — including views that read the slice for display. `@_exported import Swidux` re-exports core Swidux only, not plugin modules. See <doc:PluginArchitecture>.
+
 The plugin owns the parental-gate slice end-to-end, so the root reducer just falls through:
 
 ```swift
