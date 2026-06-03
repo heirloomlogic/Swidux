@@ -1,0 +1,178 @@
+import SwiftParser
+import SwiftSyntax
+
+/// Generates the SwiftData `@Model` shadow class for an `@Persisted` struct,
+/// conforming it to `PersistableModel` with the `init(from:)`/`toDomain()`/
+/// `update(from:)` converter trio.
+func generatePersistedModelClass(
+    structName: String,
+    properties: [PersistedProperty],
+    accessLevel: String?
+) -> DeclSyntax {
+    let modelName = "\(structName)Model"
+    let accessPrefix = accessLevel.map { "\($0) " } ?? ""
+
+    let memberLines = properties.compactMap { modelMemberLines(for: $0, accessPrefix: accessPrefix) }
+        .joined(separator: "\n")
+    // Shared codec for @Inline blob columns, allocated once per model type
+    // rather than on every property access.
+    let hasInline = properties.contains { if case .inlineBlob = $0.kind { true } else { false } }
+    let codecMembers =
+        hasInline
+        ? "    private static let swiduxInlineEncoder = JSONEncoder()\n    private static let swiduxInlineDecoder = JSONDecoder()\n"
+        : ""
+    let initLines = properties.compactMap { initLine(for: $0) }
+        .joined(separator: "\n")
+    let toDomainArgs = properties.map { toDomainArgument(for: $0) }
+        .joined(separator: ",\n")
+    let updateLines = properties.compactMap { updateLine(for: $0) }
+        .joined(separator: "\n")
+
+    let source = """
+        @Model
+        \(accessPrefix)final class \(modelName): PersistableModel {
+            \(accessPrefix)typealias Domain = \(structName)
+
+        \(codecMembers)\(memberLines)
+
+            \(accessPrefix)init(from domain: \(structName)) {
+        \(initLines)
+            }
+
+            \(accessPrefix)func toDomain() -> \(structName) {
+                \(structName)(
+        \(toDomainArgs)
+                )
+            }
+
+            \(accessPrefix)func update(from domain: \(structName)) {
+        \(updateLines)
+            }
+        }
+        """
+
+    return DeclSyntax(stringLiteral: source)
+}
+
+/// Generates `extension <Struct>: PersistableEntity { typealias Model = <Struct>Model }`.
+func generatePersistableEntityExtension(
+    structName: String,
+    accessLevel: String?
+) -> ExtensionDeclSyntax {
+    let accessPrefix = accessLevel.map { "\($0) " } ?? ""
+    let source = """
+        extension \(structName): PersistableEntity {
+            \(accessPrefix)typealias Model = \(structName)Model
+        }
+        """
+    let sourceFile = Parser.parse(source: source)
+    guard let firstStatement = sourceFile.statements.first else {
+        fatalError("Failed to parse generated PersistableEntity extension")
+    }
+    return firstStatement.item.cast(ExtensionDeclSyntax.self)
+}
+
+// MARK: - Per-property code generation
+
+private func relationModelType(cardinality: RelationCardinality, element: String) -> String {
+    switch cardinality {
+    case .toMany: return "[\(element)Model]"
+    case .toOneOptional: return "\(element)Model?"
+    case .toOne: return "\(element)Model"
+    }
+}
+
+private func relationshipAttribute(deleteRule: String?, inverse: String?) -> String {
+    var parts: [String] = []
+    if let deleteRule { parts.append("deleteRule: \(deleteRule)") }
+    if let inverse { parts.append("inverse: \(inverse)") }
+    return parts.isEmpty ? "@Relationship" : "@Relationship(\(parts.joined(separator: ", ")))"
+}
+
+private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String) -> String? {
+    let type = prop.typeSyntax.trimmedDescription
+    switch prop.kind {
+    case .mirror:
+        return "    \(accessPrefix)var \(prop.name): \(type)"
+    case .inlineBlob:
+        let getter: String
+        guard prop.isOptional else {
+            return """
+                    private var \(prop.name)Data: Data
+                    \(accessPrefix)var \(prop.name): \(type) {
+                        get {
+                            do { return try Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data) }
+                            catch { fatalError("Swidux @Inline: failed to decode \(prop.name): \\(error)") }
+                        }
+                        set { \(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data() }
+                    }
+                """
+        }
+        getter = "(try? Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)) ?? nil"
+        return """
+                private var \(prop.name)Data: Data
+                \(accessPrefix)var \(prop.name): \(type) {
+                    get { \(getter) }
+                    set { \(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data() }
+                }
+            """
+    case .relation(let rule, let inverse, let cardinality, let element):
+        let attr = relationshipAttribute(deleteRule: rule, inverse: inverse)
+        let modelType = relationModelType(cardinality: cardinality, element: element)
+        return "    \(attr) \(accessPrefix)var \(prop.name): \(modelType)"
+    case .ignored:
+        return nil
+    }
+}
+
+private func initLine(for prop: PersistedProperty) -> String? {
+    switch prop.kind {
+    case .mirror:
+        return "        self.\(prop.name) = domain.\(prop.name)"
+    case .inlineBlob:
+        return "        self.\(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(domain.\(prop.name))) ?? Data()"
+    case .relation(_, _, let cardinality, let element):
+        switch cardinality {
+        case .toMany, .toOneOptional:
+            return "        self.\(prop.name) = domain.\(prop.name).map { \(element)Model(from: $0) }"
+        case .toOne:
+            return "        self.\(prop.name) = \(element)Model(from: domain.\(prop.name))"
+        }
+    case .ignored:
+        return nil
+    }
+}
+
+private func toDomainArgument(for prop: PersistedProperty) -> String {
+    switch prop.kind {
+    case .mirror, .inlineBlob:
+        return "            \(prop.name): \(prop.name)"
+    case .relation(_, _, let cardinality, _):
+        switch cardinality {
+        case .toMany, .toOneOptional:
+            return "            \(prop.name): \(prop.name).map { $0.toDomain() }"
+        case .toOne:
+            return "            \(prop.name): \(prop.name).toDomain()"
+        }
+    case .ignored:
+        return "            \(prop.name): nil"
+    }
+}
+
+private func updateLine(for prop: PersistedProperty) -> String? {
+    // Identity is stable; never reassign `id` on update.
+    if prop.name == "id" { return nil }
+    switch prop.kind {
+    case .mirror, .inlineBlob:
+        return "        self.\(prop.name) = domain.\(prop.name)"
+    case .relation(_, _, let cardinality, let element):
+        switch cardinality {
+        case .toMany, .toOneOptional:
+            return "        self.\(prop.name) = domain.\(prop.name).map { \(element)Model(from: $0) }"
+        case .toOne:
+            return "        self.\(prop.name) = \(element)Model(from: domain.\(prop.name))"
+        }
+    case .ignored:
+        return nil
+    }
+}

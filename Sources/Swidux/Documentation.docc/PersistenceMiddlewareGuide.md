@@ -27,3 +27,22 @@ Call `await store.flush()` on shutdown (`scenePhase == .background`, `applicatio
 > Warning: **Writers flush sequentially in registration order.** If entity B references entity A via foreign key, A's writer **must** come first. Otherwise B's upsert looks up A's row before it exists.
 
 Register leaf entities first, aggregates last. Include a defensive fallback in upsert methods — if a referenced entity isn't found, create it inline rather than setting the relationship to `nil`.
+
+## Skip the boilerplate: `SwiduxPersistence`
+
+The hand-wired form above (a `StateWriter` per `EntityStore`, plus a SwiftData
+`@Model` shadow and a DB actor you write yourself) is the low-level path. The
+**`SwiduxPersistence`** product turns it into a declare-and-register concern:
+annotate a domain entity with `@Persisted` and the macro generates its `@Model`
+shadow, the `init(from:)`/`toDomain()`/`update(from:)` converters, and a
+`PersistableEntity` conformance. A generic `EntityDB` actor and a
+`PersistenceCoordinator` build the container, synthesize the writers, and reuse
+this `PersistencePlugin` under the hood — exposing only a merge-based
+re-hydration path so a "refresh from disk" can't clobber unflushed writes or
+live edits.
+
+**`SwiduxCloudKitSync`** layers opt-in iCloud sync on top: a runtime opt-out
+toggle, launch-time entitlement/account detection, and a merge-based
+remote-change observer. Linking it is the single signal that an app needs the
+iCloud/CloudKit/Push entitlements.
+
