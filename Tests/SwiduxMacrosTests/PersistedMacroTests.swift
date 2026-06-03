@@ -38,9 +38,9 @@ final class PersistedMacroTests: XCTestCase {
                 final class CounterModel: PersistableModel {
                     typealias Domain = Counter
 
-                    var id: UUID
-                    var name: String
-                    var count: Int
+                    var id: UUID = UUID()
+                    var name: String = ""
+                    var count: Int = 0
 
                     init(from domain: Counter) {
                         self.id = domain.id
@@ -95,8 +95,8 @@ final class PersistedMacroTests: XCTestCase {
 
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
-                    public var id: UUID
-                    private var settingsData: Data
+                    public var id: UUID = UUID()
+                    private var settingsData: Data = Data()
                     public var settings: Settings {
                         get {
                             do {
@@ -110,7 +110,7 @@ final class PersistedMacroTests: XCTestCase {
                             settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
                         }
                     }
-                    public var ownerID: UUID
+                    public var ownerID: UUID = UUID()
 
                     public init(from domain: Profile) {
                         self.id = domain.id
@@ -162,9 +162,9 @@ final class PersistedMacroTests: XCTestCase {
                 final class DeckModel: PersistableModel {
                     typealias Domain = Deck
 
-                    var id: UUID
-                    var title: String
-                    @Relationship(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [CardModel]
+                    var id: UUID = UUID()
+                    var title: String = ""
+                    @Relationship(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [CardModel]? = nil
 
                     init(from domain: Deck) {
                         self.id = domain.id
@@ -178,7 +178,7 @@ final class PersistedMacroTests: XCTestCase {
                         Deck(
                             id: id,
                             title: title,
-                            cards: cards.map {
+                            cards: (cards ?? []).map {
                                 $0.toDomain()
                             }
                         )
@@ -200,7 +200,10 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 
-    func testRelationToOne() throws {
+    func testRelationToOneNonOptionalIsDiagnosed() throws {
+        // CloudKit forbids non-optional relationships: a non-optional to-one
+        // `@Relation` is a build error. The model still expands (relationship
+        // forced optional) so the error sits alongside otherwise-valid code.
         assertMacroExpansion(
             """
             @Persisted
@@ -219,8 +222,8 @@ final class PersistedMacroTests: XCTestCase {
                 final class PetModel: PersistableModel {
                     typealias Domain = Pet
 
-                    var id: UUID
-                    @Relationship(deleteRule: .nullify) var owner: PersonModel
+                    var id: UUID = UUID()
+                    @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
 
                     init(from domain: Pet) {
                         self.id = domain.id
@@ -230,12 +233,73 @@ final class PersistedMacroTests: XCTestCase {
                     func toDomain() -> Pet {
                         Pet(
                             id: id,
-                            owner: owner.toDomain()
+                            owner: owner!.toDomain()
                         )
                     }
 
                     func update(from domain: Pet) {
                         self.owner = PersonModel(from: domain.owner)
+                    }
+                }
+
+                extension Pet: PersistableEntity {
+                    typealias Model = PetModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "@Relation to-one properties must be optional (T?) or to-many to be CloudKit-safe; CloudKit forbids non-optional relationships",
+                    line: 1,
+                    column: 1
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    func testRelationToOneOptional() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Pet: Identifiable, Equatable, Sendable {
+                var id: UUID
+                @Relation(deleteRule: .nullify) var owner: Person?
+            }
+            """,
+            expandedSource: """
+                struct Pet: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var owner: Person?
+                }
+
+                @Model
+                final class PetModel: PersistableModel {
+                    typealias Domain = Pet
+
+                    var id: UUID = UUID()
+                    @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
+
+                    init(from domain: Pet) {
+                        self.id = domain.id
+                        self.owner = domain.owner.map {
+                            PersonModel(from: $0)
+                        }
+                    }
+
+                    func toDomain() -> Pet {
+                        Pet(
+                            id: id,
+                            owner: owner.map {
+                                $0.toDomain()
+                            }
+                        )
+                    }
+
+                    func update(from domain: Pet) {
+                        self.owner = domain.owner.map {
+                            PersonModel(from: $0)
+                        }
                     }
                 }
 
@@ -268,8 +332,8 @@ final class PersistedMacroTests: XCTestCase {
 
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
-                    var id: UUID
-                    private var metaData: Data
+                    var id: UUID = UUID()
+                    private var metaData: Data = Data()
                     var meta: Meta? {
                         get {
                             (try? Self.swiduxInlineDecoder.decode(Meta?.self, from: metaData)) ?? nil
@@ -343,7 +407,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class FooModel: PersistableModel {
                     typealias Domain = Foo
 
-                    var id: UUID
+                    var id: UUID = UUID()
 
                     init(from domain: Foo) {
                         self.id = domain.id
@@ -369,6 +433,162 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "@Ignored properties must be optional so they can be reconstructed as nil when loading from storage",
+                    line: 1,
+                    column: 1
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    // MARK: - CloudKit-safe defaults
+
+    func testUserDefaultPropagated() throws {
+        // A default the user wrote on the domain property is propagated onto the
+        // model verbatim, taking precedence over the canonical primitive default.
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Counter: Identifiable, Equatable, Sendable {
+                var id: UUID
+                var count: Int = 5
+            }
+            """,
+            expandedSource: """
+                struct Counter: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var count: Int = 5
+                }
+
+                @Model
+                final class CounterModel: PersistableModel {
+                    typealias Domain = Counter
+
+                    var id: UUID = UUID()
+                    var count: Int = 5
+
+                    init(from domain: Counter) {
+                        self.id = domain.id
+                        self.count = domain.count
+                    }
+
+                    func toDomain() -> Counter {
+                        Counter(
+                            id: id,
+                            count: count
+                        )
+                    }
+
+                    func update(from domain: Counter) {
+                        self.count = domain.count
+                    }
+                }
+
+                extension Counter: PersistableEntity {
+                    typealias Model = CounterModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    func testOptionalPrimitiveNeedsNoDefault() throws {
+        // Optional attributes are CloudKit-safe with no default and no diagnostic.
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Person: Identifiable, Equatable, Sendable {
+                var id: UUID
+                var nickname: String?
+            }
+            """,
+            expandedSource: """
+                struct Person: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var nickname: String?
+                }
+
+                @Model
+                final class PersonModel: PersistableModel {
+                    typealias Domain = Person
+
+                    var id: UUID = UUID()
+                    var nickname: String?
+
+                    init(from domain: Person) {
+                        self.id = domain.id
+                        self.nickname = domain.nickname
+                    }
+
+                    func toDomain() -> Person {
+                        Person(
+                            id: id,
+                            nickname: nickname
+                        )
+                    }
+
+                    func update(from domain: Person) {
+                        self.nickname = domain.nickname
+                    }
+                }
+
+                extension Person: PersistableEntity {
+                    typealias Model = PersonModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    func testNonPrimitiveRequiresDefault() throws {
+        // A non-optional, non-primitive mirrored property with no user default
+        // and no @Inline cannot be made CloudKit-safe: the macro diagnoses it.
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Task: Identifiable, Equatable, Sendable {
+                var id: UUID
+                var status: Status
+            }
+            """,
+            expandedSource: """
+                struct Task: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var status: Status
+                }
+
+                @Model
+                final class TaskModel: PersistableModel {
+                    typealias Domain = Task
+
+                    var id: UUID = UUID()
+                    var status: Status
+
+                    init(from domain: Task) {
+                        self.id = domain.id
+                        self.status = domain.status
+                    }
+
+                    func toDomain() -> Task {
+                        Task(
+                            id: id,
+                            status: status
+                        )
+                    }
+
+                    func update(from domain: Task) {
+                        self.status = domain.status
+                    }
+                }
+
+                extension Task: PersistableEntity {
+                    typealias Model = TaskModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Persisted properties of a non-primitive type must provide a default value (= …), be optional, or be marked @Inline to be CloudKit-safe",
                     line: 1,
                     column: 1
                 )

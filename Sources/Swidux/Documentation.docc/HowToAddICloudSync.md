@@ -4,7 +4,7 @@ Layer opt-in, cross-device iCloud sync on top of `SwiduxPersistence` with the `S
 
 ## Overview
 
-`SwiduxCloudKitSync` adds CloudKit mirroring to the persistence stack from <doc:HowToAddPersistence>. The same generated `@Persisted` models and the same `PersistenceCoordinator` are reused; sync only changes how the `ModelContainer` is built (`cloudKitDatabase` set vs `.none`) and adds three things:
+`SwiduxCloudKitSync` adds CloudKit mirroring to the persistence stack from <doc:HowToAddPersistence>. The same generated `@Persisted` models and the same `PersistenceCoordinator` are reused; this works precisely because `@Persisted` generates **CloudKit-safe** models — every non-optional attribute carries a default and every relationship is optional, so the schema validates when SwiftData builds the container with `cloudKitDatabase` set (see <doc:HowToAddPersistence> for the default/optionality rules and their diagnostics). Sync only changes how the `ModelContainer` is built (`cloudKitDatabase` set vs `.none`) and adds three things:
 
 - a **runtime sync toggle** (`SyncCoordinator`) — because SwiftData fixes `cloudKitDatabase` at container creation, toggling rebuilds the container and swaps the active database behind the coordinator's handle, never moving local rows;
 - **entitlement & account detection** (`SyncPreflightService` → `SyncStatus`) — degrade to local-only and surface a status rather than crash;

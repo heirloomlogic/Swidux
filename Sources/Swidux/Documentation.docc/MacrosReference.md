@@ -171,7 +171,14 @@ For an entity `Card`, the macro emits:
 1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the relationships and blob columns described below, and the converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`).
 2. **An extension `Card: PersistableEntity`** — providing `typealias Model = CardModel`.
 
-No `@Attribute(.unique)` is generated on `id`: CloudKit forbids unique constraints, so identity is enforced by upsert-by-`id` in the generic `EntityDB` instead. This lets the same generated model back both local and synced containers.
+No `@Attribute(.unique)` is generated on `id`: CloudKit forbids unique constraints, so identity is enforced by upsert-by-`id` in the generic `EntityDB` instead.
+
+The generated model is **CloudKit-safe by construction**, which is what lets the same model back both local and synced containers. SwiftData's CloudKit mirroring requires every non-optional attribute to be optional or carry a default value, and every relationship to be optional — validated at `ModelContainer` creation. `@Persisted` enforces this:
+
+- **Non-optional mirrored attributes get a default** — the default written on the domain property (`var count: Int = 0`) if present, else a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). The default is inert locally; `init(from:)` overwrites it on load.
+- **A non-optional, non-primitive mirrored property** with no default and no `@Inline` is a diagnostic (`mirrorRequiresDefault`): add a default, make it optional, or mark it `@Inline`.
+- **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a diagnostic (`relationRequiresOptional`).
+- **`@Inline` blob columns** default to `Data()`.
 
 ### Requirements on the annotated struct
 
@@ -184,10 +191,10 @@ By default every stored property is mirrored directly onto the model — SwiftDa
 
 | Marker | Effect |
 |---|---|
-| *(none)* | Mirror directly as `var name: T`. |
-| `@Inline` | Store a `Codable` value as one opaque JSON `Data` column, exposed through a computed accessor of the original type. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
+| *(none)* | Mirror directly as `var name: T = <default>` — see the CloudKit-safe default rules above. |
+| `@Inline` | Store a `Codable` value as one opaque JSON `Data` column (defaulting to `Data()`), exposed through a computed accessor of the original type. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
 | `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar. |
-| `@Relation(deleteRule:inverse:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow and the converters map element-by-element. `deleteRule` is a `SwiduxDeleteRule`; `inverse` is a key path on the generated model (`\TagModel.card`). |
+| `@Relation(deleteRule:inverse:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow (always **optional** for CloudKit safety, `= nil`) and the converters map element-by-element. A non-optional to-one `@Relation` is a diagnostic. `deleteRule` is a `SwiduxDeleteRule`; `inverse` is a key path on the generated model (`\TagModel.card`). |
 | `@Ignored` | Exclude a derived field. Must be **optional** so `toDomain()` can reconstruct it as `nil` — a diagnostic fires on a non-optional `@Ignored` property. |
 
 ### Example expansion
@@ -210,9 +217,9 @@ The macro generates:
 final class CardModel: PersistableModel {
     typealias Domain = Card
 
-    var id: UUID
-    var quote: String
-    var count: Int
+    var id: UUID = UUID()       // CloudKit-safe defaults; overwritten by init(from:)
+    var quote: String = ""
+    var count: Int = 0
 
     init(from domain: Card) {
         self.id = domain.id
