@@ -39,6 +39,8 @@ Your domain types and database stay in your app. Swidux provides the contracts, 
 - <doc:HowToAddAParentalGate>
 - <doc:HowToAddAnalytics>
 - <doc:HowToAddFeatureFlags>
+- <doc:HowToAddPersistence>
+- <doc:HowToAddICloudSync>
 - <doc:BuildingADomainPlugin>
 - <doc:AgentSkill>
 

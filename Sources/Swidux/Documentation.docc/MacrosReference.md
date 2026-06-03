@@ -1,6 +1,6 @@
 # Macros
 
-Reference for `@Swidux` and `@Slice` — the two macros that generate the observation bridge between value-type state and SwiftUI.
+Reference for `@Swidux` and `@Slice` (the observation bridge between value-type state and SwiftUI), and for `@Persisted` and its property markers (the SwiftData persistence bridge, shipped in `SwiduxPersistence`).
 
 ## Why these macros exist
 
@@ -149,6 +149,93 @@ nonisolated struct UIState: Equatable, Sendable {
 - On ``EntityStore`` properties — they have specialized handling already.
 - On plain value types (`Int`, `String`, `Date`, `Set<UUID>`, custom `Equatable` value types). These are correctly treated as leaves.
 - On any type that isn't itself `@Swidux`. The parent will fail to compile because it expects the child to provide `Observer`, `apply`, `makeObserver`, and `applyRestore`.
+
+## `@Persisted`
+
+Shipped in the `SwiduxPersistence` product (`import SwiduxPersistence`). Annotate a domain entity to generate its SwiftData `@Model` shadow and the value↔model converters, so you never hand-write a `@Model` class, a database actor, or a `StateWriter`. For the end-to-end wiring, see <doc:HowToAddPersistence>.
+
+`@Persisted` operates on a *domain entity* (the value type stored inside an ``EntityStore``); `@Swidux` operates on *state containers*. They are different layers and never apply to the same type. In the rare case a single type needs both, they emit differently-named peers (`{Type}Observer` vs `{Type}Model`) and compose without conflict.
+
+### Signature
+
+```swift
+@attached(peer, names: suffixed(Model))
+@attached(extension, conformances: PersistableEntity, names: arbitrary)
+public macro Persisted()
+```
+
+### What it generates
+
+For an entity `Card`, the macro emits:
+
+1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the relationships and blob columns described below, and the converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`).
+2. **An extension `Card: PersistableEntity`** — providing `typealias Model = CardModel`.
+
+No `@Attribute(.unique)` is generated on `id`: CloudKit forbids unique constraints, so identity is enforced by upsert-by-`id` in the generic `EntityDB` instead. This lets the same generated model back both local and synced containers.
+
+### Requirements on the annotated struct
+
+- **Must be a struct** (a diagnostic fires otherwise).
+- **Must satisfy `Identifiable & Equatable & Sendable` with `ID == UUID`** — the ``EntityStore`` contract.
+
+### Property handling and markers
+
+By default every stored property is mirrored directly onto the model — SwiftData persists scalars and `Codable` composites natively. Four marker macros (named to avoid SwiftData's own `@Attribute` / `@Relationship` / `@Transient`) override that:
+
+| Marker | Effect |
+|---|---|
+| *(none)* | Mirror directly as `var name: T`. |
+| `@Inline` | Store a `Codable` value as one opaque JSON `Data` column, exposed through a computed accessor of the original type. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
+| `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar. |
+| `@Relation(deleteRule:inverse:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow and the converters map element-by-element. `deleteRule` is a `SwiduxDeleteRule`; `inverse` is a key path on the generated model (`\TagModel.card`). |
+| `@Ignored` | Exclude a derived field. Must be **optional** so `toDomain()` can reconstruct it as `nil` — a diagnostic fires on a non-optional `@Ignored` property. |
+
+### Example expansion
+
+Given:
+
+```swift
+@Persisted
+nonisolated struct Card: Identifiable, Equatable, Sendable {
+    var id: UUID
+    var quote: String
+    var count: Int
+}
+```
+
+The macro generates:
+
+```swift
+@Model
+final class CardModel: PersistableModel {
+    typealias Domain = Card
+
+    var id: UUID
+    var quote: String
+    var count: Int
+
+    init(from domain: Card) {
+        self.id = domain.id
+        self.quote = domain.quote
+        self.count = domain.count
+    }
+
+    func toDomain() -> Card {
+        Card(id: id, quote: quote, count: count)
+    }
+
+    func update(from domain: Card) {
+        self.quote = domain.quote
+        self.count = domain.count
+    }
+}
+
+extension Card: PersistableEntity {
+    typealias Model = CardModel
+}
+```
+
+(`@Model` itself is a SwiftData macro; the compiler expands it over the generated class. The `SwiduxMacros` plugin emits the class as text and does not import SwiftData.)
 
 ## Common errors
 

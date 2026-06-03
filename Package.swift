@@ -17,6 +17,8 @@ let package = Package(
         .library(name: "SwiduxParentalGate", targets: ["SwiduxParentalGate"]),
         .library(name: "SwiduxPaywall", targets: ["SwiduxPaywall"]),
         .library(name: "SwiduxDevPaywallUI", targets: ["SwiduxDevPaywallUI"]),
+        .library(name: "SwiduxPersistence", targets: ["SwiduxPersistence"]),
+        .library(name: "SwiduxCloudKitSync", targets: ["SwiduxCloudKitSync"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
@@ -84,6 +86,20 @@ let package = Package(
                 .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
+        .target(
+            name: "SwiduxPersistence",
+            dependencies: ["Swidux", "SwiduxMacros"],
+            plugins: [
+                .plugin(name: "Persnoop", package: "Persnicket")
+            ]
+        ),
+        .target(
+            name: "SwiduxCloudKitSync",
+            dependencies: ["SwiduxPersistence"],
+            plugins: [
+                .plugin(name: "Persnoop", package: "Persnicket")
+            ]
+        ),
         .testTarget(
             name: "SwiduxTests",
             dependencies: ["Swidux"],
@@ -139,6 +155,20 @@ let package = Package(
         .testTarget(
             name: "SwiduxDevPaywallUITests",
             dependencies: ["SwiduxPaywall", "SwiduxDevPaywallUI"],
+            plugins: [
+                .plugin(name: "Persnoop", package: "Persnicket")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxPersistenceTests",
+            dependencies: ["Swidux", "SwiduxPersistence"],
+            plugins: [
+                .plugin(name: "Persnoop", package: "Persnicket")
+            ]
+        ),
+        .testTarget(
+            name: "SwiduxCloudKitSyncTests",
+            dependencies: ["Swidux", "SwiduxPersistence", "SwiduxCloudKitSync"],
             plugins: [
                 .plugin(name: "Persnoop", package: "Persnicket")
             ]

@@ -76,7 +76,7 @@ Walk through a complete counter app — actions, reducer, plugins, views, undo, 
 
 ## Plugins
 
-Three optional plugins ship as separate library targets. Wire any of them with three keypath/closure pieces and a `plugins.register(...)` call.
+Optional plugins ship as separate library targets. Wire any of the cross-cutting ones with three keypath/closure pieces and a `plugins.register(...)` call; the persistence pair is registered through a coordinator.
 
 ### Killswitch
 
@@ -102,6 +102,23 @@ Manage paywall presentation, entitlement observation, and purchase restoration. 
 plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extractAction: { if case .paywall(let a) = $0 { return a }; return nil }, service: RevenueCatPaywallService()))
 ```
 
+### Persistence (SwiftData)
+
+`SwiduxPersistence` makes SwiftData persistence a declare-and-register concern. Annotate a domain entity with `@Persisted` and the macro generates its `@Model` shadow class, the `init(from:)`/`toDomain()`/`update(from:)` converters, and the `PersistableEntity` conformance — no hand-written model, DB actor, or `StateWriter`. A generic `EntityDB` actor and a `PersistenceCoordinator` (which reuses the core `PersistencePlugin`) handle the container, writers, and a merge-only re-hydration path.
+
+```swift
+@Persisted struct Card: Identifiable, Equatable, Sendable { var id: UUID; var quote: String }
+
+let container = try ContainerFactory.makeLocalContainer(models: [CardModel.self])
+let persistence = PersistenceCoordinator<AppState, AppAction>(entities: [.entity(\.cards)], container: container)
+plugins.register(persistence.corePlugin)
+await persistence.hydrate(into: &initialState)
+```
+
+### iCloud sync
+
+`SwiduxCloudKitSync` adds opt-in iCloud sync with a runtime opt-out toggle (`SyncCoordinator`), launch-time entitlement/account detection (`SyncPreflightService` → `SyncStatus`), and a merge-based remote-change observer. Linking this product is the single signal that an app needs the iCloud/CloudKit/Push entitlement family; a local-only app links only `SwiduxPersistence`.
+
 ### Companion packages
 
 - [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — RevenueCat adapter for `SwiduxPaywall`. Ships `RevenueCatPaywallService` (drop-in `PaywallService`), a mock for previews, and a SwiftUI sheet built on RevenueCatUI.
@@ -123,6 +140,8 @@ nonisolated struct AppState: Equatable, Sendable {
 ```
 
 The macros emit an `AppStateObserver` class and a `SwiduxObservable` extension. `@Slice` ensures composed state slices keep per-property observation. See [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference).
+
+`SwiduxPersistence` adds `@Persisted` (with the property markers `@Relation`, `@ForeignKey`, `@Inline`, `@Ignored`), which generates a domain entity's SwiftData `@Model` shadow and converters. It operates on entities stored in an `EntityStore` — a different layer than `@Swidux`, which annotates state containers — so the two never apply to the same type.
 
 > **Note for Redux users:** `@Slice` is not Redux Toolkit's `createSlice`. Swidux slices don't own reducers — `@Slice` is a structural marker for nested `@Swidux` properties so SwiftUI gets per-property observation. Apologies for the term overload; we picked it for memorability over literal equivalence.
 
