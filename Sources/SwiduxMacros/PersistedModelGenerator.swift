@@ -72,13 +72,52 @@ func generatePersistableEntityExtension(
     return firstStatement.item.cast(ExtensionDeclSyntax.self)
 }
 
+// MARK: - CloudKit-safe defaults
+
+/// The default a CloudKit-safe model needs for a mirrored attribute. SwiftData's
+/// CloudKit mirroring requires every non-optional attribute to be optional or
+/// carry a `= default`, validated when the `ModelContainer` is created.
+enum MirrorDefault: Equatable {
+    /// Emit `= <expr>` — a user-supplied default or a canonical primitive default.
+    case explicit(String)
+    /// Optional attribute: CloudKit-safe with no default.
+    case notNeeded
+    /// Non-optional, non-primitive, no user default — the macro must diagnose this.
+    case missing
+}
+
+/// Canonical default expressions for the SwiftData primitive scalar types the
+/// macro can default without knowing the concrete type. Anything not listed
+/// (custom `Codable` types, `URL`, enums) must be optional, carry a user
+/// default, or use `@Inline`.
+private let primitiveDefaults: [String: String] = [
+    "String": "\"\"",
+    "Bool": "false",
+    "Int": "0", "Int8": "0", "Int16": "0", "Int32": "0", "Int64": "0",
+    "UInt": "0", "UInt8": "0", "UInt16": "0", "UInt32": "0", "UInt64": "0",
+    "Double": "0", "Float": "0", "CGFloat": "0",
+    "Date": "Date.distantPast",
+    "Data": "Data()",
+    "UUID": "UUID()",
+]
+
+/// Resolves the CloudKit-safe default for a mirrored property. Shared by the
+/// generator (which emits the `= …`) and the macro (which diagnoses `.missing`)
+/// so the two never disagree about which properties are safe.
+func cloudKitMirrorDefault(for prop: PersistedProperty) -> MirrorDefault {
+    if let userDefault = prop.defaultExpr { return .explicit(userDefault) }
+    if prop.isOptional { return .notNeeded }
+    if let primitive = primitiveDefaults[prop.typeSyntax.trimmedDescription] { return .explicit(primitive) }
+    return .missing
+}
+
 // MARK: - Per-property code generation
 
 private func relationModelType(cardinality: RelationCardinality, element: String) -> String {
+    // All relationships are optional: CloudKit forbids non-optional relationships.
     switch cardinality {
-    case .toMany: return "[\(element)Model]"
-    case .toOneOptional: return "\(element)Model?"
-    case .toOne: return "\(element)Model"
+    case .toMany: return "[\(element)Model]?"
+    case .toOneOptional, .toOne: return "\(element)Model?"
     }
 }
 
@@ -93,12 +132,17 @@ private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String)
     let type = prop.typeSyntax.trimmedDescription
     switch prop.kind {
     case .mirror:
-        return "    \(accessPrefix)var \(prop.name): \(type)"
+        let suffix: String
+        switch cloudKitMirrorDefault(for: prop) {
+        case .explicit(let value): suffix = " = \(value)"
+        case .notNeeded, .missing: suffix = ""
+        }
+        return "    \(accessPrefix)var \(prop.name): \(type)\(suffix)"
     case .inlineBlob:
         let getter: String
         guard prop.isOptional else {
             return """
-                    private var \(prop.name)Data: Data
+                    private var \(prop.name)Data: Data = Data()
                     \(accessPrefix)var \(prop.name): \(type) {
                         get {
                             do { return try Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data) }
@@ -110,7 +154,7 @@ private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String)
         }
         getter = "(try? Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)) ?? nil"
         return """
-                private var \(prop.name)Data: Data
+                private var \(prop.name)Data: Data = Data()
                 \(accessPrefix)var \(prop.name): \(type) {
                     get { \(getter) }
                     set { \(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data() }
@@ -119,7 +163,7 @@ private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String)
     case .relation(let rule, let inverse, let cardinality, let element):
         let attr = relationshipAttribute(deleteRule: rule, inverse: inverse)
         let modelType = relationModelType(cardinality: cardinality, element: element)
-        return "    \(attr) \(accessPrefix)var \(prop.name): \(modelType)"
+        return "    \(attr) \(accessPrefix)var \(prop.name): \(modelType) = nil"
     case .ignored:
         return nil
     }
@@ -148,11 +192,15 @@ private func toDomainArgument(for prop: PersistedProperty) -> String {
     case .mirror, .inlineBlob:
         return "            \(prop.name): \(prop.name)"
     case .relation(_, _, let cardinality, _):
+        // The model stores relationships optionally (CloudKit requirement), so
+        // reconstruct the domain shape from the optional.
         switch cardinality {
-        case .toMany, .toOneOptional:
+        case .toMany:
+            return "            \(prop.name): (\(prop.name) ?? []).map { $0.toDomain() }"
+        case .toOneOptional:
             return "            \(prop.name): \(prop.name).map { $0.toDomain() }"
         case .toOne:
-            return "            \(prop.name): \(prop.name).toDomain()"
+            return "            \(prop.name): \(prop.name)!.toDomain()"
         }
     case .ignored:
         return "            \(prop.name): nil"

@@ -25,6 +25,18 @@ extension PersistedMacro: PeerMacro {
             context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.ignoredRequiresOptional))
         }
 
+        // A non-optional, non-primitive mirrored attribute has no CloudKit-safe
+        // default the macro can synthesize: require a default, optionality, or @Inline.
+        for property in properties where isMirror(property) && cloudKitMirrorDefault(for: property) == .missing {
+            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.mirrorRequiresDefault))
+        }
+
+        // CloudKit forbids non-optional relationships; a non-optional to-one
+        // `@Relation` cannot be reconstructed safely.
+        for property in properties where isNonOptionalToOneRelation(property) {
+            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.relationRequiresOptional))
+        }
+
         return [
             generatePersistedModelClass(
                 structName: structDecl.name.text,
@@ -60,6 +72,16 @@ extension PersistedMacro: ExtensionMacro {
 
 private func isIgnored(_ property: PersistedProperty) -> Bool {
     if case .ignored = property.kind { return true }
+    return false
+}
+
+private func isMirror(_ property: PersistedProperty) -> Bool {
+    if case .mirror = property.kind { return true }
+    return false
+}
+
+private func isNonOptionalToOneRelation(_ property: PersistedProperty) -> Bool {
+    if case .relation(_, _, .toOne, _) = property.kind { return true }
     return false
 }
 

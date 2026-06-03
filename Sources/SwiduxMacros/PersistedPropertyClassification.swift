@@ -28,6 +28,10 @@ struct PersistedProperty {
     let typeSyntax: TypeSyntax
     let kind: PersistedPropertyKind
     let isOptional: Bool
+    /// The default-value expression the user wrote on the domain property
+    /// (`var x: T = <expr>`), if any. Propagated onto the generated model so
+    /// non-optional attributes are CloudKit-safe.
+    let defaultExpr: String?
 }
 
 /// Classifies the stored properties of an `@Persisted` domain struct, reading
@@ -49,9 +53,11 @@ func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedP
         let name = pattern.identifier.text
         let typeSyntax = typeAnnotation.type
         let isOptional = typeSyntax.is(OptionalTypeSyntax.self)
+        let defaultExpr = binding.initializer?.value.trimmedDescription
 
         if marker(named: "Ignored", on: varDecl) != nil {
-            return PersistedProperty(name: name, typeSyntax: typeSyntax, kind: .ignored, isOptional: isOptional)
+            return PersistedProperty(
+                name: name, typeSyntax: typeSyntax, kind: .ignored, isOptional: isOptional, defaultExpr: defaultExpr)
         }
         if let relation = marker(named: "Relation", on: varDecl) {
             let (rule, inverse) = relationArguments(relation)
@@ -60,15 +66,18 @@ func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedP
                 name: name,
                 typeSyntax: typeSyntax,
                 kind: .relation(deleteRule: rule, inverse: inverse, cardinality: cardinality, elementBaseName: element),
-                isOptional: isOptional
+                isOptional: isOptional,
+                defaultExpr: defaultExpr
             )
         }
         if marker(named: "Inline", on: varDecl) != nil {
-            return PersistedProperty(name: name, typeSyntax: typeSyntax, kind: .inlineBlob, isOptional: isOptional)
+            return PersistedProperty(
+                name: name, typeSyntax: typeSyntax, kind: .inlineBlob, isOptional: isOptional, defaultExpr: defaultExpr)
         }
         // `@ForeignKey` is a documentation/intent marker; functionally a scalar
         // column, so it falls through to `.mirror`.
-        return PersistedProperty(name: name, typeSyntax: typeSyntax, kind: .mirror, isOptional: isOptional)
+        return PersistedProperty(
+            name: name, typeSyntax: typeSyntax, kind: .mirror, isOptional: isOptional, defaultExpr: defaultExpr)
     }
 }
 
