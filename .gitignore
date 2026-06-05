@@ -4,6 +4,10 @@
 Package.resolved
 xcuserdata/
 
+# Dev-only tooling sentinel — gates Persnicket/Persnoop + swift-docc-plugin in
+# Package.swift. Present only in maintainer clones and CI; never commit it.
+.dev-tooling
+
 # SPM build-tool plugin artifacts that leak out of .build/ into the package root
 _swift_format_probe.*
 resource_bundle_accessor.*
