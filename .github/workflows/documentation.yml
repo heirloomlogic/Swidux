@@ -19,6 +19,9 @@ jobs:
       - name: Clean docs directory
         run: rm -rf ./docs
 
+      - name: Enable dev tooling
+        run: touch .dev-tooling
+
       - name: Build Documentation
         run: |
           swift package --allow-writing-to-directory ./docs \
