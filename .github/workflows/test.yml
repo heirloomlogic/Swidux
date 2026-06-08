@@ -15,5 +15,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Test
+      - name: Test (Debug)
         run: swift test
+
+      # Release run guards against optimization-only regressions (e.g. generic
+      # `#Predicate` miscompiles) that the Debug suite passes through silently.
+      - name: Test (Release)
+        run: swift test -c release

@@ -60,6 +60,14 @@ final class PersistedMacroTests: XCTestCase {
                         self.name = domain.name
                         self.count = domain.count
                     }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<CounterModel> {
+                        var descriptor = FetchDescriptor<CounterModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
                 }
 
                 extension Counter: PersistableEntity {
@@ -131,6 +139,14 @@ final class PersistedMacroTests: XCTestCase {
                         self.settings = domain.settings
                         self.ownerID = domain.ownerID
                     }
+
+                    public static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<ProfileModel> {
+                        var descriptor = FetchDescriptor<ProfileModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
                 }
 
                 extension Profile: PersistableEntity {
@@ -190,6 +206,14 @@ final class PersistedMacroTests: XCTestCase {
                             CardModel(from: $0)
                         }
                     }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<DeckModel> {
+                        var descriptor = FetchDescriptor<DeckModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
                 }
 
                 extension Deck: PersistableEntity {
@@ -239,6 +263,14 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Pet) {
                         self.owner = PersonModel(from: domain.owner)
+                    }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<PetModel> {
+                        var descriptor = FetchDescriptor<PetModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
                     }
                 }
 
@@ -301,6 +333,14 @@ final class PersistedMacroTests: XCTestCase {
                             PersonModel(from: $0)
                         }
                     }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<PetModel> {
+                        var descriptor = FetchDescriptor<PetModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
                 }
 
                 extension Pet: PersistableEntity {
@@ -357,6 +397,14 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Doc) {
                         self.meta = domain.meta
+                    }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<DocModel> {
+                        var descriptor = FetchDescriptor<DocModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
                     }
                 }
 
@@ -423,6 +471,14 @@ final class PersistedMacroTests: XCTestCase {
                     func update(from domain: Foo) {
 
                     }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<FooModel> {
+                        var descriptor = FetchDescriptor<FooModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
                 }
 
                 extension Foo: PersistableEntity {
@@ -482,6 +538,14 @@ final class PersistedMacroTests: XCTestCase {
                     func update(from domain: Counter) {
                         self.count = domain.count
                     }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<CounterModel> {
+                        var descriptor = FetchDescriptor<CounterModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
                 }
 
                 extension Counter: PersistableEntity {
@@ -529,6 +593,14 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Person) {
                         self.nickname = domain.nickname
+                    }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<PersonModel> {
+                        var descriptor = FetchDescriptor<PersonModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
                     }
                 }
 
@@ -578,6 +650,14 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Task) {
                         self.status = domain.status
+                    }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<TaskModel> {
+                        var descriptor = FetchDescriptor<TaskModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
                     }
                 }
 

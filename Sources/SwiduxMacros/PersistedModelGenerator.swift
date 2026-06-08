@@ -48,6 +48,12 @@ func generatePersistedModelClass(
             \(accessPrefix)func update(from domain: \(structName)) {
         \(updateLines)
             }
+
+            \(accessPrefix)static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<\(modelName)> {
+                var descriptor = FetchDescriptor<\(modelName)>(predicate: #Predicate { $0.id == id })
+                descriptor.fetchLimit = 1
+                return descriptor
+            }
         }
         """
 
