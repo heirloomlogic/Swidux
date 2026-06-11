@@ -103,7 +103,13 @@ public final class Store<State: SwiduxObservable, Action> {
         // state, and the outer dispatch then clobbers the inner one's changes.
         // Dispatch follow-up actions from effects instead — their `send` runs
         // after this cycle completes.
-        assert(!isDispatching, "Re-entrant Store.send(\(action)) — dispatch follow-up actions from an Effect, not synchronously from a reducer or plugin hook.")
+        assert(
+            !isDispatching,
+            """
+            Re-entrant Store.send(\(action)) — dispatch follow-up actions from an Effect, \
+            not synchronously from a reducer or plugin hook.
+            """
+        )
         isDispatching = true
         defer { isDispatching = false }
 

@@ -32,12 +32,22 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
 
     /// Creates a killswitch plugin wired into the host app's state and action types.
     ///
-    /// - Parameter appVersion: Must return a SemVer string (`"1.2.3"`,
-    ///   prerelease/build suffixes allowed) — typically
-    ///   `Bundle.main.infoDictionary?["CFBundleShortVersionString"]`.
-    ///   **Fail-open policy:** if the returned string is unparseable, or the
-    ///   config can't be fetched and no cache exists, the verdict is
-    ///   `.allowed` — a broken config channel never locks users out.
+    /// - Parameters:
+    ///   - state: WritableKeyPath into the root state where the plugin's
+    ///     ``KillswitchState`` slice lives.
+    ///   - toRootAction: Lifts a ``KillswitchAction`` into the host's root
+    ///     action enum (e.g. `AppAction.killswitch`).
+    ///   - extractAction: Unwraps a ``KillswitchAction`` from the host's root
+    ///     action when present, returning `nil` for unrelated actions.
+    ///   - service: Fetches and caches the remote killswitch config.
+    ///   - appVersion: Must return a SemVer string (`"1.2.3"`,
+    ///     prerelease/build suffixes allowed) — typically
+    ///     `Bundle.main.infoDictionary?["CFBundleShortVersionString"]`.
+    ///     **Fail-open policy:** if the returned string is unparseable, or the
+    ///     config can't be fetched and no cache exists, the verdict is
+    ///     `.allowed` — a broken config channel never locks users out.
+    ///   - openURL: Opens the blocked verdict's update URL. Defaults to the
+    ///     platform opener (`UIApplication` / `NSWorkspace`).
     public init(
         state: WritableKeyPath<RootState, KillswitchState>,
         action toRootAction: @escaping @Sendable (KillswitchAction) -> RootAction,
