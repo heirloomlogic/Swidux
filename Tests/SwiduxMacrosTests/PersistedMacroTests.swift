@@ -84,7 +84,7 @@ final class PersistedMacroTests: XCTestCase {
             @Persisted
             public struct Profile: Identifiable, Equatable, Sendable {
                 public var id: UUID
-                @Inline public var settings: Settings
+                @Inline public var settings: Settings = Settings()
                 @ForeignKey public var ownerID: UUID
                 @Ignored public var badge: String?
             }
@@ -92,7 +92,7 @@ final class PersistedMacroTests: XCTestCase {
             expandedSource: """
                 public struct Profile: Identifiable, Equatable, Sendable {
                     public var id: UUID
-                    public var settings: Settings
+                    public var settings: Settings = Settings()
                     public var ownerID: UUID
                     public var badge: String?
                 }
@@ -107,12 +107,7 @@ final class PersistedMacroTests: XCTestCase {
                     private var settingsData: Data = Data()
                     public var settings: Settings {
                         get {
-                            do {
-                                return try Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)
-                            }
-                            catch {
-                                fatalError("Swidux @Inline: failed to decode settings: \\(error)")
-                            }
+                            (try? Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)) ?? Settings()
                         }
                         set {
                             settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
@@ -669,6 +664,86 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "Persisted properties of a non-primitive type must provide a default value (= …), be optional, or be marked @Inline to be CloudKit-safe",
+                    line: 1,
+                    column: 1
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    func testNonOptionalInlineRequiresDefault() throws {
+        // A non-optional @Inline blob is backed by `Data()`, which is never
+        // decodable; without a domain default the getter cannot recover.
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Profile: Identifiable, Equatable, Sendable {
+                var id: UUID
+                @Inline var settings: Settings
+            }
+            """,
+            expandedSource: """
+                struct Profile: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var settings: Settings
+                }
+
+                @Model
+                final class ProfileModel: PersistableModel {
+                    typealias Domain = Profile
+
+                    private static let swiduxInlineEncoder = JSONEncoder()
+                    private static let swiduxInlineDecoder = JSONDecoder()
+                    var id: UUID = UUID()
+                    private var settingsData: Data = Data()
+                    var settings: Settings {
+                        get {
+                            do {
+                                return try Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)
+                            }
+                            catch {
+                                fatalError("Swidux @Inline: failed to decode settings: \\(error)")
+                            }
+                        }
+                        set {
+                            settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
+                        }
+                    }
+
+                    init(from domain: Profile) {
+                        self.id = domain.id
+                        self.settingsData = (try? Self.swiduxInlineEncoder.encode(domain.settings)) ?? Data()
+                    }
+
+                    func toDomain() -> Profile {
+                        Profile(
+                            id: id,
+                            settings: settings
+                        )
+                    }
+
+                    func update(from domain: Profile) {
+                        self.settings = domain.settings
+                    }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<ProfileModel> {
+                        var descriptor = FetchDescriptor<ProfileModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
+                }
+
+                extension Profile: PersistableEntity {
+                    typealias Model = ProfileModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Non-optional @Inline properties must provide a default value (= …) or be optional, so a missing or undecodable blob can be recovered instead of crashing",
                     line: 1,
                     column: 1
                 )

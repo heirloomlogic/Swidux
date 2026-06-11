@@ -107,6 +107,8 @@ One method. Caching, hydration, evaluation all live in the plugin.
 
 `URLSession` + `JSONDecoder`. Apps host their JSON anywhere — static file on a CDN, Cloudflare Worker, their own server. Zero backend infrastructure required. `Examples/ConfigWorker/` is a runnable shared Worker serving flags + killswitch for a whole portfolio from one URL (`GET /<appID>/flags`).
 
+The URL must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure at init). Responses over 1 MB and non-2xx statuses throw, and malformed variant definitions (empty array, negative weights, weights not summing to 100) fail decoding — in every case the plugin keeps its last-known-good cached config.
+
 Third-party adapters (LaunchDarkly, GrowthBook, Statsig) conform to the same protocol without changing the plugin.
 
 ## Typed flag keys

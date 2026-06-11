@@ -76,4 +76,16 @@ public enum KillswitchVerdict: Sendable, Equatable {
         if case .blocked = self { return true }
         return false
     }
+
+    /// The blocked verdict's update URL, but only when its scheme is safe to
+    /// open. The URL comes from remote config, so only schemes that lead to
+    /// an update (web or App Store) are honored — never arbitrary ones.
+    public var openableUpdateURL: URL? {
+        guard case .blocked(_, _, let url) = self,
+            let url,
+            let scheme = url.scheme,
+            ["https", "itms-apps", "macappstore"].contains(scheme)
+        else { return nil }
+        return url
+    }
 }

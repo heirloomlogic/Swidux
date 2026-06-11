@@ -37,6 +37,11 @@ public enum Bucketing {
     /// Walks cumulative weights; returns the first index whose cumulative
     /// weight strictly exceeds `bucket`. Falls back to the last index if
     /// weights don't sum to exactly 100 (defensive).
+    ///
+    /// > Important: `weights` must be non-empty — an empty array returns `-1`,
+    /// > which is not a valid index. Callers evaluating remote config must
+    /// > guard for emptiness first (decoded ``FeatureFlagsConfig`` enforces
+    /// > non-empty variants at the wire boundary).
     public static func variantIndex(bucket: Int, weights: [Int]) -> Int {
         var cumulative = 0
         for (index, weight) in weights.enumerated() {

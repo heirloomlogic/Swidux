@@ -144,6 +144,39 @@ struct PersistencePluginTests {
         }
     }
 
+    @Test("flush() awaits a debounce flush already in flight")
+    func flushAwaitsInflightDebounceFlush() async throws {
+        let completedWrites = SendableBox(0)
+
+        let writer = StateWriter<TestState>(
+            keyPath: \.items,
+            persist: { _, _ in
+                // Simulate a slow database write: flush() must not return
+                // while this is still running.
+                try? await Task.sleep(for: .milliseconds(200))
+                completedWrites.value += 1
+            }
+        )
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10)
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Slow")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        // Let the debounce fire and enter the slow persist call.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(completedWrites.value == 0)
+
+        // Shutdown flush: the buffers are already drained into the in-flight
+        // write, so this must wait for it rather than returning immediately.
+        await plugin.flush()
+        #expect(completedWrites.value == 1)
+    }
+
     @Test("plugin registers with PluginHost and receives lifecycle calls")
     func pluginHostIntegration() async throws {
         let writesBox = SendableBox<[TestEntity]>([])

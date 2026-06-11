@@ -19,10 +19,10 @@ public struct KillswitchState: Sendable, Equatable {
     /// `true` when the verdict is `.blocked`.
     public var isBlocked: Bool { verdict.isBlocked }
 
-    /// `true` when the verdict is `.blocked` and includes an update URL.
+    /// `true` when the verdict is `.blocked` and includes an update URL with
+    /// an openable scheme (`https`, `itms-apps`, `macappstore`).
     public var canOpenUpdateURL: Bool {
-        if case .blocked(_, _, let url) = verdict { return url != nil }
-        return false
+        verdict.openableUpdateURL != nil
     }
 
     /// Creates a killswitch state with default values.

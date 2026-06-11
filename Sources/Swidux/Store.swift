@@ -59,9 +59,19 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Platform undo manager for menu/gesture integration.
     public weak var undoManager: UndoManager?
 
+    /// Guards against re-entrant dispatch (DEBUG diagnostics only).
+    @ObservationIgnored
+    private var isDispatching = false
+
     // MARK: - Init
 
     /// Creates a store with the given initial state, reducer, and optional plugins.
+    ///
+    /// - Note: `isUndoable` only controls platform `UndoManager` registration
+    ///   (menu items, gestures); the `UndoPlugin` snapshots according to its
+    ///   *own* `isUndoable` predicate. Pass the same predicate to both —
+    ///   if they disagree, actions can be snapshotted without appearing in
+    ///   the Edit menu, or vice versa.
     public init(
         initialState: State,
         reducer: @escaping (inout State, Action) -> Effect<Action>?,
@@ -89,6 +99,20 @@ public final class Store<State: SwiduxObservable, Action> {
 
     /// Dispatches an action through the full plugin → reducer → effect cycle.
     public func send(_ action: Action) {
+        // A synchronous send from inside a reducer or plugin hook packs stale
+        // state, and the outer dispatch then clobbers the inner one's changes.
+        // Dispatch follow-up actions from effects instead — their `send` runs
+        // after this cycle completes.
+        assert(
+            !isDispatching,
+            """
+            Re-entrant Store.send(\(action)) — dispatch follow-up actions from an Effect, \
+            not synchronously from a reducer or plugin hook.
+            """
+        )
+        isDispatching = true
+        defer { isDispatching = false }
+
         var state = State(observer: observer)
 
         plugins.willReduce(state: state, action: action)

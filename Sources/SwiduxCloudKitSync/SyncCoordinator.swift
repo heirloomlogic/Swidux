@@ -96,7 +96,11 @@ public final class SyncCoordinator<State, Action> {
 
         // 3. Use CloudKit only when it is actually usable; otherwise local.
         let effectiveMode: SyncMode = (target == .iCloud && status == .syncing) ? .iCloud : .localOnly
-        rebuildDatabase(mode: effectiveMode)
+        guard rebuildDatabase(mode: effectiveMode) else {
+            // The old database stays active. Don't persist the choice or
+            // report the preflight status — the toggle did not take effect.
+            return .unavailableRebuildFailed
+        }
 
         // 4. Persist the user's *choice* (not the fallback) for next launch.
         keyValue.setValue(target, for: .syncMode)
@@ -108,13 +112,19 @@ public final class SyncCoordinator<State, Action> {
         return enabled ? status : .localOnlyByChoice
     }
 
-    private func rebuildDatabase(mode: SyncMode) {
+    /// Swaps the active database to a freshly built container.
+    ///
+    /// Returns `false` (leaving the previous database active) when the
+    /// container cannot be built.
+    private func rebuildDatabase(mode: SyncMode) -> Bool {
         do {
             persistence.handle.db = EntityDB(modelContainer: try makeContainer(mode))
+            return true
         } catch {
             logger.error(
                 "Failed to rebuild \(String(describing: mode)) container: \(error.localizedDescription, privacy: .public)"
             )
+            return false
         }
     }
 }

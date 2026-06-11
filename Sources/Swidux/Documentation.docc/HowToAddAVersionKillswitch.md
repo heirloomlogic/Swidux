@@ -281,7 +281,7 @@ Use `KillswitchService.mock(result:cached:cacheLifetime:)` to drive the plugin f
     var dispatched: [AppAction] = []
     await effect { dispatched.append($0) }
 
-    if case .killswitch(.verdictReceived(.blocked)) = dispatched.first {
+    if case .killswitch(.verdictReceived(.blocked, fromNetwork: true)) = dispatched.first {
         // pass
     } else {
         Issue.record("expected blocked verdict, got \(dispatched)")

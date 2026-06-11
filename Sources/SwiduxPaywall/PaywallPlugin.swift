@@ -75,6 +75,11 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
             return { send in await send(.refreshCustomerInfo) }
 
         case .observeCustomerInfo:
+            // The stream is long-lived and the effect task is never cancelled;
+            // a second dispatch would run two loops delivering duplicate
+            // updates for the rest of the app's lifetime.
+            guard !state.isObservingCustomerInfo else { return nil }
+            state.isObservingCustomerInfo = true
             let service = self.service
             return { send in
                 for await snapshot in service.customerInfoStream() {

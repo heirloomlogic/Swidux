@@ -158,18 +158,22 @@ struct SyncCoordinatorTests {
         var state = ItemsState()
         await persistence.hydrate(into: &state)
 
+        let store = InMemoryKeyValueStore()
         let sync = SyncCoordinator<ItemsState, Never>(
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
             preflight: .mock(ubiquityToken: true, account: .available),
-            keyValue: InMemoryKeyValueStore(),
+            keyValue: store,
             makeContainer: { _ in throw BuildFailed() }
         )
 
         let status = await sync.setSyncEnabled(true, into: &state)
-        #expect(status == .syncing)
-        #expect(sync.mode == .iCloud)
+        // The toggle did not take effect: status reports the failure, the
+        // mode is unchanged, and the choice was not persisted for next launch.
+        #expect(status == .unavailableRebuildFailed)
+        #expect(sync.mode == .localOnly)
+        #expect(store.value(.syncMode) == nil)
         // Rebuild threw, was caught; the original database and its data are intact.
         #expect(state.items[id]?.label == "local")
     }

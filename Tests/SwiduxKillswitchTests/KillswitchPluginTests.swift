@@ -75,12 +75,31 @@ struct KillswitchPluginTests {
         )
         let effect = plugin.reduce(
             state: &state,
-            action: .killswitch(.verdictReceived(verdict))
+            action: .killswitch(.verdictReceived(verdict, fromNetwork: true))
         )
         #expect(effect == nil)
         #expect(state.killswitch.verdict == verdict)
         #expect(state.killswitch.lastFetch != nil)
         #expect(state.killswitch.fetchError == nil)
+    }
+
+    @Test("cache-served verdict does not refresh the freshness window")
+    func cacheServedVerdictKeepsFreshnessWindow() {
+        let plugin = makePlugin()
+        var state = TestState()
+        let staleFetch = Date(timeIntervalSinceNow: -120)
+        state.killswitch.lastFetch = staleFetch
+
+        _ = plugin.reduce(
+            state: &state,
+            action: .killswitch(.verdictReceived(.allowed, fromNetwork: false))
+        )
+
+        // The verdict lands, but `lastFetch` keeps its old value — otherwise a
+        // session polling .fetch inside cacheLifetime would never hit the
+        // network again and a newly published block/unblock would not be seen.
+        #expect(state.killswitch.verdict == .allowed)
+        #expect(state.killswitch.lastFetch == staleFetch)
     }
 
     @Test("fetchFailed records error")
@@ -118,9 +137,9 @@ struct KillswitchPluginTests {
             )
             let actions = await collectActions(from: effect)
             #expect(actions.count == 1)
-            if case .verdictReceived(.allowed) = actions.first {
+            if case .verdictReceived(.allowed, fromNetwork: false) = actions.first {
             } else {
-                Issue.record("Expected verdictReceived(.allowed), got \(actions)")
+                Issue.record("Expected cache-served verdictReceived(.allowed), got \(actions)")
             }
         }
     }
@@ -212,9 +231,9 @@ struct KillswitchPluginTests {
         let actions = await collectActions(from: effect)
 
         #expect(actions.count == 2)
-        if case .verdictReceived(.blocked) = actions.first {
+        if case .verdictReceived(.blocked, fromNetwork: false) = actions.first {
         } else {
-            Issue.record("Expected verdictReceived(.blocked), got \(actions)")
+            Issue.record("Expected cache-served verdictReceived(.blocked), got \(actions)")
         }
         if case .fetchFailed = actions.last {
         } else {
@@ -270,6 +289,19 @@ struct KillswitchPluginTests {
                     title: nil, message: nil,
                     updateURL: URL(static: "https://example.com")
                 ), true
+            ),
+            (
+                .blocked(
+                    title: nil, message: nil,
+                    updateURL: URL(static: "itms-apps://apps.apple.com/app/id123")
+                ), true
+            ),
+            // Remote config must not be able to open arbitrary schemes.
+            (
+                .blocked(
+                    title: nil, message: nil,
+                    updateURL: URL(static: "file:///etc/passwd")
+                ), false
             ),
         ]
     )

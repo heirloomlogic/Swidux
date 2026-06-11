@@ -27,13 +27,17 @@ public enum SyncStatus: Sendable, Equatable {
     case unavailableRestricted
     /// Sync was requested but the app is not entitled — a build/signing bug.
     case misconfiguredNoEntitlement
+    /// The container rebuild for the requested mode failed; the previous
+    /// database stays active and the user's choice was **not** persisted.
+    case unavailableRebuildFailed
 
     /// Whether the app is running in a non-syncing or impaired state.
     public var isDegraded: Bool {
         switch self {
         case .syncing, .localOnlyByChoice:
             return false
-        case .unavailableNotSignedIn, .unavailableRestricted, .misconfiguredNoEntitlement:
+        case .unavailableNotSignedIn, .unavailableRestricted, .misconfiguredNoEntitlement,
+            .unavailableRebuildFailed:
             return true
         }
     }

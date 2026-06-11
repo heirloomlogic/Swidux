@@ -68,7 +68,7 @@ The plugin's local action enum. Wrap these in your root action through the case 
 public enum KillswitchAction: Sendable {
     case fetch
     case forceFetch
-    case verdictReceived(KillswitchVerdict)
+    case verdictReceived(KillswitchVerdict, fromNetwork: Bool)
     case fetchFailed(String)
     case openUpdateURL
 }
@@ -110,6 +110,8 @@ public struct KillswitchService: Sendable {
 ```
 
 `live(endpoint:)` decodes JSON from `endpoint` with a `reloadIgnoringLocalCacheData` policy and persists the result to a `swidux-killswitch.json` file in the user's caches directory. `mock(result:cached:)` keeps an in-memory cache and lets a test inject a closure that returns or throws.
+
+The endpoint must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure) — the killswitch is a remote control channel and must not be tamperable in transit. Non-2xx responses and payloads over 1 MB are treated as fetch failures, which fall back to the cache (and ultimately fail open).
 
 ### KillswitchConfig
 
@@ -211,9 +213,9 @@ Both initializers fail and return `nil` if the lower bound is not strictly less 
 |---|---|---|
 | `.fetch` | none | if the cache is fresh (`Date() - lastFetch < cacheLifetime` AND `loadCached()` is non-nil), evaluates the cached config and dispatches `.verdictReceived(...)` without hitting the network; otherwise behaves like `.forceFetch` |
 | `.forceFetch` | none | calls `service.fetch()`, persists the result via `service.saveCached(_:)`, dispatches `.verdictReceived(...)`. On thrown error, falls back to `service.loadCached()` if available — dispatching `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)` so the UI can surface the error while keeping a usable verdict |
-| `.verdictReceived(verdict)` | sets `verdict`, sets `lastFetch = Date()`, clears `fetchError` | none |
+| `.verdictReceived(verdict, fromNetwork:)` | sets `verdict`, clears `fetchError`; sets `lastFetch = Date()` **only when `fromNetwork` is true** — a cache-served verdict must not slide the freshness window, or a session polling `.fetch` inside `cacheLifetime` would never consult the network again | none |
 | `.fetchFailed(message)` | sets `fetchError = message` (does not clear `verdict` or `lastFetch`) | none |
-| `.openUpdateURL` | none | if `verdict` is `.blocked` with a non-nil `updateURL`, calls the plugin's `openURL` closure; otherwise no effect |
+| `.openUpdateURL` | none | if `verdict` is `.blocked` with a non-nil `updateURL` whose scheme is `https`, `itms-apps`, or `macappstore`, calls the plugin's `openURL` closure; otherwise no effect (the URL comes from remote config, so arbitrary schemes are never opened) |
 
 The plugin only handles its own actions. Any action that `extractAction` returns `nil` for is ignored — the plugin's `reduce(...)` returns `nil` immediately.
 

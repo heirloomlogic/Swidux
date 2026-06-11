@@ -209,6 +209,86 @@ struct FeatureFlagsPluginTests {
         #expect(counter.count == 1)
     }
 
+    // MARK: - Identity resolution (userIDKeyPath)
+
+    @Test("afterReduce resolves userIDKeyPath into state for default bucketing")
+    func userIDKeyPathResolution() {
+        let plugin = makePlugin(userIDKeyPath: \.userID)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["k": .boolean(rollout: 50)]
+        )
+
+        // Signed out: bucketing falls back to the install ID.
+        plugin.afterReduce(state: &state, action: .unrelated)
+        #expect(state.featureFlags.resolvedUserID == nil)
+        let installBucketing = state.featureFlags.installID.uuidString
+        #expect(
+            state.featureFlags.isEnabled(.init("k"))
+                == (Bucketing.bucket(id: installBucketing, flagKey: "k") < 50)
+        )
+
+        // Sign-in: the next dispatch resolves the user ID; default reads use it.
+        state.userID = "user-1"
+        plugin.afterReduce(state: &state, action: .unrelated)
+        #expect(state.featureFlags.resolvedUserID == "user-1")
+        #expect(
+            state.featureFlags.isEnabled(.init("k"))
+                == (Bucketing.bucket(id: "user-1", flagKey: "k") < 50)
+        )
+
+        // Sign-out clears it again.
+        state.userID = nil
+        plugin.afterReduce(state: &state, action: .unrelated)
+        #expect(state.featureFlags.resolvedUserID == nil)
+    }
+
+    @Test("exposure records bucket by the same identity as default reads")
+    func exposureUsesResolvedIdentity() async {
+        let counter = ExposureCounter()
+        let plugin = makePlugin(
+            userIDKeyPath: \.userID,
+            onExposure: { key, value in
+                Task { @MainActor in counter.record(key: key, value: value) }
+            }
+        )
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["k": .boolean(rollout: 50)]
+        )
+        state.userID = "user-1"
+        plugin.afterReduce(state: &state, action: .unrelated)
+
+        let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        await effect?({ _ in })
+        await Task.yield()
+
+        let expected = Bucketing.bucket(id: "user-1", flagKey: "k") < 50
+        #expect(counter.records.first?.1 == .bool(expected))
+    }
+
+    @Test("recordExposure with a programmatically-built empty variant set does not trap")
+    func recordExposureEmptyVariants() async {
+        let counter = ExposureCounter()
+        let plugin = makePlugin(onExposure: { key, value in
+            Task { @MainActor in counter.record(key: key, value: value) }
+        })
+        var state = TestState()
+        // Bypasses decode validation — built in code, not from the wire.
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["k": .variant(variants: [])]
+        )
+
+        let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        await effect?({ _ in })
+        await Task.yield()
+
+        #expect(counter.count == 0)
+    }
+
     @Test("recordExposure for unknown key does not fire callback")
     func recordExposureUnknownKey() async {
         let counter = ExposureCounter()

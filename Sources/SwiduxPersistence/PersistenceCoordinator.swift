@@ -10,6 +10,7 @@
 import Foundation
 import Swidux
 import SwiftData
+import os
 
 /// Owns the `ModelContainer` + generic ``EntityDB`` and wires the registered
 /// entities into a `Swidux.PersistencePlugin`.
@@ -36,36 +37,76 @@ public final class PersistenceCoordinator<State, Action> {
     public let handle: DatabaseHandle
 
     private let entities: [PersistedEntity<State>]
+    private let onFailure: PersistenceFailureHandler
 
     /// The currently active database actor.
     public var database: EntityDB { handle.db }
 
     /// Builds the stack from registered entities and a prepared container.
+    ///
+    /// - Parameters:
+    ///   - entities: The registered entity collections (``PersistedEntity/entity(_:)``).
+    ///   - container: The prepared `ModelContainer`.
+    ///   - debounce: How long the core plugin waits after the last change before flushing.
+    ///   - onFailure: Called when a save or fetch fails. Every failure is
+    ///     logged regardless; supply a handler to additionally surface it
+    ///     (e.g. dispatch an action that shows a "couldn't save" banner).
+    ///     A failed **save** means in-memory data is not on disk; a failed
+    ///     **hydrate fetch** leaves that `EntityStore` untouched.
     public init(
         entities: [PersistedEntity<State>],
         container: ModelContainer,
-        debounce: Duration = .milliseconds(250)
+        debounce: Duration = .milliseconds(250),
+        onFailure: PersistenceFailureHandler? = nil
     ) {
         self.entities = entities
         let handle = DatabaseHandle(EntityDB(modelContainer: container))
         self.handle = handle
-        let writers = entities.map { $0.makeWriter(handle) }
+
+        let logger = Logger(subsystem: "swidux", category: "persistence")
+        let handler: PersistenceFailureHandler = { failure in
+            logger.error(
+                """
+                [SwiduxPersistence] \(String(describing: failure.operation), privacy: .public) failed \
+                for \(failure.entityType, privacy: .public): \
+                \(failure.underlying.localizedDescription, privacy: .public)
+                """
+            )
+            onFailure?(failure)
+        }
+        self.onFailure = handler
+
+        let writers = entities.map { $0.makeWriter(handle, handler) }
         self.corePlugin = PersistencePlugin(writers: writers, debounce: debounce)
     }
 
     /// First-load hydration: replaces each `EntityStore` with the on-disk rows.
     /// Safe only at launch, before any live edits exist.
+    ///
+    /// If a fetch fails, the corresponding `EntityStore` is left untouched
+    /// (it does **not** become empty) and the failure is reported via `onFailure`.
     public func hydrate(into state: inout State) async {
         for entity in entities {
-            await entity.hydrate(handle, &state)
+            await entity.hydrate(handle, &state, onFailure)
         }
     }
 
     /// Re-hydration that merges disk rows into the live `EntityStore`s without
     /// dropping unflushed writes or in-progress edits (rule #8).
+    ///
+    /// > Important: The merge prefers the in-memory value for **every** ID
+    /// > already in memory, and never removes entities. Mid-session, remote
+    /// > *edits* to entities you already hold and remote *deletions* therefore
+    /// > do not surface until the next launch — re-hydration is additive-only
+    /// > by design. That is the price of never clobbering unflushed writes or
+    /// > live UI edits; per-ID dirty tracking that relaxes this is a possible
+    /// > future refinement.
+    ///
+    /// If a fetch fails, the corresponding `EntityStore` is left untouched
+    /// and the failure is reported via `onFailure`.
     public func rehydrate(into state: inout State) async {
         for entity in entities {
-            await entity.mergeRemote(handle, &state)
+            await entity.mergeRemote(handle, &state, onFailure)
         }
     }
 }

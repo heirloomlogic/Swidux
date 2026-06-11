@@ -19,6 +19,9 @@ public struct PaywallState: Sendable, Equatable {
     public var error: String?
     /// `true` while the customer-center sheet is presented.
     public var isCustomerCenterPresented: Bool
+    /// `true` once `.observeCustomerInfo` has started its long-lived stream.
+    /// Guards against double-subscription; maintained by ``PaywallPlugin``.
+    public var isObservingCustomerInfo: Bool
 
     /// Creates a paywall state; defaults represent a free, non-presented state.
     public init(
@@ -28,7 +31,8 @@ public struct PaywallState: Sendable, Equatable {
         requestedReason: String? = nil,
         isLoading: Bool = false,
         error: String? = nil,
-        isCustomerCenterPresented: Bool = false
+        isCustomerCenterPresented: Bool = false,
+        isObservingCustomerInfo: Bool = false
     ) {
         self.isPro = isPro
         self.hasPermanentLicense = hasPermanentLicense
@@ -37,6 +41,7 @@ public struct PaywallState: Sendable, Equatable {
         self.isLoading = isLoading
         self.error = error
         self.isCustomerCenterPresented = isCustomerCenterPresented
+        self.isObservingCustomerInfo = isObservingCustomerInfo
     }
 
     /// `true` when the user is entitled via subscription or permanent license.

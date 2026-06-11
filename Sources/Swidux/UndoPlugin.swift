@@ -43,15 +43,17 @@ public final class UndoPlugin<State: Equatable & Sendable, Action>: SwiduxPlugin
     /// Creates an undo plugin.
     ///
     /// - Parameters:
-    ///   - maxDepth: Maximum number of undo steps to retain. Defaults to
-    ///     `Int.max` (effectively unlimited).
+    ///   - maxDepth: Maximum number of undo steps to retain. Each step holds a
+    ///     full `State` snapshot (copy-on-write keeps them cheap, but they pin
+    ///     whatever they reference), so the default is a bounded 100 rather
+    ///     than unlimited. Pass `.max` if you truly want unbounded history.
     ///   - isUndoable: Predicate that decides which actions trigger a snapshot.
     ///     Defaults to all actions.
     ///   - coalescing: Predicate that decides which actions coalesce with the
     ///     previous snapshot. Consecutive coalescing actions share one undo entry.
     ///     Defaults to no coalescing.
     public init(
-        maxDepth: Int = .max,
+        maxDepth: Int = 100,
         isUndoable: @escaping @Sendable (Action) -> Bool = { _ in true },
         coalescing: @escaping @Sendable (Action) -> Bool = { _ in false }
     ) {

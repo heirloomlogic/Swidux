@@ -52,7 +52,7 @@ The generated model is **CloudKit-safe by construction**, so the *same* model ba
 - **Non-optional mirrored attributes get a default.** If you wrote one on the domain property (`var count: Int = 0`), it is propagated verbatim; otherwise the macro fills a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). Defaults are inert locally — `init(from:)` overwrites them on every load.
 - **Non-primitive, non-optional properties** (a custom `Codable` type, `URL`, an enum) have no default the macro can invent. Give the property a default (`= …`), make it optional, or mark it `@Inline` — otherwise `@Persisted` emits a compile-time error.
 - **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a compile-time error (CloudKit forbids non-optional relationships).
-- **`@Inline` blob columns** default to `Data()`, so any `Codable` type is CloudKit-safe through `@Inline`.
+- **`@Inline` blob columns** default to `Data()`, so any `Codable` type is CloudKit-safe through `@Inline`. Because `Data()` is never decodable, a **non-optional** `@Inline` property must also carry a domain default (`= …`) — the generated getter falls back to it when the blob is missing or undecodable (e.g. a row CloudKit materialized before the blob synced). Omitting the default is a compile-time error (`inlineRequiresDefault`).
 
 `@Persisted` lives on the **entity**; `@Swidux` lives on **state containers** (`AppState`, `@Slice` slices). They are different layers and never apply to the same type.
 
@@ -66,7 +66,7 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
     var id: UUID
     var quote: String
 
-    @Inline var styling: TextStyling                 // one opaque JSON Data column
+    @Inline var styling: TextStyling = TextStyling()  // one opaque JSON Data column
     @ForeignKey var deckID: UUID                      // scalar parent reference
     @Relation(deleteRule: .cascade, inverse: \TagModel.card)
     var tags: [Tag]                                   // SwiftData relationship
@@ -126,6 +126,20 @@ extension Store where State == AppState, Action == AppAction {
 ```
 
 `hydrate(into:)` is **first-load only** — it replaces each ``EntityStore`` with the on-disk rows before any live edits exist. The only refresh path after launch is `rehydrate(into:)`, which always *merges* (preferring in-memory values) so a "refresh from disk" can never clobber unflushed writes or in-progress UI edits.
+
+### Surfacing failures
+
+Every save and fetch failure is logged, and the coordinator accepts an optional `onFailure:` handler to additionally surface it to your app (a failed **save** means the in-memory data is *not* on disk; a failed **hydrate fetch** leaves that `EntityStore` untouched rather than presenting an unreadable store as "no data"):
+
+```swift
+let persistence = PersistenceCoordinator<AppState, AppAction>(
+    entities: [.entity(\.cards)],
+    container: container,
+    onFailure: { failure in
+        // e.g. dispatch an action that shows a "couldn't save" banner
+    }
+)
+```
 
 ## Step 5: Flush on background
 

@@ -141,6 +141,8 @@ observer.start()
 
 `.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Because re-hydration always **merges preferring in-memory state**, feeding the app its own writes is a no-op — the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
 
+> Important: The same merge rule makes mid-session sync **additive-only**. Rows created on another device appear live; remote *edits* to entities already in memory and remote *deletions* do **not** surface until the next launch (the in-memory value always wins, and a merge never removes). This is the deliberate trade against clobbering unflushed writes and live UI edits — set expectations accordingly in your UI, and don't chase "stale until relaunch" reports as bugs.
+
 ## What the privacy toggle does (and doesn't)
 
 Be accurate about CloudKit semantics in your UI copy:

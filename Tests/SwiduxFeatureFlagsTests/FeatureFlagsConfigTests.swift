@@ -63,6 +63,58 @@ struct FeatureFlagsConfigTests {
         }
     }
 
+    @Test("decoding fails for an empty variants array")
+    func rejectsEmptyVariants() {
+        let json = """
+            { "version": 1, "flags": { "k": { "type": "variant", "variants": [] } } }
+            """
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("decoding fails for negative variant weights")
+    func rejectsNegativeWeights() {
+        let json = """
+            {
+              "version": 1,
+              "flags": {
+                "k": {
+                  "type": "variant",
+                  "variants": [
+                    { "value": "a", "weight": -5 },
+                    { "value": "b", "weight": 105 }
+                  ]
+                }
+              }
+            }
+            """
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("decoding fails when variant weights do not sum to 100")
+    func rejectsWeightsNotSumming() {
+        let json = """
+            {
+              "version": 1,
+              "flags": {
+                "k": {
+                  "type": "variant",
+                  "variants": [
+                    { "value": "a", "weight": 50 },
+                    { "value": "b", "weight": 40 }
+                  ]
+                }
+              }
+            }
+            """
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        }
+    }
+
     @Test("empty config is decodable and has no flags")
     func emptyConfig() throws {
         let json = "{ \"version\": 1, \"flags\": {} }"

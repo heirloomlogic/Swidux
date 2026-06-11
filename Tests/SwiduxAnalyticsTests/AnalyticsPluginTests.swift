@@ -338,6 +338,30 @@ struct AnalyticsPluginTests {
         #expect(aliasCalls.isEmpty)
     }
 
+    @Test("an opted-out .identify does not poison identification after opting back in")
+    func optedOutIdentifyDoesNotPoisonLaterIdentify() async {
+        let service = RecordingAnalyticsService()
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        state.analytics.isOptedOut = true
+
+        // Suppressed — and must not be recorded as "already identified".
+        await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        )
+        #expect(state.analytics.lastIdentifiedUserID == nil)
+
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+
+        // The same identify after opting back in must reach the service.
+        await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        )
+        let identifyCalls = await service.identifyCalls
+        #expect(identifyCalls.count == 1)
+        #expect(state.analytics.lastIdentifiedUserID == "u1")
+    }
+
     // MARK: - Explicit AnalyticsAction: setOptedOut
 
     @Test(".setOptedOut(true) sets flag, clears identity, calls service.reset")
