@@ -61,6 +61,7 @@ public struct PaywallState: Sendable, Equatable {
     public var isLoading: Bool
     public var error: String?
     public var isCustomerCenterPresented: Bool
+    public var isObservingCustomerInfo: Bool
 
     public init(
         isPro: Bool = false,
@@ -69,7 +70,8 @@ public struct PaywallState: Sendable, Equatable {
         requestedReason: String? = nil,
         isLoading: Bool = false,
         error: String? = nil,
-        isCustomerCenterPresented: Bool = false
+        isCustomerCenterPresented: Bool = false,
+        isObservingCustomerInfo: Bool = false
     )
 
     public var isGateSatisfied: Bool { isPro || hasPermanentLicense }
@@ -205,7 +207,7 @@ Sets `isPresented = false` and clears `requestedReason`. Returns an effect that 
 
 ### `observeCustomerInfo`
 
-Returns a long-lived effect that consumes `PaywallService.customerInfoStream()` and dispatches `.customerInfoUpdated` for every snapshot. Dispatch once on app launch (typically from a `.task` on the root view). The effect lives for the duration of the stream.
+Returns a long-lived effect that consumes `PaywallService.customerInfoStream()` and dispatches `.customerInfoUpdated` for every snapshot. Dispatch once on app launch (typically from a `.task` on the root view). The effect lives for the duration of the stream. Idempotent: `isObservingCustomerInfo` guards against double-subscription, so a re-dispatched `.task` (view identity change, scene reconnect) won't start a duplicate stream.
 
 ### `refreshCustomerInfo`
 

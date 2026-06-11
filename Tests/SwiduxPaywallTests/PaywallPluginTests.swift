@@ -175,17 +175,28 @@ struct PaywallPluginTests {
         #expect(effect != nil)
     }
 
-    @Test("observeCustomerInfo returns effect without changing state")
+    @Test("observeCustomerInfo returns effect and marks the stream as active")
     func observeCustomerInfoReturnsEffect() {
         let plugin = makePlugin()
         var state = TestState()
-        let before = state
         let effect = plugin.reduce(
             state: &state,
             action: .paywall(.observeCustomerInfo)
         )
         #expect(effect != nil)
-        #expect(state == before)
+        #expect(state.paywall.isObservingCustomerInfo)
+    }
+
+    @Test("a second observeCustomerInfo does not start a duplicate stream")
+    func observeCustomerInfoIsIdempotent() {
+        let plugin = makePlugin()
+        var state = TestState()
+
+        let first = plugin.reduce(state: &state, action: .paywall(.observeCustomerInfo))
+        #expect(first != nil)
+
+        let second = plugin.reduce(state: &state, action: .paywall(.observeCustomerInfo))
+        #expect(second == nil)
     }
 
     // MARK: - Effects: dismiss

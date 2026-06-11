@@ -34,14 +34,29 @@ public struct KillswitchService: Sendable {
 
     // MARK: - Live
 
+    /// Maximum accepted config payload. Config JSON is a few KB; anything
+    /// approaching this is a misconfigured or hostile endpoint.
+    private static let maxResponseBytes = 1_000_000
+
     /// Production factory that fetches from a URL endpoint and caches to
     /// the system Caches directory.
+    ///
+    /// The endpoint must be HTTPS (`http` is allowed only for `localhost` /
+    /// `127.0.0.1` development servers) — the killswitch is a remote control
+    /// channel and must not be tamperable in transit, regardless of the host
+    /// app's ATS configuration. Responses over 1 MB and non-2xx statuses are
+    /// treated as fetch failures (the plugin then falls back to its cache).
     public static func live(
         endpoint: URL,
         fetchTimeout: TimeInterval = 10,
         cacheLifetime: TimeInterval = 3600,
         session: URLSession = .shared
     ) -> KillswitchService {
+        precondition(
+            endpoint.scheme == "https"
+                || (endpoint.scheme == "http" && ["localhost", "127.0.0.1"].contains(endpoint.host())),
+            "KillswitchService endpoint must use HTTPS: \(endpoint)"
+        )
         let cacheURL = Self.cacheFileURL()
 
         return KillswitchService(
@@ -49,7 +64,13 @@ public struct KillswitchService: Sendable {
                 var request = URLRequest(url: endpoint)
                 request.timeoutInterval = fetchTimeout
                 request.cachePolicy = .reloadIgnoringLocalCacheData
-                let (data, _) = try await session.data(for: request)
+                let (data, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+                guard data.count <= Self.maxResponseBytes else {
+                    throw URLError(.dataLengthExceedsMaximum)
+                }
                 return try JSONDecoder().decode(KillswitchConfig.self, from: data)
             },
             loadCached: {

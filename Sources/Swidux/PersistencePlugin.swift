@@ -36,6 +36,11 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// Active debounce task — cancelled and restarted on each change.
     private var debounceTask: Task<Void, Never>?
 
+    /// Tail of the chain of in-flight flush work. Every flush — debounce-fired
+    /// or direct — awaits the previous one, so batches reach the database in
+    /// order and ``flush()`` can deterministically wait for in-flight writes.
+    private var flushTail: Task<Void, Never>?
+
     /// Number of `afterReduce` calls since the last debounce flush.
     ///
     /// Used to detect probable dispatch loops.
@@ -79,10 +84,9 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         drainCount = 0
         hasLoggedLoopWarning = false
 
-        let work = writers.compactMap { $0.flush() }
-        for w in work {
-            await w()
-        }
+        // Chains behind any in-flight debounce flush, so returning from
+        // here guarantees every previously-buffered write has been persisted.
+        await runFlushWork()?.value
     }
 
     /// Drains ChangeSets and schedules a debounced flush.
@@ -121,15 +125,31 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
 
             self.drainCount = 0
             self.hasLoggedLoopWarning = false
+            self.runFlushWork()
+        }
+    }
 
-            let work = self.writers.compactMap { $0.flush() }
-            guard !work.isEmpty else { return }
+    /// Snapshots the writers' pending buffers and spawns the persistence work,
+    /// chained behind any flush already in flight.
+    ///
+    /// Returns `nil` when there is nothing pending and nothing in flight.
+    @discardableResult
+    private func runFlushWork() -> Task<Void, Never>? {
+        let work = writers.compactMap { $0.flush() }
+        let previous = flushTail
+        guard !work.isEmpty || previous != nil else { return nil }
 
-            self.logger.debug("[PersistencePlugin] Flushing \(work.count) writer(s)")
+        if !work.isEmpty {
+            logger.debug("[PersistencePlugin] Flushing \(work.count) writer(s)")
+        }
+        let task = Task {
+            await previous?.value
             for w in work {
                 await w()
             }
         }
+        flushTail = task
+        return task
     }
 
     /// Drains ChangeSets after every reducer invocation.

@@ -61,6 +61,17 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         return reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
     }
 
+    /// Keeps the resolved bucketing identity in sync with `userIDKeyPath`
+    /// after every dispatch, so default reads and exposure records bucket by
+    /// the signed-in user when one exists (and the install ID otherwise).
+    public func afterReduce(state: inout RootState, action: RootAction) {
+        guard let userIDKeyPath else { return }
+        let resolved = state[keyPath: userIDKeyPath]
+        if state[keyPath: stateKeyPath].resolvedUserID != resolved {
+            state[keyPath: stateKeyPath].resolvedUserID = resolved
+        }
+    }
+
     private func reduceLocal(
         state: inout FeatureFlagsState,
         action: FeatureFlagsAction
@@ -124,20 +135,22 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// flag isn't present in the config (defensive — exposure for an unknown
     /// flag is meaningless).
     ///
-    /// Bucketing here uses `installID` because evaluation runs from a state
-    /// slice without access to the root state. Live reads via the
-    /// ``FeatureFlagsState`` API can supply an explicit `bucketingID` from
-    /// the host's `userIDKeyPath`. Local overrides take precedence so
+    /// Bucketing uses the same identity as default reads — the plugin-resolved
+    /// user ID when present, else the install ID — so the recorded exposure
+    /// matches what the user actually saw. Local overrides take precedence so
     /// QA-toggled flags still record exposures.
     private func evaluateForExposure(state: FeatureFlagsState, key: String) -> FlagValue? {
         if let override = state.localOverrides[key] { return override }
         guard let definition = state.config.flags[key] else { return nil }
         switch definition {
         case .boolean(let rollout):
-            let bucket = Bucketing.bucket(id: state.installID.uuidString, flagKey: key)
+            let bucket = Bucketing.bucket(id: state.defaultBucketingID, flagKey: key)
             return .bool(bucket < rollout)
         case .variant(let variants):
-            let bucket = Bucketing.bucket(id: state.installID.uuidString, flagKey: key)
+            // Decoded configs guarantee non-empty variants, but a config can
+            // also be constructed programmatically — never index with -1.
+            guard !variants.isEmpty else { return nil }
+            let bucket = Bucketing.bucket(id: state.defaultBucketingID, flagKey: key)
             let weights = variants.map { $0.weight }
             let index = Bucketing.variantIndex(bucket: bucket, weights: weights)
             return .string(variants[index].value)

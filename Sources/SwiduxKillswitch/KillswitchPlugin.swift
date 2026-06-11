@@ -31,6 +31,13 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
     private let openURL: @Sendable (URL) async -> Void
 
     /// Creates a killswitch plugin wired into the host app's state and action types.
+    ///
+    /// - Parameter appVersion: Must return a SemVer string (`"1.2.3"`,
+    ///   prerelease/build suffixes allowed) — typically
+    ///   `Bundle.main.infoDictionary?["CFBundleShortVersionString"]`.
+    ///   **Fail-open policy:** if the returned string is unparseable, or the
+    ///   config can't be fetched and no cache exists, the verdict is
+    ///   `.allowed` — a broken config channel never locks users out.
     public init(
         state: WritableKeyPath<RootState, KillswitchState>,
         action toRootAction: @escaping @Sendable (KillswitchAction) -> RootAction,
@@ -89,7 +96,7 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
                     let verdict = KillswitchVerdict.evaluate(
                         cached, against: appVersion
                     )
-                    await send(.verdictReceived(verdict))
+                    await send(.verdictReceived(verdict, fromNetwork: false))
                     return
                 }
                 await Self.fetchFromNetwork(
@@ -106,18 +113,21 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
                 )
             }
 
-        case .verdictReceived(let verdict):
+        case .verdictReceived(let verdict, let fromNetwork):
             state.verdict = verdict
-            state.lastFetch = Date()
             state.fetchError = nil
+            // Only a live fetch refreshes the freshness window. A cache-served
+            // verdict re-stamping `lastFetch` would slide the window forever
+            // and starve the network path for the rest of the session.
+            if fromNetwork {
+                state.lastFetch = Date()
+            }
 
         case .fetchFailed(let message):
             state.fetchError = message
 
         case .openUpdateURL:
-            guard case .blocked(_, _, let url) = state.verdict,
-                let url
-            else { return nil }
+            guard let url = state.verdict.openableUpdateURL else { return nil }
             let openURL = self.openURL
             return { _ in await openURL(url) }
         }
@@ -135,13 +145,13 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             let verdict = KillswitchVerdict.evaluate(
                 config, against: appVersion
             )
-            await send(.verdictReceived(verdict))
+            await send(.verdictReceived(verdict, fromNetwork: true))
         } catch {
             if let cached = service.loadCached() {
                 let verdict = KillswitchVerdict.evaluate(
                     cached, against: appVersion
                 )
-                await send(.verdictReceived(verdict))
+                await send(.verdictReceived(verdict, fromNetwork: false))
             }
             await send(.fetchFailed(error.localizedDescription))
         }

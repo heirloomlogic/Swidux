@@ -55,7 +55,7 @@ public nonisolated struct EntityStore<
     /// > (e.g. `state.items = EntityStore(fetched)` from a CloudKit re-hydrate action).
     /// > In-memory state may hold unflushed writes or live UI bindings; wholesale
     /// > replacement silently drops them and surfaces as lost keystrokes. Use
-    /// > ``merge(from:preferExisting:)`` for that path — it records no changes and
+    /// > ``merge(from:shouldReplace:)`` for that path — it records no changes and
     /// > lets you decide per-ID which side wins. Under `NSPersistentCloudKitContainer`
     /// > the gotcha is especially sharp: `.NSPersistentStoreRemoteChange` fires for
     /// > local saves too, so a naïve "refresh on remote change" observer feeds the
@@ -178,36 +178,37 @@ public nonisolated struct EntityStore<
 
     // MARK: - Merging (Re-hydration)
 
-    /// Merges entities from another store, preferring existing values when the
-    /// closure returns `true`.
+    /// Merges entities from another store. Entities only present in `other`
+    /// are always added; for IDs present in both, `shouldReplace` decides
+    /// whether the incoming value overwrites the one already in `self`.
     ///
-    /// Use this for re-hydration scenarios where the database may return partial
-    /// data (e.g. metadata-only loading) and you need to preserve richer
-    /// in-memory state that was loaded lazily after startup.
+    /// Use this for re-hydration scenarios where the database may return
+    /// partial or stale data and you need to preserve richer in-memory state.
+    /// `{ _, _ in false }` keeps every current value and only absorbs new rows
+    /// (the rule-#8 "prefer in-memory" merge).
     ///
     /// ```swift
-    /// var merged = EntityStore(allCampaignsFromDB)
-    /// merged.merge(from: existingStore) { existing, incoming in
-    ///     existing.calculationState != nil && incoming.calculationState == nil
+    /// // Take the incoming row only when the current one lacks lazy-loaded data.
+    /// campaigns.merge(from: EntityStore(fetched)) { current, incoming in
+    ///     current.calculationState == nil && incoming.calculationState != nil
     /// }
-    /// campaigns = merged
     /// ```
     ///
     /// - Parameters:
     ///   - other: The store whose entities should be merged in.
-    ///   - preferExisting: Called when an entity with the same ID exists in both
-    ///     stores. The first argument is the entity from `other`, the second is
-    ///     the entity already in `self`. Return `true` to keep the entity from
-    ///     `other`, replacing the one in `self`.
+    ///   - shouldReplace: Called when an entity with the same ID exists in
+    ///     both stores. The first argument is the entity already in `self`,
+    ///     the second is the incoming entity from `other`. Return `true` to
+    ///     replace the current value with the incoming one.
     ///
     /// Does **not** record changes — this is a hydration operation.
     public mutating func merge(
         from other: EntityStore,
-        preferExisting: (_ existing: Entity, _ incoming: Entity) -> Bool
+        shouldReplace: (_ current: Entity, _ incoming: Entity) -> Bool
     ) {
         for entity in other.values {
             if let index = positions[entity.id] {
-                if preferExisting(entity, entities[index]) {
+                if shouldReplace(entities[index], entity) {
                     entities[index] = entity
                 }
                 // else: keep self's current value

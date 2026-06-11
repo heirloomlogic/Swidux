@@ -145,8 +145,14 @@ private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String)
         }
         return "    \(accessPrefix)var \(prop.name): \(type)\(suffix)"
     case .inlineBlob:
-        let getter: String
-        guard prop.isOptional else {
+        // The backing column defaults to `Data()` (CloudKit-safe), which is
+        // never decodable — a row materialized with defaults (e.g. created by
+        // CloudKit before the blob syncs) hits the fallback, so it must never
+        // trap. Non-optional blobs fall back to the domain default the macro
+        // requires (`inlineRequiresDefault`); optional blobs fall back to nil.
+        guard let fallback = prop.isOptional ? "nil" : prop.defaultExpr else {
+            // No recoverable fallback exists; `inlineRequiresDefault` is
+            // diagnosed as an error, so this expansion never compiles.
             return """
                     private var \(prop.name)Data: Data = Data()
                     \(accessPrefix)var \(prop.name): \(type) {
@@ -158,7 +164,7 @@ private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String)
                     }
                 """
         }
-        getter = "(try? Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)) ?? nil"
+        let getter = "(try? Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)) ?? \(fallback)"
         return """
                 private var \(prop.name)Data: Data = Data()
                 \(accessPrefix)var \(prop.name): \(type) {

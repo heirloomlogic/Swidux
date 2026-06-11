@@ -24,14 +24,14 @@ Every mutation is tracked in a ``ChangeSet`` that the middleware drains after ea
 
 ## Merging (Re-hydration)
 
-Replacing an ``EntityStore`` after startup destroys any in-memory state that was loaded lazily after initial hydration. Use `merge(from:preferExisting:)` instead:
+Replacing an ``EntityStore`` after startup destroys any in-memory state that was loaded lazily after initial hydration. Use `merge(from:shouldReplace:)` instead — entities only in the other store are always added, and the closure decides whether an incoming value overwrites the current one:
 
 ```swift
-var merged = EntityStore(allFromDB)
-merged.merge(from: existingStore) { existing, incoming in
-    existing.calculationState != nil && incoming.calculationState == nil
+// Absorb DB rows; take an incoming row only when the current one
+// lacks lazily-computed data.
+campaigns.merge(from: EntityStore(allFromDB)) { current, incoming in
+    current.calculationState == nil && incoming.calculationState != nil
 }
-campaigns = merged
 ```
 
 `merge` does not record changes — it has hydration semantics like `init(_:)`.

@@ -178,7 +178,7 @@ The generated model is **CloudKit-safe by construction**, which is what lets the
 - **Non-optional mirrored attributes get a default** — the default written on the domain property (`var count: Int = 0`) if present, else a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). The default is inert locally; `init(from:)` overwrites it on load.
 - **A non-optional, non-primitive mirrored property** with no default and no `@Inline` is a diagnostic (`mirrorRequiresDefault`): add a default, make it optional, or mark it `@Inline`.
 - **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a diagnostic (`relationRequiresOptional`).
-- **`@Inline` blob columns** default to `Data()`.
+- **`@Inline` blob columns** default to `Data()`. A non-optional `@Inline` property must carry a domain default (`= …`) — the generated getter falls back to it when the blob is missing or undecodable instead of trapping; omitting it is a diagnostic (`inlineRequiresDefault`). Optional `@Inline` properties fall back to `nil`.
 
 ### Requirements on the annotated struct
 

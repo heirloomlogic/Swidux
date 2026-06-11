@@ -83,6 +83,33 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
             self = .boolean(rollout: rollout)
         case "variant":
             let variants = try container.decode([Variant].self, forKey: .variants)
+            // Reject malformed variant sets at the wire boundary: an empty
+            // array has nothing to assign, negative weights corrupt the
+            // cumulative walk, and weights that don't sum to 100 silently
+            // skew every assignment toward the last variant. Throwing here
+            // keeps the plugin on its cached config instead.
+            guard !variants.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .variants,
+                    in: container,
+                    debugDescription: "variant flag has no variants"
+                )
+            }
+            guard variants.allSatisfy({ $0.weight >= 0 }) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .variants,
+                    in: container,
+                    debugDescription: "variant weights must be non-negative"
+                )
+            }
+            let total = variants.reduce(0) { $0 + $1.weight }
+            guard total == 100 else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .variants,
+                    in: container,
+                    debugDescription: "variant weights must sum to 100 (got \(total))"
+                )
+            }
             self = .variant(variants: variants)
         case "value":
             let value = try container.decode(FlagValue.self, forKey: .value)

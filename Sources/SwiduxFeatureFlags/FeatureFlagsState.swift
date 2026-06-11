@@ -34,6 +34,12 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
     /// resolves to a non-nil value.
     public var installID: UUID = UUID()
 
+    /// The bucketing identity resolved by the plugin's `userIDKeyPath` —
+    /// the current user ID when one is set, else `nil` (which falls back to
+    /// ``installID``). Maintained by ``FeatureFlagsPlugin`` on every dispatch;
+    /// don't write it from app code.
+    public var resolvedUserID: String? = nil
+
     /// Creates a state slice with explicit values for every property.
     /// Use ``hydrated(from:defaultConfig:)`` for the typical app-launch path.
     public init(
@@ -43,7 +49,8 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         isFetching: Bool = false,
         localOverrides: [String: FlagValue] = [:],
         exposedKeys: Set<String> = [],
-        installID: UUID = UUID()
+        installID: UUID = UUID(),
+        resolvedUserID: String? = nil
     ) {
         self.config = config
         self.lastFetchedAt = lastFetchedAt
@@ -52,11 +59,18 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         self.localOverrides = localOverrides
         self.exposedKeys = exposedKeys
         self.installID = installID
+        self.resolvedUserID = resolvedUserID
     }
 
     /// Builds an initial state by reading the install ID and last-known
     /// config from the supplied key-value store. Generates and persists a
     /// new install ID if none is stored.
+    ///
+    /// - Note: If the store silently drops the write (full disk, sandbox
+    ///   denial), a fresh install ID is minted on the next launch and the
+    ///   user re-buckets into different variants. Acceptable for feature
+    ///   flags; not a stable analytics identity — use
+    ///   `KeychainKeyValueStore` + `AnalyticsIdentity` for that.
     public static func hydrated(
         from store: any KeyValueStore,
         defaultConfig: FeatureFlagsConfig? = nil
@@ -134,12 +148,20 @@ enum FlagEvaluator {
 // MARK: - Read API on the struct
 
 extension FeatureFlagsState {
+    /// The identity used for bucketing when the caller doesn't pass one:
+    /// the plugin-resolved user ID when present, else the install ID.
+    var defaultBucketingID: String { resolvedUserID ?? installID.uuidString }
+
     /// Reads a boolean flag.
     ///
     /// Evaluation order:
     /// 1. Local override (if any),
     /// 2. Remote config (rollout bucketing against `bucketingID`),
     /// 3. Swift-side `default`.
+    ///
+    /// When `bucketingID` is omitted, the plugin-resolved user ID is used if
+    /// the host configured a `userIDKeyPath` and a user is signed in;
+    /// otherwise the stable per-install ID.
     public func isEnabled(
         _ flag: BoolFlag,
         bucketingID: String? = nil,
@@ -149,7 +171,7 @@ extension FeatureFlagsState {
             flag,
             config: config,
             localOverrides: localOverrides,
-            bucketingID: bucketingID ?? installID.uuidString,
+            bucketingID: bucketingID ?? defaultBucketingID,
             default: defaultValue
         )
     }
@@ -158,6 +180,10 @@ extension FeatureFlagsState {
     ///
     /// Returns the host's `defaultValue` if the flag is missing or the JSON
     /// ships a string the enum doesn't recognize.
+    ///
+    /// When `bucketingID` is omitted, the plugin-resolved user ID is used if
+    /// the host configured a `userIDKeyPath` and a user is signed in;
+    /// otherwise the stable per-install ID.
     public func variant<Variant>(
         of flag: VariantFlag<Variant>,
         bucketingID: String? = nil
@@ -166,7 +192,7 @@ extension FeatureFlagsState {
             of: flag,
             config: config,
             localOverrides: localOverrides,
-            bucketingID: bucketingID ?? installID.uuidString
+            bucketingID: bucketingID ?? defaultBucketingID
         )
     }
 
@@ -207,6 +233,10 @@ extension FeatureFlagsState {
 // fields needed for that flag's evaluation.
 
 extension FeatureFlagsStateObserver {
+    /// The identity used for bucketing when the caller doesn't pass one:
+    /// the plugin-resolved user ID when present, else the install ID.
+    var defaultBucketingID: String { resolvedUserID ?? installID.uuidString }
+
     /// Reads a boolean flag against the observer's current state.
     public func isEnabled(
         _ flag: BoolFlag,
@@ -217,7 +247,7 @@ extension FeatureFlagsStateObserver {
             flag,
             config: config,
             localOverrides: localOverrides,
-            bucketingID: bucketingID ?? installID.uuidString,
+            bucketingID: bucketingID ?? defaultBucketingID,
             default: defaultValue
         )
     }
@@ -231,7 +261,7 @@ extension FeatureFlagsStateObserver {
             of: flag,
             config: config,
             localOverrides: localOverrides,
-            bucketingID: bucketingID ?? installID.uuidString
+            bucketingID: bucketingID ?? defaultBucketingID
         )
     }
 

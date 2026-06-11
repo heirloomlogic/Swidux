@@ -111,8 +111,11 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
             return { _ in await service.track(event) }
 
         case .identify(let userID, let properties):
-            state.recordIdentified(userID: userID, properties: properties)
+            // Record only when the identify actually reaches the service —
+            // recording while opted out would make a later opt-in compare
+            // equal and silently skip ever identifying the user.
             guard !state.isOptedOut else { return nil }
+            state.recordIdentified(userID: userID, properties: properties)
             let service = self.service
             return { _ in
                 await service.identify(userID: userID, properties: properties)

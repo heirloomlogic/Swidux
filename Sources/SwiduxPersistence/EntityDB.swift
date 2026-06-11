@@ -31,6 +31,36 @@ public actor EntityDB {
         try modelContext.save()
     }
 
+    /// Applies a whole flush batch — upserts then deletions — in a single
+    /// transaction with one `save()`, so a crash can't persist a partial batch.
+    ///
+    /// On failure the context is rolled back before rethrowing, leaving no
+    /// half-applied changes behind for a later save to pick up.
+    public func apply<M: PersistableModel>(
+        writes: [M.Domain],
+        deletions: Set<UUID>,
+        as type: M.Type
+    ) throws {
+        do {
+            for domain in writes {
+                if let existing = try fetchByID(domain.id, as: M.self) {
+                    existing.update(from: domain)
+                } else {
+                    modelContext.insert(M(from: domain))
+                }
+            }
+            for id in deletions {
+                if let existing = try fetchByID(id, as: M.self) {
+                    modelContext.delete(existing)
+                }
+            }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
     /// Deletes the row for `id` if present, then saves.
     public func delete<M: PersistableModel>(id: UUID, as type: M.Type) throws {
         guard let existing = try fetchByID(id, as: M.self) else { return }

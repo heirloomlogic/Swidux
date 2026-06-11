@@ -252,36 +252,35 @@ struct EntityStoreTests {
 
     // MARK: - Merge
 
-    @Test("Merge keeps existing entity when preferExisting returns true")
-    func mergeKeepsExisting() {
+    @Test("Merge replaces the current entity when shouldReplace returns true")
+    func mergeReplacesCurrent() {
         let id = UUID()
-        let rich = TestEntity(id: id, name: "Rich")
-        let sparse = TestEntity(id: id, name: "Sparse")
+        let current = TestEntity(id: id, name: "Current")
+        let incoming = TestEntity(id: id, name: "Incoming")
 
-        var store = EntityStore([sparse])
-        let other = EntityStore([rich])
+        var store = EntityStore([current])
+        let other = EntityStore([incoming])
 
-        store.merge(from: other) { existing, _ in
-            existing.name == "Rich"
+        store.merge(from: other) { current, incoming in
+            current.name == "Current" && incoming.name == "Incoming"
         }
 
-        #expect(store[id]?.name == "Rich")
+        #expect(store[id]?.name == "Incoming")
         #expect(store.count == 1)
     }
 
-    @Test("Merge accepts incoming when preferExisting returns false")
-    func mergeAcceptsIncoming() {
+    @Test("Merge keeps the current entity when shouldReplace returns false")
+    func mergeKeepsCurrent() {
         let id = UUID()
-        let existing = TestEntity(id: id, name: "Existing")
+        let current = TestEntity(id: id, name: "Current")
         let incoming = TestEntity(id: id, name: "Incoming")
 
-        var store = EntityStore([incoming])
-        let other = EntityStore([existing])
+        var store = EntityStore([current])
+        let other = EntityStore([incoming])
 
         store.merge(from: other) { _, _ in false }
 
-        // When preferExisting returns false, self retains its value
-        #expect(store[id]?.name == "Incoming")
+        #expect(store[id]?.name == "Current")
     }
 
     @Test("Merge adds entities only present in the other store")

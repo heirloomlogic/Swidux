@@ -53,6 +53,34 @@ struct EntityDBTests {
     }
 
     @MainActor
+    @Test("apply persists a whole batch — inserts, updates, and deletions — in one call")
+    func applyBatch() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let db = EntityDB(modelContainer: container)
+        let keepID = UUID()
+        let updateID = UUID()
+        let removeID = UUID()
+
+        try await db.upsert(Note(id: updateID, title: "old", pinned: false), as: NoteModel.self)
+        try await db.upsert(Note(id: removeID, title: "doomed", pinned: false), as: NoteModel.self)
+
+        try await db.apply(
+            writes: [
+                Note(id: keepID, title: "new", pinned: false),
+                Note(id: updateID, title: "updated", pinned: true),
+            ],
+            deletions: [removeID],
+            as: NoteModel.self
+        )
+
+        let all = try await db.fetchAll(NoteModel.self)
+        #expect(all.count == 2)
+        #expect(all.first { $0.id == keepID }?.title == "new")
+        #expect(all.first { $0.id == updateID }?.title == "updated")
+        #expect(all.first { $0.id == removeID } == nil)
+    }
+
+    @MainActor
     @Test("rehydrate merges without clobbering live in-memory edits (rule #8)")
     func rehydratePreservesLiveEdits() async throws {
         let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])

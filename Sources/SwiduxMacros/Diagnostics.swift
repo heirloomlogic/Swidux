@@ -6,6 +6,7 @@ enum SwiduxDiagnostic: String, DiagnosticMessage {
     case ignoredRequiresOptional
     case mirrorRequiresDefault
     case relationRequiresOptional
+    case inlineRequiresDefault
 
     var severity: DiagnosticSeverity { .error }
 
@@ -23,6 +24,9 @@ enum SwiduxDiagnostic: String, DiagnosticMessage {
         case .relationRequiresOptional:
             return
                 "@Relation to-one properties must be optional (T?) or to-many to be CloudKit-safe; CloudKit forbids non-optional relationships"
+        case .inlineRequiresDefault:
+            return
+                "Non-optional @Inline properties must provide a default value (= …) or be optional, so a missing or undecodable blob can be recovered instead of crashing"
         }
     }
 

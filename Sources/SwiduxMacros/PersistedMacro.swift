@@ -37,6 +37,13 @@ extension PersistedMacro: PeerMacro {
             context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.relationRequiresOptional))
         }
 
+        // A non-optional `@Inline` blob backed by `Data()` (the CloudKit-safe
+        // column default) has nothing to decode until the first write; without
+        // a domain default the getter cannot recover and would have to trap.
+        for property in properties where isInline(property) && !property.isOptional && property.defaultExpr == nil {
+            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.inlineRequiresDefault))
+        }
+
         return [
             generatePersistedModelClass(
                 structName: structDecl.name.text,
@@ -77,6 +84,11 @@ private func isIgnored(_ property: PersistedProperty) -> Bool {
 
 private func isMirror(_ property: PersistedProperty) -> Bool {
     if case .mirror = property.kind { return true }
+    return false
+}
+
+private func isInline(_ property: PersistedProperty) -> Bool {
+    if case .inlineBlob = property.kind { return true }
     return false
 }
 
