@@ -82,7 +82,7 @@ import SwiduxRevenueCatPaywall
 let service = RevenueCatPaywallService()
 ```
 
-The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin. See its README for configuration (API key, entitlement identifiers).
+The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin. See its [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) for configuration (API key, entitlement identifiers).
 
 ### Path B: StoreKit or custom backend
 

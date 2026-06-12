@@ -4,7 +4,7 @@
 
 # Swidux
 
-**Redux-style state management for SwiftUI.** State lives in one observable store, mutations go through reducers, and side effects run as async closures. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Three optional plugins ship ready-made paywalls, version killswitches, and parental gates.
+**Redux-style state management for SwiftUI.** State lives in one observable store, mutations go through reducers, and side effects run as async closures. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Optional plugins ship ready-made paywalls, version killswitches, parental gates, analytics, feature flags, and SwiftData/iCloud persistence.
 
 [![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20|%20iOS%20|%20tvOS%20|%20watchOS%20-blue.svg)](https://swift.org)
@@ -16,7 +16,7 @@
 - **Predictable mutations.** Reducers are pure and synchronous. Async work is explicit, off the MainActor, and dispatches results back through actions.
 - **No observer-class boilerplate.** `@Swidux` writes the `@Observable` companion class for you. SwiftUI gets per-property observation without hand-maintained class trees.
 - **Persistence is invisible.** `EntityStore` tracks every change; `PersistencePlugin` debounces and batches them. You never write `save()` in a feature. Scalar preferences (theme, sort order) get a separate testable abstraction — `KeyValueStore` — instead of reaching for `UserDefaults.standard`.
-- **Batteries included.** Undo/redo, version killswitches, parental gates, and RevenueCat-shaped paywalls are one `plugins.register(...)` away.
+- **Batteries included.** Undo/redo, version killswitches, parental gates, RevenueCat-shaped paywalls, analytics, and remote feature flags are one `plugins.register(...)` away.
 - **Strict-concurrency-native.** Built for Swift 6 from the ground up. `Sendable`, `@MainActor`, and `@concurrent` are wired into the dispatch cycle so your app composes safely with async/await and SwiftData.
 
 ## Installation
@@ -27,6 +27,11 @@
 - `SwiduxKillswitch` — version-blocking plugin (optional)
 - `SwiduxParentalGate` — math-challenge gate plugin (optional)
 - `SwiduxPaywall` — paywall + entitlement plugin (optional)
+- `SwiduxDevPaywallUI` — SDK-free debug paywall sheet for `SwiduxPaywall` (optional)
+- `SwiduxAnalytics` — event-tracking plugin (optional)
+- `SwiduxFeatureFlags` — typed feature flags + A/B variants plugin (optional)
+- `SwiduxPersistence` — SwiftData persistence (optional)
+- `SwiduxCloudKitSync` — opt-in iCloud/CloudKit sync, layered on `SwiduxPersistence` (optional)
 
 **Package.swift.**
 
@@ -36,9 +41,14 @@
 
 ```swift
 .product(name: "Swidux", package: "Swidux"),
-.product(name: "SwiduxPaywall", package: "Swidux"),     // optional
-.product(name: "SwiduxKillswitch", package: "Swidux"),  // optional
-.product(name: "SwiduxParentalGate", package: "Swidux"),// optional
+.product(name: "SwiduxPaywall", package: "Swidux"),        // optional
+.product(name: "SwiduxDevPaywallUI", package: "Swidux"),   // optional
+.product(name: "SwiduxKillswitch", package: "Swidux"),     // optional
+.product(name: "SwiduxParentalGate", package: "Swidux"),   // optional
+.product(name: "SwiduxAnalytics", package: "Swidux"),      // optional
+.product(name: "SwiduxFeatureFlags", package: "Swidux"),   // optional
+.product(name: "SwiduxPersistence", package: "Swidux"),    // optional
+.product(name: "SwiduxCloudKitSync", package: "Swidux"),   // optional
 ```
 
 ## Quickstart
@@ -102,6 +112,30 @@ Manage paywall presentation, entitlement observation, and purchase restoration. 
 plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extractAction: { if case .paywall(let a) = $0 { return a }; return nil }, service: RevenueCatPaywallService()))
 ```
 
+### Dev paywall UI
+
+`SwiduxDevPaywallUI` is an opt-in, SDK-free debug paywall sheet for driving `SwiduxPaywall` while the purchase vendor decision is still open. Paired with the built-in `SimulatedPaywallService`, it lets a developer or QA tester grant Pro/Trial/Permanent, run real Restore/Refresh flows, and simulate failure or latency — all flowing through the real plugin pipeline, no SDK required. The `.devPaywall(state:service:onAction:)` modifier mirrors the shape of the vendor paywall sheet, so the call site is unchanged when you adopt a real provider. See [Add a Paywall](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddapaywall) and the [Paywall Plugin Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginpaywallreference).
+
+```swift
+someView.devPaywall(state: store.paywall, service: simulatedPaywallService, onAction: { store.send(.paywall($0)) })
+```
+
+### Analytics
+
+Centralize event tracking behind a provider-agnostic `AnalyticsService`. A declarative `AnalyticsMapper` turns domain actions into tracked events in `afterReduce`, auto-identify keeps people-properties in sync with state, and screen views, opt-out, and shutdown flushing are first-class. The plugin doesn't know about your backend — implement `AnalyticsService` against Amplitude, PostHog, Segment, or a custom server, or drop in the ready-made [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) adapter for Mixpanel. See [Add Analytics](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddanalytics).
+
+```swift
+plugins.register(AnalyticsPlugin(state: \.analytics, action: AppAction.analytics, extractAction: { if case .analytics(let a) = $0 { return a }; return nil }, service: MixpanelAnalyticsService(token: "..."), mapper: mapper, identity: identity))
+```
+
+### Feature flags
+
+Typed feature flags, A/B variants, and remote-tunable scalar values from a single JSON config fetched through a provider-agnostic `FeatureFlagsService`. Bucketing is pure FNV-1a — the same input always lands in the same bucket, with no network round-trip per read — and local overrides give QA a one-action toggle that wins over remote evaluation. See [Add Feature Flags](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddfeatureflags).
+
+```swift
+store.register(plugin: FeatureFlagsPlugin(state: \.featureFlags, action: AppAction.featureFlags, extractAction: { if case .featureFlags(let a) = $0 { return a }; return nil }, service: HTTPFeatureFlagsService(url: configURL), keyValueStore: kv))
+```
+
 ### Persistence (SwiftData)
 
 `SwiduxPersistence` makes SwiftData persistence a declare-and-register concern. Annotate a domain entity with `@Persisted` and the macro generates its `@Model` shadow class, the `init(from:)`/`toDomain()`/`update(from:)` converters, and the `PersistableEntity` conformance — no hand-written model, DB actor, or `StateWriter`. A generic `EntityDB` actor and a `PersistenceCoordinator` (which reuses the core `PersistencePlugin`) handle the container, writers, and a merge-only re-hydration path.
@@ -121,7 +155,10 @@ await persistence.hydrate(into: &initialState)
 
 ### Companion packages
 
-- [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — RevenueCat adapter for `SwiduxPaywall`. Ships `RevenueCatPaywallService` (drop-in `PaywallService`), a mock for previews, and a SwiftUI sheet built on RevenueCatUI.
+Vendor-specific adapters live in their own repositories so the SDK dependency stays out of the core graph. Each ships a drop-in service plus a preview mock, and publishes its own DocC reference.
+
+- [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — RevenueCat adapter for `SwiduxPaywall`. Ships `RevenueCatPaywallService` (drop-in `PaywallService`), `MockRevenueCatPaywallService` for previews, and `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI. [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/).
+- [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) — Mixpanel adapter for `SwiduxAnalytics`. Ships `MixpanelAnalyticsService` (drop-in `AnalyticsService` that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types) and `MockMixpanelAnalyticsService` for previews. [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
 
 ## Macros
 
@@ -150,7 +187,7 @@ The macros emit an `AppStateObserver` class and a `SwiduxObservable` extension. 
 Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swidux/. Starting points by intent:
 
 - **I want to learn** — [Build Your First Swidux App](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingyourfirstapp)
-- **I want to add a paywall / killswitch / parental gate** — the three how-tos linked above
+- **I want to add a paywall / killswitch / parental gate / analytics / feature flags / persistence** — the per-plugin how-tos linked above
 - **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Middleware Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [KeyValueStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/keyvaluestoreguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
 - **I want to understand the design** — [Architecture Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/architectureguide), [Plugin Architecture](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginarchitecture), [Design Principles](https://heirloomlogic.github.io/Swidux/documentation/swidux/designprinciples)
 - **I want to write my own plugin** — [Building a Domain Plugin](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingadomainplugin)

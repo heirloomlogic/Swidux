@@ -82,6 +82,8 @@ import SwiduxMixpanelAnalytics
 let service = MixpanelAnalyticsService(token: "your-mixpanel-token")
 ```
 
+See the package's [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/) for configuration details.
+
 ### Path B: Amplitude / PostHog / Segment / custom backend
 
 For any non-Mixpanel backend, implement `AnalyticsService` directly. The protocol is small:
