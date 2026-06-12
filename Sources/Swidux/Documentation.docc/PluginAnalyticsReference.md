@@ -34,6 +34,8 @@ For production Mixpanel integrations, the [`SwiduxMixpanelAnalytics`](https://gi
 - `MixpanelAnalyticsService` — an `AnalyticsService` conformer that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types.
 - `MockMixpanelAnalyticsService` — a Mixpanel-flavored mock for previews.
 
+Full API documentation lives in the package's own [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
+
 For other backends (Amplitude, PostHog, Segment, custom), implement `AnalyticsService` directly — see <doc:HowToAddAnalytics> Step 3, Path B.
 
 ## Types

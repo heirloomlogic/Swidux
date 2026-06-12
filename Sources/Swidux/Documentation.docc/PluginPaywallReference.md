@@ -28,6 +28,8 @@ For production RevenueCat integrations, the [`SwiduxRevenueCatPaywall`](https://
 - `MockRevenueCatPaywallService` — a RevenueCat-flavored mock for previews.
 - `SwiduxRevenueCatPaywallUI` — a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin.
 
+Full API documentation lives in the package's own [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/).
+
 For other backends (StoreKit, custom server), implement `PaywallService` directly — see <doc:HowToAddAPaywall> Step 3, Path B.
 
 ## Types

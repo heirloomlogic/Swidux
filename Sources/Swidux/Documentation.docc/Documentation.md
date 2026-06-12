@@ -10,7 +10,7 @@ Redux-style state management for SwiftUI, with macros for observability and read
 
 ![Swidux logo](Swidux-logo)
 
-Swidux is a Redux-style state-management library for SwiftUI. State lives in one observable store, mutations go through reducers, and side effects run as async effects. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Four optional plugins ship ready-made paywalls (RevenueCat or StoreKit-shaped), version killswitches, parental gates, and analytics (Mixpanel or any backend).
+Swidux is a Redux-style state-management library for SwiftUI. State lives in one observable store, mutations go through reducers, and side effects run as async effects. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Optional plugins ship ready-made paywalls (RevenueCat or StoreKit-shaped), version killswitches, parental gates, analytics (Mixpanel or any backend), feature flags, and SwiftData/iCloud persistence.
 
 The dispatch cycle:
 
@@ -25,6 +25,13 @@ View → store.send(.action)
 ```
 
 Your domain types and database stay in your app. Swidux provides the contracts, observability, and dispatch loop.
+
+## Companion Packages
+
+Vendor-specific adapters live in their own repositories so a third-party SDK never enters the core dependency graph. Each ships a drop-in service conformer plus a preview mock, and publishes its own DocC reference:
+
+- [SwiduxRevenueCatPaywall](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) — RevenueCat adapter for the paywall plugin (`RevenueCatPaywallService`, `MockRevenueCatPaywallService`, and the `SwiduxRevenueCatPaywallUI` sheet). See <doc:HowToAddAPaywall> and <doc:PluginPaywallReference>.
+- [SwiduxMixpanelAnalytics](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/) — Mixpanel adapter for the analytics plugin (`MixpanelAnalyticsService`, `MockMixpanelAnalyticsService`). See <doc:HowToAddAnalytics> and <doc:PluginAnalyticsReference>.
 
 ## Topics
 
