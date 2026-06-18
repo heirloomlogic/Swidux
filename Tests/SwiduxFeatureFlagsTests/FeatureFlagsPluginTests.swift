@@ -16,6 +16,7 @@ struct FeatureFlagsPluginTests {
 
     struct TestState: Sendable, Equatable {
         var featureFlags = FeatureFlagsState()
+        var deviceID: String = "device-1"
         var userID: String? = nil
     }
 
@@ -26,6 +27,7 @@ struct FeatureFlagsPluginTests {
 
     func makePlugin(
         service: any FeatureFlagsService = MockFeatureFlagsService(outcome: .success(.empty)),
+        deviceIDKeyPath: KeyPath<TestState, String> = \.deviceID,
         userIDKeyPath: KeyPath<TestState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .manual,
         keyValueStore: any KeyValueStore = InMemoryKeyValueStore(),
@@ -39,6 +41,7 @@ struct FeatureFlagsPluginTests {
                 return nil
             },
             service: service,
+            deviceIDKeyPath: deviceIDKeyPath,
             userIDKeyPath: userIDKeyPath,
             refreshPolicy: refreshPolicy,
             keyValueStore: keyValueStore,
@@ -211,7 +214,7 @@ struct FeatureFlagsPluginTests {
 
     // MARK: - Identity resolution (userIDKeyPath)
 
-    @Test("afterReduce resolves userIDKeyPath into state for default bucketing")
+    @Test("afterReduce resolves deviceID and userIDKeyPath into state for default bucketing")
     func userIDKeyPathResolution() {
         let plugin = makePlugin(userIDKeyPath: \.userID)
         var state = TestState()
@@ -220,13 +223,13 @@ struct FeatureFlagsPluginTests {
             flags: ["k": .boolean(rollout: 50)]
         )
 
-        // Signed out: bucketing falls back to the install ID.
+        // Signed out: bucketing falls back to the resolved device ID.
         plugin.afterReduce(state: &state, action: .unrelated)
         #expect(state.featureFlags.resolvedUserID == nil)
-        let installBucketing = state.featureFlags.installID.uuidString
+        #expect(state.featureFlags.resolvedDeviceID == "device-1")
         #expect(
             state.featureFlags.isEnabled(.init("k"))
-                == (Bucketing.bucket(id: installBucketing, flagKey: "k") < 50)
+                == (Bucketing.bucket(id: "device-1", flagKey: "k") < 50)
         )
 
         // Sign-in: the next dispatch resolves the user ID; default reads use it.

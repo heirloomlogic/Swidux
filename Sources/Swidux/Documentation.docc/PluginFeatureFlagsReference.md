@@ -46,9 +46,35 @@ The plugin rejects unknown `version` values and falls back to the last-known-goo
 
 - **Stable per `(bucketingID, flagKey)` pair forever.** Same input always produces the same bucket.
 - **Per-flag.** A user isn't always in the "early" group across different flags.
-- **Identity resolution.** When a `userIDKeyPath` is configured *and* the current user ID is non-nil, that is used. Otherwise the install ID is used. Anonymous users get a stable per-install identity; logged-in users get stable cross-device assignment. A user's variant *can* shift once at login — acceptable for nearly all real use cases.
+- **Identity resolution.** When a `userIDKeyPath` is configured *and* the current user ID is non-nil, that is used. Otherwise the **device ID** is used (the plugin's required `deviceIDKeyPath`). Anonymous users get a stable per-install identity; logged-in users get stable cross-device assignment. A user's variant *can* shift once at login — acceptable for nearly all real use cases.
 
 FNV-1a was chosen because it's simple, dependency-free, and matches GrowthBook's algorithm so apps migrating from GrowthBook get compatible buckets.
+
+### The device ID must be stable across reinstall
+
+Bucketing is only stable if the fallback identity is. The plugin takes a non-optional `deviceIDKeyPath: KeyPath<State, String>` into your `AppState`, so the *app* owns the identity and the *same* value can drive analytics (`AnalyticsIdentity(userID: \.deviceID, …)`) — one identity, so A/B exposure correlates with the user analytics reports against.
+
+Mint it once at launch with the shared core helper, backed by the Keychain so it survives reinstall, and seed it into the slice via `hydrated(from:deviceID:)`:
+
+```swift
+// In Store.configured()
+let deviceID = KeychainKeyValueStore(service: "com.example.app").deviceIdentity()
+
+let plugin = FeatureFlagsPlugin<AppState, AppAction>(
+    state: \.featureFlags, action: AppAction.featureFlags, extractAction: { … },
+    service: service,
+    deviceIDKeyPath: \.deviceID,          // app-owned, Keychain-backed
+    userIDKeyPath: \.auth.currentUserID,  // optional; authed identity wins when set
+    keyValueStore: kv
+)
+
+let initial = AppState(
+    featureFlags: .hydrated(from: kv, deviceID: deviceID),
+    deviceID: deviceID
+)
+```
+
+A `UserDefaults`-backed identity regenerates on reinstall (QA ad-hoc builds, test installs), which silently re-buckets users and breaks A/B assignment — use `KeychainKeyValueStore` for the identity. The flags *config cache* can still live in a lighter store.
 
 ## Evaluation order
 
@@ -60,10 +86,34 @@ For each read, in priority:
 
 ## Persistence
 
-- **Install ID** persisted to `KeyValueStore` on first generation. Read at hydration via `FeatureFlagsState.hydrated(from:defaultConfig:)`.
+- **Device ID** is app-owned and minted once via `KeyValueStore.deviceIdentity()` (Keychain-backed). Seeded into the slice at `FeatureFlagsState.hydrated(from:deviceID:)` and kept in sync from `deviceIDKeyPath`. The plugin no longer mints its own bucketing identity.
 - **Last-known config** persisted after every successful refresh. Hydrates as fallback before first network success.
 - **Local overrides** *not* persisted by default. Restart = clean state.
 - **`exposedKeys`** *not* persisted. New session = fresh exposure events.
+
+## Governance: no forever flags
+
+Owner and expiry are **required** metadata for every flag, enforced by a single unit test rather than the wire format (the JSON stays dumb and fail-open). Declare a manifest with the type-erasing factories — `owner` and `expires` are non-optional, so a flag can't be registered without them — and the keys are single-sourced from the typed flag declarations:
+
+```swift
+enum FlagManifest {
+    static let all: [FlagDescriptor] = [
+        .bool(.newOnboarding, owner: "growth",
+              expires: Date(timeIntervalSince1970: 1_788_000_000), purpose: "New onboarding flow"),
+        .variant(.checkoutLayout, owner: "checkout",
+                 expires: Date(timeIntervalSince1970: 1_785_000_000), purpose: "Checkout A/B"),
+    ]
+}
+
+@Test func noForeverFlags() {
+    let report = FlagGovernance.expirationReport(FlagManifest.all)
+    #expect(report == nil, "\(report ?? "")")   // failure names each expired flag + owner
+}
+```
+
+When a flag passes its expiry, the test fails and the report names the flag, its owner, and how long it's been expired — so a stale flag gets retired instead of living forever. This has no effect on runtime evaluation.
+
+> The manifest is the single declaration site, so a typed flag key never added to it escapes governance. Closing that gap fully would need a macro; until then, convention plus code review covers it.
 
 ## Exposure tracking
 

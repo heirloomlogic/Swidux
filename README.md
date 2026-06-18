@@ -130,10 +130,10 @@ plugins.register(AnalyticsPlugin(state: \.analytics, action: AppAction.analytics
 
 ### Feature flags
 
-Typed feature flags, A/B variants, and remote-tunable scalar values from a single JSON config fetched through a provider-agnostic `FeatureFlagsService`. Bucketing is pure FNV-1a — the same input always lands in the same bucket, with no network round-trip per read — and local overrides give QA a one-action toggle that wins over remote evaluation. See [Add Feature Flags](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddfeatureflags).
+Typed feature flags, A/B variants, and remote-tunable scalar values from a single JSON config fetched through a provider-agnostic `FeatureFlagsService`. Bucketing is pure FNV-1a — the same input always lands in the same bucket, with no network round-trip per read — keyed on a Keychain-backed `deviceID` so it stays stable across reinstall and is shared with analytics. Local overrides give QA a one-action toggle that wins over remote evaluation, and a `FlagDescriptor` manifest plus one `FlagGovernance` test keeps stale "forever flags" out of the codebase. See [Add Feature Flags](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddfeatureflags).
 
 ```swift
-store.register(plugin: FeatureFlagsPlugin(state: \.featureFlags, action: AppAction.featureFlags, extractAction: { if case .featureFlags(let a) = $0 { return a }; return nil }, service: HTTPFeatureFlagsService(url: configURL), keyValueStore: kv))
+store.register(plugin: FeatureFlagsPlugin(state: \.featureFlags, action: AppAction.featureFlags, extractAction: { if case .featureFlags(let a) = $0 { return a }; return nil }, service: HTTPFeatureFlagsService(url: configURL), deviceIDKeyPath: \.deviceID, keyValueStore: kv))
 ```
 
 ### Persistence (SwiftData)

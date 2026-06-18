@@ -44,6 +44,33 @@ extension ValueFlag where Value == Int {
     static let maxCounters = ValueFlag("max_counters", default: 3)
 }
 
+// MARK: - Governance manifest
+
+/// Every feature flag, with its required owner and expiry. The `noForeverFlags`
+/// unit test fails — naming the flag and owner — when any of these expires, so a
+/// stale flag can't quietly live forever. Adding a flag here is the one place
+/// owner/expiry are enforced (the factory parameters are non-optional).
+enum FlagManifest {
+    /// Far-future demo expiries. Real apps set these to a realistic clean-up date.
+    static let all: [FlagDescriptor] = [
+        .bool(
+            .showCelebrationEmoji, owner: "growth",
+            expires: Date(timeIntervalSince1970: 1_798_761_600),  // 2027-01-01
+            purpose: "Celebrate non-zero counts with 🎉"
+        ),
+        .variant(
+            .counterButtonStyle, owner: "design",
+            expires: Date(timeIntervalSince1970: 1_798_761_600),  // 2027-01-01
+            purpose: "Borderless vs. bordered counter buttons (A/B)"
+        ),
+        .value(
+            .maxCounters, owner: "platform",
+            expires: Date(timeIntervalSince1970: 1_798_761_600),  // 2027-01-01
+            purpose: "Remote cap on the number of counters"
+        ),
+    ]
+}
+
 // MARK: - Demo view
 
 /// Demo screen showing all three flag types reading from a bundled JSON config.
