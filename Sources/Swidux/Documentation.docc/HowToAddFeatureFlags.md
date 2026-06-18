@@ -55,12 +55,18 @@ enum AppAction: Sendable {
 
 ## Step 3: Hydrate state and register the plugin
 
-At app launch, hydrate state from your `KeyValueStore` (so the install ID and last-known-good config survive cold launches), then register the plugin:
+At app launch, mint a stable per-install **device ID** (Keychain-backed so it survives reinstall — this is the bucketing identity), hydrate state from your `KeyValueStore` (so the last-known-good config survives cold launches), then register the plugin. Add `var deviceID: String = ""` to `AppState` and point `deviceIDKeyPath` at it:
 
 ```swift
-let kv = UserDefaultsKeyValueStore()
+let kv = UserDefaultsKeyValueStore()                       // flags config cache
+
+// Stable bucketing identity — Keychain so it survives reinstall, and shared
+// with analytics: AnalyticsIdentity(userID: \.deviceID, …).
+let deviceID = KeychainKeyValueStore(service: "com.example.app").deviceIdentity()
+
 let initial = AppState(
-    featureFlags: .hydrated(from: kv)
+    featureFlags: .hydrated(from: kv, deviceID: deviceID),
+    deviceID: deviceID
 )
 
 let store = Store(initialState: initial, reducer: AppReducer())
@@ -74,6 +80,7 @@ let flags = FeatureFlagsPlugin<AppState, AppAction>(
     action: AppAction.featureFlags,
     extractAction: { if case .featureFlags(let a) = $0 { return a } else { return nil } },
     service: HTTPFeatureFlagsService(url: configURL),
+    deviceIDKeyPath: \.deviceID,
     keyValueStore: kv
 )
 store.register(plugin: flags)
@@ -120,4 +127,28 @@ The plugin debounces `.refresh` against the configured `RefreshPolicy`, so it's 
 }
 ```
 
-For wire format, bucketing, and exposure tracking details, see <doc:PluginFeatureFlagsReference>.
+## Step 7: Guard against forever flags
+
+Give every flag a required owner and expiry, and add one CI test that fails when a flag outlives its expiry. Declare a manifest alongside the typed keys — the factory `owner`/`expires` parameters are non-optional, and the keys are single-sourced from the flag declarations:
+
+```swift
+enum FlagManifest {
+    static let all: [FlagDescriptor] = [
+        .bool(.newOnboarding, owner: "growth",
+              expires: Date(timeIntervalSince1970: 1_788_000_000), purpose: "New onboarding flow"),
+        .variant(.checkoutLayout, owner: "checkout",
+                 expires: Date(timeIntervalSince1970: 1_785_000_000), purpose: "Checkout A/B"),
+        .value(.maxFreeUploads, owner: "platform",
+               expires: Date(timeIntervalSince1970: 1_785_000_000), purpose: "Free upload cap"),
+    ]
+}
+
+@Test func noForeverFlags() {
+    let report = FlagGovernance.expirationReport(FlagManifest.all)
+    #expect(report == nil, "\(report ?? "")")   // failure names each expired flag + owner
+}
+```
+
+This is a pure compile-time / test concern — no wire-format change and no effect on runtime evaluation.
+
+For wire format, bucketing, exposure tracking, and governance details, see <doc:PluginFeatureFlagsReference>.

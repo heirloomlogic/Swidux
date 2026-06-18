@@ -24,6 +24,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let toRootAction: @Sendable (FeatureFlagsAction) -> RootAction
     private let extractAction: @Sendable (RootAction) -> FeatureFlagsAction?
     private let service: any FeatureFlagsService
+    private let deviceIDKeyPath: KeyPath<RootState, String>
     private let userIDKeyPath: KeyPath<RootState, String?>?
     private let refreshPolicy: RefreshPolicy
     private let keyValueStore: any KeyValueStore
@@ -31,14 +32,20 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
 
     /// Creates the plugin and wires it into the host's root state and action types.
     ///
-    /// Bundled fallback configs are consumed by
-    /// ``FeatureFlagsState/hydrated(from:defaultConfig:)`` at host wiring
-    /// time, not by the plugin.
+    /// Bundled fallback configs and the bucketing device ID are consumed by
+    /// ``FeatureFlagsState/hydrated(from:deviceID:defaultConfig:)`` at host
+    /// wiring time, not by the plugin.
+    ///
+    /// `deviceIDKeyPath` points at the app-owned, stable per-install identity
+    /// used for bucketing when no `userIDKeyPath` resolves. Back it with a
+    /// Keychain-minted value (see `KeyValueStore.deviceIdentity()`) so it
+    /// survives reinstall.
     public init(
         state: WritableKeyPath<RootState, FeatureFlagsState>,
         action toRootAction: @escaping @Sendable (FeatureFlagsAction) -> RootAction,
         extractAction: @escaping @Sendable (RootAction) -> FeatureFlagsAction?,
         service: any FeatureFlagsService,
+        deviceIDKeyPath: KeyPath<RootState, String>,
         userIDKeyPath: KeyPath<RootState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .automatic,
         keyValueStore: any KeyValueStore,
@@ -48,6 +55,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.toRootAction = toRootAction
         self.extractAction = extractAction
         self.service = service
+        self.deviceIDKeyPath = deviceIDKeyPath
         self.userIDKeyPath = userIDKeyPath
         self.refreshPolicy = refreshPolicy
         self.keyValueStore = keyValueStore
@@ -61,14 +69,24 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         return reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
     }
 
-    /// Keeps the resolved bucketing identity in sync with `userIDKeyPath`
+    /// Keeps the resolved bucketing identity in sync with the host's keypaths
     /// after every dispatch, so default reads and exposure records bucket by
-    /// the signed-in user when one exists (and the install ID otherwise).
+    /// the signed-in user when one exists (and the device ID otherwise).
+    ///
+    /// The device ID is seeded at hydration and is constant for the session;
+    /// re-resolving it here keeps the slice authoritative if the host's value
+    /// ever changes. The user ID changes on sign-in/out, so it must be tracked.
     public func afterReduce(state: inout RootState, action: RootAction) {
-        guard let userIDKeyPath else { return }
-        let resolved = state[keyPath: userIDKeyPath]
-        if state[keyPath: stateKeyPath].resolvedUserID != resolved {
-            state[keyPath: stateKeyPath].resolvedUserID = resolved
+        let resolvedDeviceID = state[keyPath: deviceIDKeyPath]
+        if state[keyPath: stateKeyPath].resolvedDeviceID != resolvedDeviceID {
+            state[keyPath: stateKeyPath].resolvedDeviceID = resolvedDeviceID
+        }
+
+        if let userIDKeyPath {
+            let resolvedUserID = state[keyPath: userIDKeyPath]
+            if state[keyPath: stateKeyPath].resolvedUserID != resolvedUserID {
+                state[keyPath: stateKeyPath].resolvedUserID = resolvedUserID
+            }
         }
     }
 
@@ -136,7 +154,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// flag is meaningless).
     ///
     /// Bucketing uses the same identity as default reads — the plugin-resolved
-    /// user ID when present, else the install ID — so the recorded exposure
+    /// user ID when present, else the device ID — so the recorded exposure
     /// matches what the user actually saw. Local overrides take precedence so
     /// QA-toggled flags still record exposures.
     private func evaluateForExposure(state: FeatureFlagsState, key: String) -> FlagValue? {

@@ -51,6 +51,14 @@ extension Store where State == AppState, Action == AppAction {
             logger: logger
         )
 
+        // Anonymous per-install identity, minted once via `deviceIdentity()` —
+        // the stable feature-flag bucketing identity. This demo persists it to
+        // UserDefaults so it runs in any (even unsigned) build; a shipping app
+        // uses `KeychainKeyValueStore(service: subsystem).deviceIdentity()` so
+        // the identity survives reinstall (see the DeviceIdentity / feature-flag
+        // docs). Either way the value flows through `deviceIDKeyPath: \.deviceID`.
+        let deviceID = UserDefaultsKeyValueStore().deviceIdentity()
+
         let keyValueStore = InMemoryKeyValueStore()
         let featureFlagsPlugin = FeatureFlagsPlugin<AppState, AppAction>(
             state: \.featureFlags,
@@ -60,6 +68,7 @@ extension Store where State == AppState, Action == AppAction {
                 return nil
             },
             service: BundledFeatureFlagsService(),
+            deviceIDKeyPath: \.deviceID,
             refreshPolicy: .manual,
             keyValueStore: keyValueStore
         )
@@ -71,7 +80,10 @@ extension Store where State == AppState, Action == AppAction {
         plugins.register(featureFlagsPlugin)
 
         return Store(
-            initialState: AppState(),
+            initialState: AppState(
+                featureFlags: .hydrated(from: keyValueStore, deviceID: deviceID),
+                deviceID: deviceID
+            ),
             reducer: { state, action in
                 reducer.reduce(state: &state, action: action, environment: environment)
             },

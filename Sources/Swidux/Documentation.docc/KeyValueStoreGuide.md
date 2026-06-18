@@ -92,21 +92,18 @@ For a private device ID, in order of strictness:
 ## Device-Identity Pattern
 
 The original motivation for ``KeychainKeyValueStore`` was apps without user
-auth that still want stable identity for analytics. Stash a UUID once, hydrate
-into `AppState` at launch, feed it to `AnalyticsIdentity`:
+auth that still want stable identity for analytics. Mint a UUID once with the
+``KeyValueStore/deviceIdentity(key:)`` helper, hydrate into `AppState` at launch,
+and feed it to `AnalyticsIdentity`. The *same* `deviceID` is also the stable
+feature-flag bucketing identity (the plugin's `deviceIDKeyPath`), so analytics
+and A/B exposure share one identity:
 
 ```swift
-extension KVKey where Value == String {
-    static let deviceID = KVKey<String>("device-id")
-}
+// `KVKey.deviceID` and `deviceIdentity()` ship with Swidux.
 
 // In Store.configured(), before constructing the store:
 let kv = KeychainKeyValueStore(service: "com.example.myapp")
-let deviceID = kv.value(.deviceID) ?? {
-    let new = UUID().uuidString
-    kv.setValue(new, for: .deviceID)
-    return new
-}()
+let deviceID = kv.deviceIdentity()   // reads, or mints-and-persists, a stable UUID
 
 let initialState = AppState(deviceID: deviceID, /* … */)
 ```

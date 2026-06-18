@@ -32,16 +32,22 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
 
     /// Stable per-install identity used for bucketing when no `userIDKeyPath`
     /// resolves to a non-nil value.
-    public var installID: UUID = UUID()
+    ///
+    /// Seeded at launch by ``hydrated(from:deviceID:defaultConfig:)`` and kept
+    /// in sync from the plugin's `deviceIDKeyPath`. Source it from a
+    /// `KeychainKeyValueStore` (via `KeyValueStore.deviceIdentity()`) so it
+    /// survives reinstall — otherwise the user re-buckets on every fresh
+    /// install. Don't write it from app code.
+    public var resolvedDeviceID: String = ""
 
     /// The bucketing identity resolved by the plugin's `userIDKeyPath` —
     /// the current user ID when one is set, else `nil` (which falls back to
-    /// ``installID``). Maintained by ``FeatureFlagsPlugin`` on every dispatch;
-    /// don't write it from app code.
+    /// ``resolvedDeviceID``). Maintained by ``FeatureFlagsPlugin`` on every
+    /// dispatch; don't write it from app code.
     public var resolvedUserID: String? = nil
 
     /// Creates a state slice with explicit values for every property.
-    /// Use ``hydrated(from:defaultConfig:)`` for the typical app-launch path.
+    /// Use ``hydrated(from:deviceID:defaultConfig:)`` for the typical app-launch path.
     public init(
         config: FeatureFlagsConfig = .empty,
         lastFetchedAt: Date? = nil,
@@ -49,7 +55,7 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         isFetching: Bool = false,
         localOverrides: [String: FlagValue] = [:],
         exposedKeys: Set<String> = [],
-        installID: UUID = UUID(),
+        resolvedDeviceID: String = "",
         resolvedUserID: String? = nil
     ) {
         self.config = config
@@ -58,45 +64,30 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         self.isFetching = isFetching
         self.localOverrides = localOverrides
         self.exposedKeys = exposedKeys
-        self.installID = installID
+        self.resolvedDeviceID = resolvedDeviceID
         self.resolvedUserID = resolvedUserID
     }
 
-    /// Builds an initial state by reading the install ID and last-known
-    /// config from the supplied key-value store. Generates and persists a
-    /// new install ID if none is stored.
+    /// Builds an initial state by seeding the bucketing identity and reading
+    /// the last-known config from the supplied key-value store.
     ///
-    /// - Note: If the store silently drops the write (full disk, sandbox
-    ///   denial), a fresh install ID is minted on the next launch and the
-    ///   user re-buckets into different variants. Acceptable for feature
-    ///   flags; not a stable analytics identity — use
-    ///   `KeychainKeyValueStore` + `AnalyticsIdentity` for that.
+    /// Pass the same `deviceID` the app hydrates into `AppState` — mint it once
+    /// at launch with `KeychainKeyValueStore.deviceIdentity()` so bucketing is
+    /// stable across reinstall and shares the analytics identity. Seeding here
+    /// means the very first render (before any dispatch resolves the plugin's
+    /// `deviceIDKeyPath`) already buckets correctly.
     public static func hydrated(
         from store: any KeyValueStore,
+        deviceID: String,
         defaultConfig: FeatureFlagsConfig? = nil
     ) -> FeatureFlagsState {
-        let installID: UUID
-        if let stored: String = store.value(.featureFlagsInstallID),
-            let uuid = UUID(uuidString: stored)
-        {
-            installID = uuid
-        } else {
-            installID = UUID()
-            store.setValue(installID.uuidString, for: .featureFlagsInstallID)
-        }
-
         let config: FeatureFlagsConfig =
             store.value(.featureFlagsConfig)
             ?? defaultConfig
             ?? .empty
 
-        return FeatureFlagsState(config: config, installID: installID)
+        return FeatureFlagsState(config: config, resolvedDeviceID: deviceID)
     }
-}
-
-extension KVKey where Value == String {
-    /// Install-scoped UUID used for bucketing. Persisted on first generation.
-    public static let featureFlagsInstallID = KVKey<String>("swidux.featureFlags.installID")
 }
 
 extension KVKey where Value == FeatureFlagsConfig {
@@ -149,8 +140,8 @@ enum FlagEvaluator {
 
 extension FeatureFlagsState {
     /// The identity used for bucketing when the caller doesn't pass one:
-    /// the plugin-resolved user ID when present, else the install ID.
-    var defaultBucketingID: String { resolvedUserID ?? installID.uuidString }
+    /// the plugin-resolved user ID when present, else the device ID.
+    var defaultBucketingID: String { resolvedUserID ?? resolvedDeviceID }
 
     /// Reads a boolean flag.
     ///
@@ -161,7 +152,7 @@ extension FeatureFlagsState {
     ///
     /// When `bucketingID` is omitted, the plugin-resolved user ID is used if
     /// the host configured a `userIDKeyPath` and a user is signed in;
-    /// otherwise the stable per-install ID.
+    /// otherwise the stable device ID.
     public func isEnabled(
         _ flag: BoolFlag,
         bucketingID: String? = nil,
@@ -183,7 +174,7 @@ extension FeatureFlagsState {
     ///
     /// When `bucketingID` is omitted, the plugin-resolved user ID is used if
     /// the host configured a `userIDKeyPath` and a user is signed in;
-    /// otherwise the stable per-install ID.
+    /// otherwise the stable device ID.
     public func variant<Variant>(
         of flag: VariantFlag<Variant>,
         bucketingID: String? = nil
@@ -234,8 +225,8 @@ extension FeatureFlagsState {
 
 extension FeatureFlagsStateObserver {
     /// The identity used for bucketing when the caller doesn't pass one:
-    /// the plugin-resolved user ID when present, else the install ID.
-    var defaultBucketingID: String { resolvedUserID ?? installID.uuidString }
+    /// the plugin-resolved user ID when present, else the device ID.
+    var defaultBucketingID: String { resolvedUserID ?? resolvedDeviceID }
 
     /// Reads a boolean flag against the observer's current state.
     public func isEnabled(

@@ -8,14 +8,21 @@ nonisolated struct AppState: Equatable, Sendable {
     @Slice var ui: UIState = .init()
     @Slice var featureFlags: FeatureFlagsState = .init()
 
+    /// Stable, anonymous per-install identity. Minted once at launch from the
+    /// Keychain and shared as the feature-flag bucketing identity (and, in an
+    /// app with analytics, `AnalyticsIdentity(userID: \.deviceID, …)`).
+    var deviceID: String = ""
+
     init(
         counters: EntityStore<Counter> = EntityStore(),
         ui: UIState = UIState(),
-        featureFlags: FeatureFlagsState = FeatureFlagsState()
+        featureFlags: FeatureFlagsState = FeatureFlagsState(),
+        deviceID: String = ""
     ) {
         self.counters = counters
         self.ui = ui
         self.featureFlags = featureFlags
+        self.deviceID = deviceID
     }
 }
 
