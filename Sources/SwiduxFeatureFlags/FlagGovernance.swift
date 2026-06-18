@@ -57,6 +57,12 @@ public struct FlagDescriptor: Sendable, Equatable {
 }
 
 extension FlagDescriptor {
+    // Three per-kind factories rather than one generic over a `FlagKey` protocol:
+    // the concrete parameter type is what lets call sites use leading-dot syntax
+    // (`.bool(.myFlag, …)`) to reach flag keys declared as static members on
+    // `BoolFlag` / `VariantFlag` / `ValueFlag`. A `some FlagKey` parameter loses
+    // that member lookup.
+
     /// Describes a ``BoolFlag``, single-sourcing the key from the typed flag.
     public static func bool(
         _ flag: BoolFlag,

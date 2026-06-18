@@ -77,16 +77,22 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// re-resolving it here keeps the slice authoritative if the host's value
     /// ever changes. The user ID changes on sign-in/out, so it must be tracked.
     public func afterReduce(state: inout RootState, action: RootAction) {
-        let resolvedDeviceID = state[keyPath: deviceIDKeyPath]
-        if state[keyPath: stateKeyPath].resolvedDeviceID != resolvedDeviceID {
-            state[keyPath: stateKeyPath].resolvedDeviceID = resolvedDeviceID
-        }
-
+        sync(deviceIDKeyPath, into: \.resolvedDeviceID, of: &state)
         if let userIDKeyPath {
-            let resolvedUserID = state[keyPath: userIDKeyPath]
-            if state[keyPath: stateKeyPath].resolvedUserID != resolvedUserID {
-                state[keyPath: stateKeyPath].resolvedUserID = resolvedUserID
-            }
+            sync(userIDKeyPath, into: \.resolvedUserID, of: &state)
+        }
+    }
+
+    /// Copies a host-state value into the flags slice, writing only on change so
+    /// `@Observable` doesn't fire a spurious notification when it's unchanged.
+    private func sync<Value: Equatable>(
+        _ source: KeyPath<RootState, Value>,
+        into target: WritableKeyPath<FeatureFlagsState, Value>,
+        of state: inout RootState
+    ) {
+        let resolved = state[keyPath: source]
+        if state[keyPath: stateKeyPath][keyPath: target] != resolved {
+            state[keyPath: stateKeyPath][keyPath: target] = resolved
         }
     }
 
