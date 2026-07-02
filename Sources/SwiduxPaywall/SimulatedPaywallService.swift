@@ -29,6 +29,12 @@ public enum SimulatedPaywallError: Error, Equatable {
 ///
 /// `EntitlementSnapshot` only models `isPro` / `hasPermanentLicense`, so a
 /// "trial" yields `isPro == true` and is distinguished only in the log line.
+///
+/// > Warning: This service simulates purchases — nothing is charged and no
+/// > receipt exists. Release builds are supported so TestFlight/QA can drive
+/// > the paywall vendor-free, but the service logs a fault at init in Release
+/// > as a submission tripwire: replace it with a real `PaywallService` before
+/// > shipping to the App Store.
 public actor SimulatedPaywallService: PaywallService {
     private var current: EntitlementSnapshot
     private var continuations: [UUID: AsyncStream<EntitlementSnapshot>.Continuation] = [:]
@@ -46,6 +52,16 @@ public actor SimulatedPaywallService: PaywallService {
     ) {
         self.current = EntitlementSnapshot(isPro: isPro, hasPermanentLicense: hasPermanentLicense)
         self.logger = Logger(subsystem: subsystem, category: category)
+        #if !DEBUG
+            // Deliberate for TestFlight/QA, fatal for the App Store. Loud and
+            // greppable in Console/sysdiagnose during submission prep.
+            logger.fault(
+                """
+                SimulatedPaywallService active in a Release build — purchases are \
+                SIMULATED. Replace with a real PaywallService before App Store submission.
+                """
+            )
+        #endif
     }
 
     // MARK: - PaywallService

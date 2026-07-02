@@ -46,6 +46,20 @@ struct HTTPFeatureFlagsServiceTests {
             _ = try await service.fetch()
         }
     }
+
+    @Test("applies the fetch timeout to the request")
+    func appliesFetchTimeout() async throws {
+        let url = URL(static: "https://example.test/flags.json")
+        let session = StubURLSession.with(
+            data: Data(#"{ "version": 1, "flags": {} }"#.utf8),
+            response: .ok(url: url)
+        )
+        let service = HTTPFeatureFlagsService(url: url, session: session, fetchTimeout: 5)
+
+        _ = try await service.fetch()
+
+        #expect(URLProtocolStub.lastRequest?.timeoutInterval == 5)
+    }
 }
 
 // MARK: - URLSession stub helpers
@@ -80,8 +94,13 @@ extension HTTPURLResponse {
 
 private final class URLProtocolStub: URLProtocol {
     nonisolated(unsafe) static var installer: (() -> (Data, HTTPURLResponse))?
+    /// The most recent request the stub served, for request-shape assertions.
+    nonisolated(unsafe) static var lastRequest: URLRequest?
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canInit(with request: URLRequest) -> Bool {
+        lastRequest = request
+        return true
+    }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         guard let (data, response) = URLProtocolStub.installer?() else {

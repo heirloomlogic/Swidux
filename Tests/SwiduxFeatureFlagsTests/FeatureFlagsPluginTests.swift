@@ -134,6 +134,21 @@ struct FeatureFlagsPluginTests {
         #expect(service.fetchCount == 0)
     }
 
+    @Test("automatic policy refreshes when lastFetchedAt is in the future (clock skew)")
+    func automaticRefreshesOnClockSkew() async throws {
+        let service = MockFeatureFlagsService(outcome: .success(.empty))
+        let plugin = makePlugin(service: service, refreshPolicy: .automatic(minInterval: 300))
+        var state = TestState()
+        // A wall clock rolled backward leaves lastFetchedAt in the future;
+        // that must count as expired, not starve refreshes for the skew.
+        state.featureFlags.lastFetchedAt = Date(timeIntervalSinceNow: 3600)
+
+        let effect = plugin.reduce(state: &state, action: .featureFlags(.refresh))
+        try await effect?({ _ in })
+
+        #expect(service.fetchCount == 1)
+    }
+
     @Test("manual policy never debounces")
     func manualNeverDebounces() async throws {
         let service = MockFeatureFlagsService(outcome: .success(.empty))

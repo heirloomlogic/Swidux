@@ -45,3 +45,18 @@ actor RecordingAnalyticsService: AnalyticsService {
         flushCount += 1
     }
 }
+
+/// A service whose calls never return, for exercising flush timeouts.
+actor HangingAnalyticsService: AnalyticsService {
+    private func hang() async {
+        while true {
+            try? await Task.sleep(for: .seconds(3600))
+        }
+    }
+
+    func track(_ event: AnalyticsEvent) async { await hang() }
+    func identify(userID: String, properties: [String: AnalyticsValue]) async { await hang() }
+    func alias(newID: String, previousID: String?) async { await hang() }
+    func reset() async { await hang() }
+    func flush() async { await hang() }
+}

@@ -690,6 +690,55 @@ struct AnalyticsPluginTests {
         #expect(flushes == 1)
     }
 
+    @Test("flush(timeout:) returns even when the service flush hangs")
+    func flushTimeoutBoundsHungService() async throws {
+        let service = HangingAnalyticsService()
+        let plugin = makePlugin(service: service)
+
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure {
+            await plugin.flush(timeout: .milliseconds(50))
+        }
+
+        #expect(elapsed < .seconds(5), "a hung service.flush() must not block past the timeout")
+    }
+
+    @Test("flush(timeout:) gives up on hung in-flight work")
+    func flushTimeoutBoundsHungInflightWork() async throws {
+        let service = HangingAnalyticsService()  // track() also hangs
+        let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
+            [AnalyticsEvent("e")]
+        }
+        let plugin = makePlugin(service: service, mapper: mapper)
+        var state = TestState()
+
+        plugin.afterReduce(state: &state, action: .unrelated)  // spawns a hung track
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure {
+            await plugin.flush(timeout: .milliseconds(50))
+        }
+
+        #expect(elapsed < .seconds(5), "hung in-flight work must not block past the timeout")
+    }
+
+    @Test("concurrent flushes both complete")
+    func concurrentFlushesBothComplete() async throws {
+        let service = RecordingAnalyticsService()
+        let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
+            [AnalyticsEvent("e")]
+        }
+        let plugin = makePlugin(service: service, mapper: mapper)
+        var state = TestState()
+        plugin.afterReduce(state: &state, action: .unrelated)
+
+        async let first: Void = plugin.flush()
+        async let second: Void = plugin.flush(timeout: .seconds(10))
+        _ = await (first, second)
+
+        let flushes = await service.flushCount
+        #expect(flushes == 2)
+    }
+
     // MARK: - Lifting (root ↔ analytics action plumbing)
 
     @Test("reduce returns nil for non-analytics actions")

@@ -167,6 +167,31 @@ struct KillswitchPluginTests {
         }
     }
 
+    @Test("fetch hits network when lastFetch is in the future (clock skew)")
+    func fetchHitsNetworkOnClockSkew() async throws {
+        let config = KillswitchConfig()
+        try await confirmation("network called") { networkCall in
+            let service = KillswitchService.mock(
+                result: {
+                    networkCall()
+                    return config
+                },
+                cached: config,
+                cacheLifetime: 3600
+            )
+            let plugin = makePlugin(service: service)
+            var state = TestState()
+            // A wall clock rolled backward leaves lastFetch in the future;
+            // that must count as expired, not pin the install to the cache.
+            state.killswitch.lastFetch = Date(timeIntervalSinceNow: 3600)
+
+            let effect = plugin.reduce(
+                state: &state, action: .killswitch(.fetch)
+            )
+            _ = try await collectActions(from: effect)
+        }
+    }
+
     @Test("fetch hits network when no prior fetch")
     func fetchHitsNetworkWhenNoPriorFetch() async throws {
         try await confirmation("network called") { networkCall in

@@ -3,6 +3,7 @@
 //  SwiduxAnalytics
 //
 
+import Foundation
 import Swidux
 
 /// A Swidux plugin that observes the dispatch cycle and forwards events
@@ -35,8 +36,9 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
 
     /// Number of fire-and-forget service calls in flight.
     private var inflightCount: Int = 0
-    /// Continuations parked in ``flush()`` waiting for inflight work to drain to zero.
-    private var flushWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Continuations parked in ``flush()`` waiting for inflight work to drain
+    /// to zero, keyed so a timed-out waiter can be resumed individually.
+    private var flushWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     /// Tail of the chain of spawned service-call tasks. Each new spawn
     /// awaits this before running, so service calls reach the service
     /// in submission order even when scheduled on a concurrent executor.
@@ -202,13 +204,30 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     ///
     /// Call during app shutdown (`scenePhase == .background`,
     /// `applicationWillTerminate`) to avoid losing in-flight events.
+    ///
+    /// This waits without bound — a hung service holds it forever. On
+    /// shutdown paths the OS watchdog is the effective limit; prefer
+    /// ``flush(timeout:)`` there.
     public func flush() async {
-        if inflightCount > 0 {
-            await withCheckedContinuation { continuation in
-                flushWaiters.append(continuation)
-            }
-        }
+        await drainInflight(timeout: nil)
         await service.flush()
+    }
+
+    /// As ``flush()``, but gives up once `timeout` elapses. Work still in
+    /// flight when it fires continues in the background — nothing is
+    /// cancelled, the wait just stops blocking the caller. Recommended for
+    /// `applicationWillTerminate`, where an unbounded wait risks the watchdog.
+    ///
+    /// - Parameter timeout: Total time budget across the in-flight drain and
+    ///   the service's own `flush()`.
+    public func flush(timeout: Duration) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        await drainInflight(timeout: timeout)
+        let remaining = clock.now.duration(to: deadline)
+        guard remaining > .zero else { return }
+        let service = self.service
+        await Self.race(timeout: remaining) { await service.flush() }
     }
 
     // MARK: - Helpers
@@ -247,8 +266,50 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         lastSpawnedTask = nil
         let waiters = flushWaiters
         flushWaiters.removeAll()
-        for waiter in waiters {
+        for waiter in waiters.values {
             waiter.resume()
         }
+    }
+
+    /// Parks until in-flight service calls drain to zero, or `timeout`
+    /// elapses when one is given. Removal from `flushWaiters` is the claim
+    /// ticket — MainActor serialization makes drain and timeout resume a
+    /// waiter exactly once.
+    private func drainInflight(timeout: Duration?) async {
+        guard inflightCount > 0 else { return }
+        let id = UUID()
+        await withCheckedContinuation { continuation in
+            flushWaiters[id] = continuation
+            if let timeout {
+                Task { @MainActor in
+                    try? await Task.sleep(for: timeout)
+                    self.timeOutWaiter(id)
+                }
+            }
+        }
+    }
+
+    private func timeOutWaiter(_ id: UUID) {
+        guard let waiter = flushWaiters.removeValue(forKey: id) else { return }
+        waiter.resume()
+    }
+
+    /// Awaits `work` or `timeout`, whichever finishes first. The loser keeps
+    /// running unobserved — this bounds the wait, it doesn't cancel the work.
+    private static func race(
+        timeout: Duration,
+        _ work: @escaping @Sendable () async -> Void
+    ) async {
+        let (winner, finishLine) = AsyncStream<Void>.makeStream()
+        Task { @concurrent in
+            await work()
+            finishLine.yield()
+        }
+        Task { @concurrent in
+            try? await Task.sleep(for: timeout)
+            finishLine.yield()
+        }
+        var signals = winner.makeAsyncIterator()
+        await signals.next()
     }
 }

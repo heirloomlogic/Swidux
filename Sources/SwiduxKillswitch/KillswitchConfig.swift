@@ -8,6 +8,11 @@
 import Foundation
 
 /// The remote killswitch configuration fetched from the server.
+///
+/// Version fields are parsed strictly and must be full `major.minor.patch`
+/// SemVer — `"2.0"` is rejected. Only the *app's own* version is parsed
+/// leniently at evaluation time (see `SemanticVersion.init(tolerant:)`),
+/// because `CFBundleShortVersionString` may carry fewer components.
 public struct KillswitchConfig: Codable, Sendable, Equatable {
     /// Versions below this SemVer string are blocked.
     public var minimumSupportedVersion: String?

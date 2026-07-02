@@ -66,7 +66,9 @@ struct ResilientPaywallServiceTests {
     func boundedRetryRecoversWithinBudget() async throws {
         let store = InMemoryKeyValueStore()
         let base = FlakyPaywallService(success: EntitlementSnapshot(isPro: true), failuresBeforeSuccess: 2)
-        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 3)
+        let service = ResilientPaywallService(
+            base: base, store: store, maxAttempts: 3, retryBaseDelay: .milliseconds(1)
+        )
 
         let snapshot = try await service.customerInfo()
 
@@ -78,12 +80,159 @@ struct ResilientPaywallServiceTests {
     func retryIsBounded() async throws {
         let store = InMemoryKeyValueStore()
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)
-        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 2)
+        let service = ResilientPaywallService(
+            base: base, store: store, maxAttempts: 2, retryBaseDelay: .milliseconds(1)
+        )
 
         await #expect(throws: (any Error).self) {
             _ = try await service.customerInfo()
         }
         #expect(base.customerInfoCallCount == 2)
+    }
+
+    @Test("backoff delays the retry")
+    func backoffDelaysRetry() async throws {
+        let store = InMemoryKeyValueStore()
+        let base = FlakyPaywallService(success: EntitlementSnapshot(isPro: true), failuresBeforeSuccess: 1)
+        let service = ResilientPaywallService(
+            base: base, store: store, maxAttempts: 2, retryBaseDelay: .milliseconds(50)
+        )
+
+        let clock = ContinuousClock()
+        let elapsed = try await clock.measure {
+            _ = try await service.customerInfo()
+        }
+
+        // Jitter is ±20 %, so the retry can come no sooner than 40 ms.
+        #expect(elapsed >= .milliseconds(40))
+        #expect(base.customerInfoCallCount == 2)
+    }
+
+    @Test("cancellation during backoff stops retrying and serves the cache")
+    func cancellationStopsRetrying() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: false), for: .lastKnownEntitlement)
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(
+            base: base, store: store, maxAttempts: 3, retryBaseDelay: .seconds(60)
+        )
+
+        let read = Task { try await service.customerInfo() }
+        // Wait for the first (failing) attempt, then cancel during the backoff.
+        while base.customerInfoCallCount < 1 {
+            await Task.yield()
+        }
+        read.cancel()
+
+        let snapshot = try await read.value
+        #expect(snapshot.isPro == true, "cancellation should fall through to the cache")
+        #expect(base.customerInfoCallCount == 1, "no further attempts after cancellation")
+    }
+
+    // MARK: Staleness
+
+    @Test("a fresh cache still vouches for isPro on total failure")
+    func freshCacheServesIsPro() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(
+            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -3600)),
+            for: .lastKnownEntitlement
+        )
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(
+            base: base, store: store, retryBaseDelay: .milliseconds(1)
+        )
+
+        let snapshot = try await service.customerInfo()
+        #expect(snapshot.isPro == true)
+    }
+
+    @Test("a stale cache drops isPro but keeps the permanent license")
+    func staleCacheDropsIsProKeepsLicense() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(
+            CachedEntitlement(isPro: true, hasPermanentLicense: true, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
+            for: .lastKnownEntitlement
+        )
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(
+            base: base, store: store, retryBaseDelay: .milliseconds(1)
+        )
+
+        let snapshot = try await service.customerInfo()
+        #expect(snapshot.isPro == false, "subscriptions lapse — a stale cache must not vouch for one")
+        #expect(snapshot.hasPermanentLicense == true, "lifetime purchases don't expire")
+    }
+
+    @Test("a stale subscription-only cache is a miss — the failure surfaces")
+    func staleSubscriptionOnlyCacheThrows() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(
+            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
+            for: .lastKnownEntitlement
+        )
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(
+            base: base, store: store, retryBaseDelay: .milliseconds(1)
+        )
+
+        await #expect(throws: (any Error).self) {
+            _ = try await service.customerInfo()
+        }
+    }
+
+    @Test("the stream does not seed from a stale subscription-only cache")
+    func streamSkipsStaleSubscriptionSeed() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(
+            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
+            for: .lastKnownEntitlement
+        )
+        let base = FlakyPaywallService(streamSnapshots: [])
+        let service = ResilientPaywallService(base: base, store: store)
+
+        let received = await collect(service.customerInfoStream())
+        #expect(received.isEmpty)
+    }
+
+    @Test("a cachedAt in the future counts as stale (clock rolled backward)")
+    func futureCachedAtCountsAsStale() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(
+            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: 200 * 3600)),
+            for: .lastKnownEntitlement
+        )
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(
+            base: base, store: store, retryBaseDelay: .milliseconds(1)
+        )
+
+        await #expect(throws: (any Error).self) {
+            _ = try await service.customerInfo()
+        }
+    }
+
+    @Test("a v1 cache migrates as stale: license kept, isPro dropped, key removed")
+    func v1CacheMigratesAsStale() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(
+            LegacyV1Payload(isPro: true, hasPermanentLicense: true),
+            for: legacyV1TestKey
+        )
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(
+            base: base, store: store, retryBaseDelay: .milliseconds(1)
+        )
+
+        let snapshot = try await service.customerInfo()
+
+        #expect(snapshot.isPro == false, "the v1 capture time is unknown — it must count as stale")
+        #expect(snapshot.hasPermanentLicense == true)
+        #expect(store.value(legacyV1TestKey) == nil, "the v1 payload is removed after migration")
+        #expect(
+            store.value(.lastKnownEntitlement) == nil,
+            "nothing is written under the v2 key until the next live success"
+        )
     }
 
     @Test("a fresh live snapshot overwrites stale cache (genuine lapse honoured)")
@@ -223,6 +372,14 @@ struct ResilientPaywallServiceTests {
 private enum TestError: Error {
     case boom
 }
+
+/// The pre-`cachedAt` v1 payload shape, redeclared here to seed migration tests.
+private struct LegacyV1Payload: Codable, Sendable {
+    var isPro: Bool
+    var hasPermanentLicense: Bool
+}
+
+private let legacyV1TestKey = KVKey<LegacyV1Payload>("swidux.paywall.lastKnownEntitlement.v1")
 
 /// Configurable `PaywallService` double: fails `customerInfo()` a set number of
 /// times before succeeding (`.max` to always fail), emits a fixed list of stream

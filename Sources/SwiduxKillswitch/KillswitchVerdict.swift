@@ -6,6 +6,10 @@
 //
 
 import Foundation
+import os
+
+/// Logs killswitch evaluation diagnostics.
+private let logger = Logger(subsystem: "swidux", category: "killswitch")
 
 /// The result of evaluating the current app version against a killswitch
 /// configuration. Fail-open: unparseable data yields `.allowed`.
@@ -16,13 +20,27 @@ public enum KillswitchVerdict: Sendable, Equatable {
 
     /// Evaluates the given config against `currentVersionString`.
     ///
-    /// Fail-open policy: if the current version string cannot be parsed,
-    /// or if the config contains no matching rules, the verdict is `.allowed`.
+    /// The current version is parsed leniently
+    /// (``SemanticVersion/init(tolerant:)``) because
+    /// `CFBundleShortVersionString` may carry one to three components —
+    /// marketing versions like `"2.0"` must still evaluate. Config-side
+    /// versions are parsed strictly and must be full `major.minor.patch`.
+    ///
+    /// Fail-open policy: if the current version string cannot be parsed even
+    /// leniently, or if the config contains no matching rules, the verdict is
+    /// `.allowed`. The unparseable case logs an error — it means the
+    /// killswitch is silently inert for this install.
     public static func evaluate(
         _ config: KillswitchConfig,
         against currentVersionString: String
     ) -> KillswitchVerdict {
-        guard let currentVersion = SemanticVersion(currentVersionString) else {
+        guard let currentVersion = SemanticVersion(tolerant: currentVersionString) else {
+            logger.error(
+                """
+                Unparseable app version '\(currentVersionString, privacy: .public)' — \
+                killswitch fails open, verdict .allowed.
+                """
+            )
             return .allowed
         }
 
