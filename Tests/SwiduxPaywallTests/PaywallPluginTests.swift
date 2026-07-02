@@ -202,13 +202,13 @@ struct PaywallPluginTests {
     // MARK: - Effects: dismiss
 
     @Test("dismiss effect dispatches refreshCustomerInfo")
-    func dismissEffectDispatchesRefresh() async {
+    func dismissEffectDispatchesRefresh() async throws {
         let plugin = makePlugin()
         var state = TestState()
         state.paywall.isPresented = true
         let effect = plugin.reduce(state: &state, action: .paywall(.dismiss))
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.count == 1)
         if case .refreshCustomerInfo = actions.first {
         } else {
@@ -219,7 +219,7 @@ struct PaywallPluginTests {
     // MARK: - Effects: refreshCustomerInfo
 
     @Test("refreshCustomerInfo success dispatches customerInfoUpdated")
-    func refreshCustomerInfoSuccess() async {
+    func refreshCustomerInfoSuccess() async throws {
         let service = MockPaywallService(isPro: true, hasPermanentLicense: false)
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -228,7 +228,7 @@ struct PaywallPluginTests {
             action: .paywall(.refreshCustomerInfo)
         )
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.count == 1)
         if case .customerInfoUpdated(let snapshot) = actions.first {
             #expect(snapshot.isPro == true)
@@ -239,7 +239,7 @@ struct PaywallPluginTests {
     }
 
     @Test("refreshCustomerInfo failure dispatches refreshFailed")
-    func refreshCustomerInfoFailure() async {
+    func refreshCustomerInfoFailure() async throws {
         let service = ThrowingPaywallService(error: TestError.boom)
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -248,7 +248,7 @@ struct PaywallPluginTests {
             action: .paywall(.refreshCustomerInfo)
         )
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.count == 1)
         if case .refreshFailed(let message) = actions.first {
             #expect(message.isEmpty == false)
@@ -260,7 +260,7 @@ struct PaywallPluginTests {
     // MARK: - Effects: restorePurchases
 
     @Test("restorePurchases success dispatches customerInfoUpdated")
-    func restorePurchasesSuccess() async {
+    func restorePurchasesSuccess() async throws {
         let service = MockPaywallService(isPro: false, hasPermanentLicense: true)
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -269,7 +269,7 @@ struct PaywallPluginTests {
             action: .paywall(.restorePurchases)
         )
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.count == 1)
         if case .customerInfoUpdated(let snapshot) = actions.first {
             #expect(snapshot.isPro == false)
@@ -280,7 +280,7 @@ struct PaywallPluginTests {
     }
 
     @Test("restorePurchases failure dispatches refreshFailed")
-    func restorePurchasesFailure() async {
+    func restorePurchasesFailure() async throws {
         let service = ThrowingPaywallService(error: TestError.boom)
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -289,7 +289,7 @@ struct PaywallPluginTests {
             action: .paywall(.restorePurchases)
         )
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.count == 1)
         if case .refreshFailed(let message) = actions.first {
             #expect(message.isEmpty == false)
@@ -301,7 +301,7 @@ struct PaywallPluginTests {
     // MARK: - Effects: observeCustomerInfo
 
     @Test("observeCustomerInfo emits one customerInfoUpdated per stream value")
-    func observeCustomerInfoStreamsUpdates() async {
+    func observeCustomerInfoStreamsUpdates() async throws {
         let snapshots = [
             EntitlementSnapshot(isPro: false),
             EntitlementSnapshot(isPro: true),
@@ -315,7 +315,7 @@ struct PaywallPluginTests {
             action: .paywall(.observeCustomerInfo)
         )
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.count == snapshots.count)
         let received = actions.compactMap { action -> EntitlementSnapshot? in
             if case .customerInfoUpdated(let snapshot) = action { return snapshot }
@@ -325,7 +325,7 @@ struct PaywallPluginTests {
     }
 
     @Test("observeCustomerInfo finishes cleanly when stream is empty")
-    func observeCustomerInfoEmptyStream() async {
+    func observeCustomerInfoEmptyStream() async throws {
         let plugin = makePlugin(service: MockPaywallService())
         var state = TestState()
         let effect = plugin.reduce(
@@ -333,14 +333,14 @@ struct PaywallPluginTests {
             action: .paywall(.observeCustomerInfo)
         )
 
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         #expect(actions.isEmpty)
     }
 
     // MARK: - Effects: openManageSubscriptions
 
     @Test("openManageSubscriptions opens the App Store subscriptions URL")
-    func openManageSubscriptionsCallsOpenURL() async {
+    func openManageSubscriptionsCallsOpenURL() async throws {
         let captured = URLCaptureBox()
         let plugin = makePlugin(openURL: { url in await captured.record(url) })
         var state = TestState()
@@ -348,7 +348,7 @@ struct PaywallPluginTests {
             state: &state,
             action: .paywall(.openManageSubscriptions)
         )
-        _ = await collectActions(from: effect)
+        _ = try await collectActions(from: effect)
 
         let urls = await captured.urls
         #expect(urls.count == 1)

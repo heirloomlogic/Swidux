@@ -104,6 +104,36 @@ struct StateWriterTests {
         #expect(deletionsBox.value.contains(entity.id))
     }
 
+    @Test("Drain coalesces insert-after-delete across drains — insert wins")
+    func drainInsertAfterDeleteAcrossDrains() async {
+        let writesBox = SendableBox<[TestEntity]>([])
+        let deletionsBox = SendableBox<Set<UUID>>([])
+
+        let writer = Self.makeWriter { writes, deletions in
+            writesBox.value = writes
+            deletionsBox.value = deletions
+        }
+
+        var state = TestState()
+        let entity = TestEntity(name: "Restored")
+        state.items = EntityStore([entity])
+
+        // Drain 1: delete. Drain 2: reinsert (the shape of undo-of-delete).
+        state.items[entity.id] = nil
+        _ = writer.drain(&state)
+        state.items[entity.id] = entity
+        _ = writer.drain(&state)
+
+        if let work = writer.flush() {
+            await work()
+        }
+
+        // The reinsert must cancel the buffered deletion — otherwise the flush
+        // delivers both and the delete wins at the database.
+        #expect(writesBox.value == [entity])
+        #expect(deletionsBox.value.isEmpty)
+    }
+
     // MARK: - Flush
 
     @Test("Flush returns nil when nothing is pending")

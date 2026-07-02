@@ -43,6 +43,10 @@ public final class StateWriter<State> {
             for id in changes.upserts {
                 if let entity = state[keyPath: keyPath][id] {
                     pendingWrites[id] = entity
+                    // A reinsert in this drain cancels a deletion buffered by an
+                    // earlier drain — otherwise the flush batch would carry both
+                    // and the delete would win at the database.
+                    pendingDeletions.remove(id)
                 }
             }
             pendingDeletions.formUnion(changes.deletions)

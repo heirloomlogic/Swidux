@@ -20,6 +20,7 @@ struct EffectThreadingTests {
     @MainActor
     func effectDispatchesActions() async throws {
         let store = TestDispatcher()
+        let (dispatched, dispatchedIn) = AsyncStream<Void>.makeStream()
 
         let effect: Effect<TestAction> = { send in
             await send(.effectAction("from background"))
@@ -27,12 +28,15 @@ struct EffectThreadingTests {
 
         let send: Send<TestAction> = { action in
             store.send(action)
+            dispatchedIn.yield()
         }
         Task { @concurrent in
-            await effect(send)
+            try await effect(send)
         }
 
-        try await Task.sleep(for: .milliseconds(50))
+        // Deterministic: the send closure signals when the action lands.
+        var signals = dispatched.makeAsyncIterator()
+        await signals.next()
 
         #expect(store.dispatched.count == 1)
         #expect(store.dispatched.first == .effectAction("from background"))
@@ -42,6 +46,7 @@ struct EffectThreadingTests {
     @MainActor
     func effectRunsOffMainActor() async throws {
         let wasOnMainThread = Mutex(false)
+        let (dispatched, dispatchedIn) = AsyncStream<Void>.makeStream()
 
         let effect: Effect<TestAction> = { send in
             wasOnMainThread.withLock { $0 = Thread.isMainThread }
@@ -51,12 +56,14 @@ struct EffectThreadingTests {
         let store = TestDispatcher()
         let send: Send<TestAction> = { action in
             store.send(action)
+            dispatchedIn.yield()
         }
         Task { @concurrent in
-            await effect(send)
+            try await effect(send)
         }
 
-        try await Task.sleep(for: .milliseconds(50))
+        var signals = dispatched.makeAsyncIterator()
+        await signals.next()
 
         let ranOnMain = wasOnMainThread.withLock { $0 }
         #expect(!ranOnMain, "Effect body should NOT run on the main thread")

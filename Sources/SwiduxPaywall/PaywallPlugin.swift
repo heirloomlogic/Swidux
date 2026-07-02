@@ -54,7 +54,7 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
         guard let localEffect else { return nil }
         let lift = toRootAction
         return { send in
-            await localEffect { localAction in
+            try await localEffect { localAction in
                 send(lift(localAction))
             }
         }

@@ -395,4 +395,37 @@ struct EntityStoreTests {
         // Merge is a hydration operation — no changelog
         #expect(store.changes.isEmpty)
     }
+
+    // MARK: - Delete/Reinsert Coalescing
+
+    @Test("Reinsert after delete cancels the pending deletion")
+    func reinsertAfterDeleteCancelsDeletion() {
+        var store = EntityStore<TestEntity>()
+        let entity = TestEntity(name: "A")
+        store[entity.id] = entity
+        store.resetChanges()
+
+        store[entity.id] = nil
+        store[entity.id] = entity
+
+        // Later operation wins: the reinsert must cancel the deletion, or the
+        // flush batch would carry both and the delete would win at the database.
+        #expect(store.changes.upserts.contains(entity.id))
+        #expect(!store.changes.deletions.contains(entity.id))
+    }
+
+    @Test("restore cancels a pending deletion for a restored entity")
+    func restoreCancelsPendingDeletion() {
+        var store = EntityStore<TestEntity>()
+        let entity = TestEntity(name: "A")
+        store[entity.id] = entity
+        let snapshot = store
+        store.resetChanges()
+
+        store[entity.id] = nil
+        store.restore(from: snapshot)
+
+        #expect(store.changes.upserts.contains(entity.id))
+        #expect(!store.changes.deletions.contains(entity.id))
+    }
 }

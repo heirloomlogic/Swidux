@@ -19,7 +19,7 @@ struct SimulatedPaywallServiceTests {
     }
 
     @Test("customerInfoStream yields the current snapshot immediately")
-    func streamYieldsCurrentImmediately() async {
+    func streamYieldsCurrentImmediately() async throws {
         let service = SimulatedPaywallService(isPro: true)
         var iterator = service.customerInfoStream().makeAsyncIterator()
         let first = await iterator.next()
@@ -27,7 +27,7 @@ struct SimulatedPaywallServiceTests {
     }
 
     @Test("grantPro pushes a pro snapshot to a live subscriber")
-    func grantProBroadcasts() async {
+    func grantProBroadcasts() async throws {
         let service = SimulatedPaywallService()
         var iterator = service.customerInfoStream().makeAsyncIterator()
         _ = await iterator.next()  // initial free snapshot
@@ -56,7 +56,7 @@ struct SimulatedPaywallServiceTests {
     }
 
     @Test("restorePurchases throws when restore is set to fail")
-    func restoreFails() async {
+    func restoreFails() async throws {
         let service = SimulatedPaywallService(isPro: true)
         await service.setRestoreShouldFail(true)
         await #expect(throws: SimulatedPaywallError.self) {
@@ -73,7 +73,7 @@ struct SimulatedPaywallServiceTests {
     }
 
     @Test("customerInfo throws when refresh is set to fail")
-    func refreshFails() async {
+    func refreshFails() async throws {
         let service = SimulatedPaywallService()
         await service.setRefreshShouldFail(true)
         await #expect(throws: SimulatedPaywallError.self) {
@@ -97,14 +97,14 @@ struct SimulatedPaywallServiceTests {
 @MainActor
 struct SimulatedPaywallServiceIntegrationTests {
     @Test("granting pro flows a customerInfoUpdated through the plugin pipeline")
-    func grantProReachesState() async {
+    func grantProReachesState() async throws {
         let service = SimulatedPaywallService()
         await service.grantPro()
         let plugin = makePlugin(service: service)
         var state = TestState()
 
         let effect = plugin.reduce(state: &state, action: .paywall(.refreshCustomerInfo))
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
 
         for action in actions {
             _ = plugin.reduce(state: &state, action: .paywall(action))
@@ -113,14 +113,14 @@ struct SimulatedPaywallServiceIntegrationTests {
     }
 
     @Test("a simulated refresh failure surfaces as a paywall error")
-    func refreshFailureSurfaces() async {
+    func refreshFailureSurfaces() async throws {
         let service = SimulatedPaywallService()
         await service.setRefreshShouldFail(true)
         let plugin = makePlugin(service: service)
         var state = TestState()
 
         let effect = plugin.reduce(state: &state, action: .paywall(.refreshCustomerInfo))
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
         for action in actions {
             _ = plugin.reduce(state: &state, action: .paywall(action))
         }

@@ -88,6 +88,9 @@ public nonisolated struct EntityStore<
                     entities.append(value)
                 }
                 changes.upserts.insert(id)
+                // Later operation wins: a reinsert cancels a pending deletion,
+                // otherwise the flush would apply the delete after the write.
+                changes.deletions.remove(id)
             } else if let index = positions.removeValue(forKey: id) {
                 // Delete
                 entities.remove(at: index)
@@ -241,14 +244,17 @@ public nonisolated struct EntityStore<
             changes.upserts.remove(id)
         }
 
-        // Upserts: new or changed entities in source
+        // Upserts: new or changed entities in source. Restoring an entity
+        // cancels any pending deletion for the same ID (later operation wins).
         for entity in source.entities {
             if let index = positions[entity.id] {
                 if entities[index] != entity {
                     changes.upserts.insert(entity.id)
+                    changes.deletions.remove(entity.id)
                 }
             } else {
                 changes.upserts.insert(entity.id)
+                changes.deletions.remove(entity.id)
             }
         }
 

@@ -45,15 +45,15 @@ struct AnalyticsPluginTests {
         )
     }
 
-    private func runEffect(_ effect: Effect<TestAction>?) async {
+    private func runEffect(_ effect: Effect<TestAction>?) async throws {
         guard let effect else { return }
-        await effect { _ in }
+        try await effect { _ in }
     }
 
     // MARK: - Mapper-driven tracking
 
     @Test("mapper returning empty array makes no service calls")
-    func mapperEmpty() async {
+    func mapperEmpty() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service, mapper: .none)
         var state = TestState()
@@ -66,7 +66,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("mapper returning one event calls service.track once")
-    func mapperOneEvent() async {
+    func mapperOneEvent() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, action in
             if case .incrementBy(let n) = action {
@@ -87,7 +87,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("mapper returning multiple events calls service.track in order")
-    func mapperMultipleEvents() async {
+    func mapperMultipleEvents() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
             [
@@ -107,7 +107,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("currentScreen is auto-attached to mapper events")
-    func currentScreenAutoAttach() async {
+    func currentScreenAutoAttach() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
             [AnalyticsEvent("button_tap")]
@@ -124,7 +124,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("app-provided screen wins over auto-attach")
-    func appProvidedScreenWins() async {
+    func appProvidedScreenWins() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
             [AnalyticsEvent("button_tap", ["screen": .string("Override")])]
@@ -141,7 +141,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("mapper is skipped when isOptedOut")
-    func mapperSkippedWhenOptedOut() async {
+    func mapperSkippedWhenOptedOut() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
             [AnalyticsEvent("should_not_fire")]
@@ -158,7 +158,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("mapper is skipped for analytics actions (no double-tracking)")
-    func mapperSkippedForAnalyticsActions() async {
+    func mapperSkippedForAnalyticsActions() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
             [AnalyticsEvent("from_mapper")]
@@ -183,7 +183,7 @@ struct AnalyticsPluginTests {
     // MARK: - Explicit AnalyticsAction: track
 
     @Test(".track calls service with enriched event")
-    func trackCallsService() async {
+    func trackCallsService() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -191,7 +191,7 @@ struct AnalyticsPluginTests {
 
         let event = AnalyticsEvent("custom", ["foo": .string("bar")])
         let effect = plugin.reduce(state: &state, action: .analytics(.track(event)))
-        await runEffect(effect)
+        try await runEffect(effect)
 
         let events = await service.trackedEvents
         #expect(events.count == 1)
@@ -201,7 +201,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test(".track is skipped when opted out")
-    func trackSkippedWhenOptedOut() async {
+    func trackSkippedWhenOptedOut() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -211,7 +211,7 @@ struct AnalyticsPluginTests {
             state: &state,
             action: .analytics(.track(AnalyticsEvent("nope")))
         )
-        await runEffect(effect)
+        try await runEffect(effect)
 
         let events = await service.trackedEvents
         #expect(events.isEmpty)
@@ -221,7 +221,7 @@ struct AnalyticsPluginTests {
     // MARK: - Explicit AnalyticsAction: screenView
 
     @Test(".screenView updates currentScreen and tracks screen_view")
-    func screenViewUpdatesAndTracks() async {
+    func screenViewUpdatesAndTracks() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -230,7 +230,7 @@ struct AnalyticsPluginTests {
             state: &state,
             action: .analytics(.screenView("Profile", properties: ["origin": .string("tab")]))
         )
-        await runEffect(effect)
+        try await runEffect(effect)
 
         #expect(state.analytics.currentScreen == "Profile")
         let events = await service.trackedEvents
@@ -241,7 +241,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test(".screenView updates currentScreen even when opted out")
-    func screenViewUpdatesStateWhenOptedOut() async {
+    func screenViewUpdatesStateWhenOptedOut() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -261,7 +261,7 @@ struct AnalyticsPluginTests {
     // MARK: - Explicit AnalyticsAction: identify, alias, reset
 
     @Test(".identify updates lastIdentifiedUserID and calls service.identify")
-    func identifyUpdatesAndCalls() async {
+    func identifyUpdatesAndCalls() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -272,7 +272,7 @@ struct AnalyticsPluginTests {
                 .identify(userID: "u1", properties: ["plan": .string("pro")])
             )
         )
-        await runEffect(effect)
+        try await runEffect(effect)
 
         #expect(state.analytics.lastIdentifiedUserID == "u1")
         let calls = await service.identifyCalls
@@ -282,7 +282,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test(".alias calls service.alias without state mutation")
-    func aliasCallsService() async {
+    func aliasCallsService() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -292,7 +292,7 @@ struct AnalyticsPluginTests {
             state: &state,
             action: .analytics(.alias(newID: "user-42", previousID: "anon-7"))
         )
-        await runEffect(effect)
+        try await runEffect(effect)
 
         #expect(state == before)
         let calls = await service.aliasCalls
@@ -302,7 +302,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test(".reset clears lastIdentifiedUserID/Properties and calls service.reset")
-    func resetClearsAndCalls() async {
+    func resetClearsAndCalls() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -310,7 +310,7 @@ struct AnalyticsPluginTests {
         state.analytics.lastIdentifiedProperties = ["tier": .string("pro")]
 
         let effect = plugin.reduce(state: &state, action: .analytics(.reset))
-        await runEffect(effect)
+        try await runEffect(effect)
 
         #expect(state.analytics.lastIdentifiedUserID == nil)
         #expect(state.analytics.lastIdentifiedProperties == [:])
@@ -319,16 +319,16 @@ struct AnalyticsPluginTests {
     }
 
     @Test("explicit .identify and .alias are skipped when opted out")
-    func explicitSkippedWhenOptedOut() async {
+    func explicitSkippedWhenOptedOut() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        await runEffect(
+        try await runEffect(
             plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
         )
-        await runEffect(
+        try await runEffect(
             plugin.reduce(state: &state, action: .analytics(.alias(newID: "n")))
         )
 
@@ -339,14 +339,14 @@ struct AnalyticsPluginTests {
     }
 
     @Test("an opted-out .identify does not poison identification after opting back in")
-    func optedOutIdentifyDoesNotPoisonLaterIdentify() async {
+    func optedOutIdentifyDoesNotPoisonLaterIdentify() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
         state.analytics.isOptedOut = true
 
         // Suppressed — and must not be recorded as "already identified".
-        await runEffect(
+        try await runEffect(
             plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
         )
         #expect(state.analytics.lastIdentifiedUserID == nil)
@@ -354,7 +354,7 @@ struct AnalyticsPluginTests {
         _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
 
         // The same identify after opting back in must reach the service.
-        await runEffect(
+        try await runEffect(
             plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
         )
         let identifyCalls = await service.identifyCalls
@@ -365,7 +365,7 @@ struct AnalyticsPluginTests {
     // MARK: - Explicit AnalyticsAction: setOptedOut
 
     @Test(".setOptedOut(true) sets flag, clears identity, calls service.reset")
-    func optOutClearsAndResets() async {
+    func optOutClearsAndResets() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -375,7 +375,7 @@ struct AnalyticsPluginTests {
             state: &state,
             action: .analytics(.setOptedOut(true))
         )
-        await runEffect(effect)
+        try await runEffect(effect)
 
         #expect(state.analytics.isOptedOut == true)
         #expect(state.analytics.lastIdentifiedUserID == nil)
@@ -384,7 +384,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test(".setOptedOut(false) clears flag without service call")
-    func optInClearsFlagOnly() async {
+    func optInClearsFlagOnly() async throws {
         let service = RecordingAnalyticsService()
         let plugin = makePlugin(service: service)
         var state = TestState()
@@ -404,7 +404,7 @@ struct AnalyticsPluginTests {
     // MARK: - Auto-identify
 
     @Test("auto-identify fires on nil → userID transition")
-    func autoIdentifyOnSignIn() async {
+    func autoIdentifyOnSignIn() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -426,7 +426,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify fires on userID change")
-    func autoIdentifyOnUserIDChange() async {
+    func autoIdentifyOnUserIDChange() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(userID: { $0.userID })
         let plugin = makePlugin(service: service, identity: identity)
@@ -444,7 +444,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify calls service.reset on userID → nil transition")
-    func autoIdentifyOnSignOut() async {
+    func autoIdentifyOnSignOut() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(userID: { $0.userID })
         let plugin = makePlugin(service: service, identity: identity)
@@ -465,7 +465,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify is a no-op when userID is unchanged")
-    func autoIdentifyStable() async {
+    func autoIdentifyStable() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(userID: { $0.userID })
         let plugin = makePlugin(service: service, identity: identity)
@@ -484,7 +484,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify userProperties closure receives current state")
-    func autoIdentifyPropertiesFromState() async {
+    func autoIdentifyPropertiesFromState() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -505,7 +505,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify is paused when opted out")
-    func autoIdentifyPausedWhenOptedOut() async {
+    func autoIdentifyPausedWhenOptedOut() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(userID: { $0.userID })
         let plugin = makePlugin(service: service, identity: identity)
@@ -523,7 +523,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("opting back in re-identifies on next dispatch")
-    func optInReIdentifies() async {
+    func optInReIdentifies() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(userID: { $0.userID })
         let plugin = makePlugin(service: service, identity: identity)
@@ -536,7 +536,7 @@ struct AnalyticsPluginTests {
         await plugin.flush()
 
         // Opt back in via the explicit path (skips afterReduce processing).
-        await runEffect(
+        try await runEffect(
             plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
         )
         await plugin.flush()
@@ -552,7 +552,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify re-fires when userProperties content changes with stable userID")
-    func autoIdentifyOnPropertiesChange() async {
+    func autoIdentifyOnPropertiesChange() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -576,7 +576,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify preserves submission order across rapid afterReduce calls")
-    func autoIdentifyPreservesOrderUnderRapidCalls() async {
+    func autoIdentifyPreservesOrderUnderRapidCalls() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -602,7 +602,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("auto-identify is a no-op when both userID and userProperties are stable")
-    func autoIdentifyStableProperties() async {
+    func autoIdentifyStableProperties() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -622,7 +622,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("property changes do not fire identify while opted out")
-    func autoIdentifyPropertiesChangeWhileOptedOut() async {
+    func autoIdentifyPropertiesChangeWhileOptedOut() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -645,7 +645,7 @@ struct AnalyticsPluginTests {
     }
 
     @Test("explicit .identify records properties so auto-identify sees no diff")
-    func explicitIdentifyRecordsPropertiesForAutoPath() async {
+    func explicitIdentifyRecordsPropertiesForAutoPath() async throws {
         let service = RecordingAnalyticsService()
         let identity = AnalyticsIdentity<TestState>(
             userID: { $0.userID },
@@ -655,7 +655,7 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.userID = "u1"
 
-        await runEffect(
+        try await runEffect(
             plugin.reduce(
                 state: &state,
                 action: .analytics(.identify(userID: "u1", properties: ["plan": .string("pro")]))
@@ -673,7 +673,7 @@ struct AnalyticsPluginTests {
     // MARK: - Flush
 
     @Test("flush awaits pending tasks and calls service.flush")
-    func flushDrainsAndFlushes() async {
+    func flushDrainsAndFlushes() async throws {
         let service = RecordingAnalyticsService()
         let mapper = AnalyticsMapper<TestState, TestAction> { _, _ in
             [AnalyticsEvent("e")]

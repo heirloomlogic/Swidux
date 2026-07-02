@@ -41,10 +41,10 @@ struct KillswitchPluginTests {
 
     private func collectActions(
         from effect: Effect<TestAction>?
-    ) async -> [KillswitchAction] {
+    ) async throws -> [KillswitchAction] {
         guard let effect else { return [] }
         var collected: [KillswitchAction] = []
-        await effect { action in
+        try await effect { action in
             if case .killswitch(let a) = action {
                 collected.append(a)
             }
@@ -117,9 +117,9 @@ struct KillswitchPluginTests {
     // MARK: - Cache-first fetch
 
     @Test("fetch uses cache when fresh")
-    func fetchUsesCacheWhenFresh() async {
+    func fetchUsesCacheWhenFresh() async throws {
         let config = KillswitchConfig(minimumSupportedVersion: "0.5.0")
-        await confirmation("network not called", expectedCount: 0) { networkCall in
+        try await confirmation("network not called", expectedCount: 0) { networkCall in
             let service = KillswitchService.mock(
                 result: {
                     networkCall()
@@ -135,7 +135,7 @@ struct KillswitchPluginTests {
             let effect = plugin.reduce(
                 state: &state, action: .killswitch(.fetch)
             )
-            let actions = await collectActions(from: effect)
+            let actions = try await collectActions(from: effect)
             #expect(actions.count == 1)
             if case .verdictReceived(.allowed, fromNetwork: false) = actions.first {
             } else {
@@ -145,9 +145,9 @@ struct KillswitchPluginTests {
     }
 
     @Test("fetch hits network when cache expired")
-    func fetchHitsNetworkWhenCacheExpired() async {
+    func fetchHitsNetworkWhenCacheExpired() async throws {
         let config = KillswitchConfig()
-        await confirmation("network called") { networkCall in
+        try await confirmation("network called") { networkCall in
             let service = KillswitchService.mock(
                 result: {
                     networkCall()
@@ -163,13 +163,13 @@ struct KillswitchPluginTests {
             let effect = plugin.reduce(
                 state: &state, action: .killswitch(.fetch)
             )
-            _ = await collectActions(from: effect)
+            _ = try await collectActions(from: effect)
         }
     }
 
     @Test("fetch hits network when no prior fetch")
-    func fetchHitsNetworkWhenNoPriorFetch() async {
-        await confirmation("network called") { networkCall in
+    func fetchHitsNetworkWhenNoPriorFetch() async throws {
+        try await confirmation("network called") { networkCall in
             let service = KillswitchService.mock(
                 result: {
                     networkCall()
@@ -183,16 +183,16 @@ struct KillswitchPluginTests {
             let effect = plugin.reduce(
                 state: &state, action: .killswitch(.fetch)
             )
-            _ = await collectActions(from: effect)
+            _ = try await collectActions(from: effect)
         }
     }
 
     // MARK: - Force fetch
 
     @Test("forceFetch bypasses cache")
-    func forceFetchBypassesCache() async {
+    func forceFetchBypassesCache() async throws {
         let config = KillswitchConfig()
-        await confirmation("network called") { networkCall in
+        try await confirmation("network called") { networkCall in
             let service = KillswitchService.mock(
                 result: {
                     networkCall()
@@ -208,14 +208,14 @@ struct KillswitchPluginTests {
             let effect = plugin.reduce(
                 state: &state, action: .killswitch(.forceFetch)
             )
-            _ = await collectActions(from: effect)
+            _ = try await collectActions(from: effect)
         }
     }
 
     // MARK: - Cache fallback on failure
 
     @Test("fetch falls back to cache on network error")
-    func fetchFallsToCacheOnNetworkError() async {
+    func fetchFallsToCacheOnNetworkError() async throws {
         let cached = KillswitchConfig(minimumSupportedVersion: "2.0.0")
         let service = KillswitchService.mock(
             result: { throw URLError(.notConnectedToInternet) },
@@ -228,7 +228,7 @@ struct KillswitchPluginTests {
         let effect = plugin.reduce(
             state: &state, action: .killswitch(.fetch)
         )
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
 
         #expect(actions.count == 2)
         if case .verdictReceived(.blocked, fromNetwork: false) = actions.first {
@@ -242,7 +242,7 @@ struct KillswitchPluginTests {
     }
 
     @Test("fetch dispatches only fetchFailed when no cache and network error")
-    func fetchFailsCompletelyWhenNoCacheAndNetworkError() async {
+    func fetchFailsCompletelyWhenNoCacheAndNetworkError() async throws {
         let service = KillswitchService.mock(
             result: { throw URLError(.notConnectedToInternet) },
             cached: nil,
@@ -254,7 +254,7 @@ struct KillswitchPluginTests {
         let effect = plugin.reduce(
             state: &state, action: .killswitch(.fetch)
         )
-        let actions = await collectActions(from: effect)
+        let actions = try await collectActions(from: effect)
 
         #expect(actions.count == 1)
         if case .fetchFailed = actions.first {

@@ -39,10 +39,10 @@ func makePlugin(
 @MainActor
 func collectActions(
     from effect: Effect<TestAction>?
-) async -> [PaywallAction] {
+) async throws -> [PaywallAction] {
     guard let effect else { return [] }
     var collected: [PaywallAction] = []
-    await effect { action in
+    try await effect { action in
         if case .paywall(let a) = action {
             collected.append(a)
         }

@@ -126,7 +126,7 @@ struct CounterReducerTests {
 
         // Execute the effect with a capturing send function
         var dispatched: [AppAction] = []
-        await effect { action in
+        try await effect { action in
             dispatched.append(action)
         }
 

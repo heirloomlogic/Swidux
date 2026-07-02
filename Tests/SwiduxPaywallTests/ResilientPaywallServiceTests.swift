@@ -52,7 +52,7 @@ struct ResilientPaywallServiceTests {
     }
 
     @Test("never-seen user surfaces the failure instead of masking it as free")
-    func neverSeenUserThrows() async {
+    func neverSeenUserThrows() async throws {
         let store = InMemoryKeyValueStore()
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)
         let service = ResilientPaywallService(base: base, store: store)
@@ -75,7 +75,7 @@ struct ResilientPaywallServiceTests {
     }
 
     @Test("retry is bounded by maxAttempts")
-    func retryIsBounded() async {
+    func retryIsBounded() async throws {
         let store = InMemoryKeyValueStore()
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)
         let service = ResilientPaywallService(base: base, store: store, maxAttempts: 2)
@@ -103,7 +103,7 @@ struct ResilientPaywallServiceTests {
     // MARK: currentSnapshot
 
     @Test("currentSnapshot returns the cached entitlement when the live read fails")
-    func currentSnapshotReturnsCachedWhenPresent() async {
+    func currentSnapshotReturnsCachedWhenPresent() async throws {
         let store = InMemoryKeyValueStore()
         store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: false), for: .lastKnownEntitlement)
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)
@@ -115,7 +115,7 @@ struct ResilientPaywallServiceTests {
     }
 
     @Test("currentSnapshot degrades to free for a genuinely-unknown user")
-    func currentSnapshotDegradesToFreeForUnknownUser() async {
+    func currentSnapshotDegradesToFreeForUnknownUser() async throws {
         let store = InMemoryKeyValueStore()
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)
         let service = ResilientPaywallService(base: base, store: store)
@@ -128,7 +128,7 @@ struct ResilientPaywallServiceTests {
     // MARK: customerInfoStream
 
     @Test("stream seeds the last-known-good first so a flaky launch is not gated as free")
-    func streamSeedsLastKnownGoodFirst() async {
+    func streamSeedsLastKnownGoodFirst() async throws {
         let store = InMemoryKeyValueStore()
         store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: false), for: .lastKnownEntitlement)
         // Base stream emits nothing this launch (slow/silent read).
@@ -141,7 +141,7 @@ struct ResilientPaywallServiceTests {
     }
 
     @Test("stream does not seed from cache when seedsFromCache is off")
-    func streamDoesNotSeedWhenDisabled() async {
+    func streamDoesNotSeedWhenDisabled() async throws {
         let store = InMemoryKeyValueStore()
         store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: false), for: .lastKnownEntitlement)
         let base = FlakyPaywallService(streamSnapshots: [])
@@ -153,7 +153,7 @@ struct ResilientPaywallServiceTests {
     }
 
     @Test("stream forwards live snapshots and persists each one")
-    func streamForwardsAndPersistsLiveSnapshots() async {
+    func streamForwardsAndPersistsLiveSnapshots() async throws {
         let store = InMemoryKeyValueStore()
         let live = [
             EntitlementSnapshot(isPro: false),
@@ -206,7 +206,7 @@ struct ResilientPaywallServiceTests {
     }
 
     @Test("a failed restore rethrows and leaves the cache untouched")
-    func restoreFailureRethrows() async {
+    func restoreFailureRethrows() async throws {
         let store = InMemoryKeyValueStore()
         let base = FlakyPaywallService(restoreShouldFail: true)
         let service = ResilientPaywallService(base: base, store: store)
