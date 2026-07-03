@@ -117,7 +117,7 @@ struct CounterReducerTests {
     // MARK: - Effect Execution
 
     @Test("incrementAsync effect dispatches .counter(.increment) after delay")
-    func incrementAsyncDispatchesIncrement() async {
+    func incrementAsyncDispatchesIncrement() async throws {
         var state = AppState()
         let counter = Counter()
         state.counters[counter.id] = counter

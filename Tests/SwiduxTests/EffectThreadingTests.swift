@@ -31,7 +31,7 @@ struct EffectThreadingTests {
             dispatchedIn.yield()
         }
         Task { @concurrent in
-            try await effect(send)
+            try? await effect(send)
         }
 
         // Deterministic: the send closure signals when the action lands.
@@ -59,7 +59,7 @@ struct EffectThreadingTests {
             dispatchedIn.yield()
         }
         Task { @concurrent in
-            try await effect(send)
+            try? await effect(send)
         }
 
         var signals = dispatched.makeAsyncIterator()

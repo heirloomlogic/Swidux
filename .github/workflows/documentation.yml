@@ -22,10 +22,26 @@ jobs:
       - name: Enable dev tooling
         run: touch .dev-tooling
 
+      # Combined documentation publishes every library product (not just the
+      # core Swidux target) to one archive with a shared index; the existing
+      # /documentation/swidux/ URLs are preserved. Targets are listed
+      # explicitly — without the list, the combined build walks dependency
+      # targets (swift-syntax, the macro implementation) and fails on the
+      # duplicate SwiduxMacros target name.
       - name: Build Documentation
         run: |
           swift package --allow-writing-to-directory ./docs \
-            generate-documentation --target Swidux \
+            generate-documentation \
+            --target Swidux \
+            --target SwiduxAnalytics \
+            --target SwiduxFeatureFlags \
+            --target SwiduxKillswitch \
+            --target SwiduxParentalGate \
+            --target SwiduxPaywall \
+            --target SwiduxDevPaywallUI \
+            --target SwiduxPersistence \
+            --target SwiduxCloudKitSync \
+            --enable-experimental-combined-documentation \
             --disable-indexing \
             --transform-for-static-hosting \
             --hosting-base-path /Swidux \

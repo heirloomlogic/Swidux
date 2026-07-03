@@ -15,10 +15,63 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Test (Debug)
-        run: swift test
+      - name: Test (Debug, with coverage)
+        run: swift test --enable-code-coverage
+
+      - name: Coverage summary
+        run: |
+          BIN=$(swift build --show-bin-path)
+          # Collect every test bundle: llvm-cov takes the first binary
+          # positionally and the rest as -object flags, hence the shift.
+          set --
+          for bundle in "$BIN"/*.xctest; do
+            set -- "$@" -object "$bundle/Contents/MacOS/$(basename "$bundle" .xctest)"
+          done
+          shift
+          xcrun llvm-cov report "$@" \
+            -instr-profile "$BIN/codecov/default.profdata" \
+            -ignore-filename-regex='(Tests|\.build)/' \
+            >> "$GITHUB_STEP_SUMMARY"
 
       # Release run guards against optimization-only regressions (e.g. generic
       # `#Predicate` miscompiles) that the Debug suite passes through silently.
       - name: Test (Release)
         run: swift test -c release
+
+  # The package is macOS + iOS; swift test above only exercises macOS.
+  # Debug-only: the Release regression net already runs on macOS.
+  test-ios:
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select an iOS simulator
+        run: |
+          UDID=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable)][0].udid')
+          test -n "$UDID" && test "$UDID" != "null"
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+
+      # -skipMacroValidation: SwiduxMacros is a compiler plugin and xcodebuild
+      # otherwise blocks on the interactive fingerprint-trust prompt.
+      - name: Test (iOS Simulator)
+        run: |
+          xcodebuild test -scheme Swidux-Package \
+            -destination "id=$SIMULATOR_UDID" \
+            -skipMacroValidation -skipPackagePluginValidation
+
+  # Build-only: CounterTests duplicate library suites; this guards the example
+  # against API drift so the tutorial always compiles.
+  build-example:
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Examples/Counter (macOS)
+        run: |
+          xcodebuild build -project Examples/Counter/Counter.xcodeproj \
+            -scheme Counter -destination 'platform=macOS' \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO

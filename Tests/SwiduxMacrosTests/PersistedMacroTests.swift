@@ -107,7 +107,8 @@ final class PersistedMacroTests: XCTestCase {
                     private var settingsData: Data = Data()
                     public var settings: Settings {
                         get {
-                            SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
+                            SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
+                Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
                         }
                         set {
                             settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
@@ -371,7 +372,8 @@ final class PersistedMacroTests: XCTestCase {
                     private var metaData: Data = Data()
                     var meta: Meta? {
                         get {
-                            SwiduxInlineCodec.decode(Meta?.self, from: metaData, decoder: Self.swiduxInlineDecoder, model: "DocModel", property: "meta") ?? nil
+                            SwiduxInlineCodec.decode(Meta?.self, from: metaData, decoder: Self.swiduxInlineDecoder, \
+                model: "DocModel", property: "meta") ?? nil
                         }
                         set {
                             metaData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()

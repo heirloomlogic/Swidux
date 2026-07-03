@@ -17,7 +17,7 @@ struct EffectThreadingTests {
         }
 
         Task { @concurrent in
-            try await effect { _ in }
+            try? await effect { _ in }
         }
 
         try await Task.sleep(for: .milliseconds(50))
@@ -40,7 +40,7 @@ struct EffectThreadingTests {
         }
 
         Task { @concurrent in
-            try await effect(send)
+            try? await effect(send)
         }
 
         try await Task.sleep(for: .milliseconds(50))

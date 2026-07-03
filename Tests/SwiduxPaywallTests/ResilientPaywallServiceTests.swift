@@ -168,7 +168,8 @@ struct ResilientPaywallServiceTests {
     func staleSubscriptionOnlyCacheThrows() async throws {
         let store = InMemoryKeyValueStore()
         store.setValue(
-            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
+            CachedEntitlement(
+                isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
             for: .lastKnownEntitlement
         )
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)
@@ -185,7 +186,8 @@ struct ResilientPaywallServiceTests {
     func streamSkipsStaleSubscriptionSeed() async throws {
         let store = InMemoryKeyValueStore()
         store.setValue(
-            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
+            CachedEntitlement(
+                isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: -73 * 3600)),
             for: .lastKnownEntitlement
         )
         let base = FlakyPaywallService(streamSnapshots: [])
@@ -199,7 +201,8 @@ struct ResilientPaywallServiceTests {
     func futureCachedAtCountsAsStale() async throws {
         let store = InMemoryKeyValueStore()
         store.setValue(
-            CachedEntitlement(isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: 200 * 3600)),
+            CachedEntitlement(
+                isPro: true, hasPermanentLicense: false, cachedAt: Date(timeIntervalSinceNow: 200 * 3600)),
             for: .lastKnownEntitlement
         )
         let base = FlakyPaywallService(failuresBeforeSuccess: .max)

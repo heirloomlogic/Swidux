@@ -53,14 +53,14 @@ public actor SimulatedPaywallService: PaywallService {
         self.current = EntitlementSnapshot(isPro: isPro, hasPermanentLicense: hasPermanentLicense)
         self.logger = Logger(subsystem: subsystem, category: category)
         #if !DEBUG
-            // Deliberate for TestFlight/QA, fatal for the App Store. Loud and
-            // greppable in Console/sysdiagnose during submission prep.
-            logger.fault(
-                """
-                SimulatedPaywallService active in a Release build — purchases are \
-                SIMULATED. Replace with a real PaywallService before App Store submission.
-                """
-            )
+        // Deliberate for TestFlight/QA, fatal for the App Store. Loud and
+        // greppable in Console/sysdiagnose during submission prep.
+        logger.fault(
+            """
+            SimulatedPaywallService active in a Release build — purchases are \
+            SIMULATED. Replace with a real PaywallService before App Store submission.
+            """
+        )
         #endif
     }
 
