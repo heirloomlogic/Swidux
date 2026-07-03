@@ -2,9 +2,11 @@ import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
 import XCTest
 
+// Macro implementations build for the host (macOS) only; when this test
+// bundle compiles for another destination (the iOS-simulator CI job), the
+// whole file must drop out, not just the import.
 #if canImport(SwiduxMacros)
 import SwiduxMacros
-#endif
 
 // MARK: - @Persisted
 
@@ -814,3 +816,4 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 }
+#endif
