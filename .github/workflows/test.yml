@@ -38,33 +38,25 @@ jobs:
       - name: Test (Release)
         run: swift test -c release
 
-  # The package is macOS + iOS; swift test above only exercises macOS.
-  # Debug-only: the Release regression net already runs on macOS.
-  test-ios:
+  # The package is macOS + iOS; swift test above only exercises macOS. This
+  # job is build-only: every Xcode 26.x on the runner image mislinks the
+  # host-built macro object into iOS *test* bundles ("building for
+  # 'iOS-simulator', but linking in object file (SwiduxMacros.o) built for
+  # 'macOS'"), so `xcodebuild test` cannot work until a fixed Xcode ships.
+  # Building the library products still catches iOS-only compile breaks;
+  # functional coverage runs on macOS.
+  build-ios:
     runs-on: macos-26
-    env:
-      # The image's default Xcode (26.5) mislinks host-built macro objects
-      # into iOS test bundles ("building for 'iOS-simulator', but linking in
-      # object file (SwiduxMacros.o) built for 'macOS'"). Use the newest
-      # installed Xcode instead.
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select an iOS simulator
-        run: |
-          UDID=$(xcrun simctl list devices available --json \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable)][0].udid')
-          test -n "$UDID" && test "$UDID" != "null"
-          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
-
       # -skipMacroValidation: SwiduxMacros is a compiler plugin and xcodebuild
       # otherwise blocks on the interactive fingerprint-trust prompt.
-      - name: Test (iOS Simulator)
+      - name: Build (iOS Simulator)
         run: |
-          xcodebuild test -scheme Swidux-Package \
-            -destination "id=$SIMULATOR_UDID" \
+          xcodebuild build -scheme Swidux-Package \
+            -destination 'generic/platform=iOS Simulator' \
             -skipMacroValidation -skipPackagePluginValidation
 
   # Build-only: CounterTests duplicate library suites; this guards the example
