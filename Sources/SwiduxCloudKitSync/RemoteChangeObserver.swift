@@ -66,4 +66,10 @@ public final class RemoteChangeObserver {
             await self.onRemoteChange()
         }
     }
+
+    /// Test seam: `true` once a remote-change notification has armed a debounced
+    /// merge (and until `stop()` clears it). Notification delivery is async on the
+    /// main queue, so tests poll this to know the debounce is scheduled instead of
+    /// guessing a fixed delay.
+    var hasScheduledMerge: Bool { pending != nil }
 }
