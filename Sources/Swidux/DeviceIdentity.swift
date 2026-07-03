@@ -34,12 +34,17 @@ extension KeyValueStore {
     /// let initial = AppState(deviceID: deviceID, …)
     /// ```
     ///
+    /// Call before spawning concurrency: two concurrent *first* calls can both
+    /// mint, and the racers may observe different values for that one session.
+    /// The persisted value is re-read after writing so the stored identity is
+    /// authoritative from the next read on.
+    ///
     /// - Parameter key: The key to read/write. Defaults to ``KVKey/deviceID``.
     /// - Returns: The existing identity, or a freshly minted-and-persisted one.
     public func deviceIdentity(key: KVKey<String> = .deviceID) -> String {
         if let existing = value(key) { return existing }
         let minted = UUID().uuidString
         setValue(minted, for: key)
-        return minted
+        return value(key) ?? minted
     }
 }

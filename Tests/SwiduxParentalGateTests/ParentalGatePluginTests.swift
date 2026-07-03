@@ -259,4 +259,14 @@ struct ParentalGatePluginTests {
         let times = MathChallenge(left: 10, right: 5, op: .times)
         #expect(times.expected == 50)
     }
+
+    @Test("the standard source never produces a negative or trivial answer")
+    func standardSourceProducesReasonableChallenges() {
+        for _ in 0..<200 {
+            let challenge = ParentalChallengeSource.standard.generate()
+            #expect(challenge.expected > 0, "\(challenge.left) \(challenge.op) \(challenge.right)")
+            #expect(challenge.left > 0)
+            #expect(challenge.right > 0)
+        }
+    }
 }

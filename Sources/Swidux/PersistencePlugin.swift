@@ -109,8 +109,8 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
                 """
                 [PersistencePlugin] afterReduce called \(self.drainCount) times \
                 in a single debounce interval — possible dispatch loop. \
-                Check that AppStore.send() guards @Observable property writes \
-                with equality checks.
+                Look for an effect or plugin that dispatches an action on every \
+                state change, feeding the cycle it reacts to.
                 """
             )
         }

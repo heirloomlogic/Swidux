@@ -22,6 +22,11 @@ public actor EntityDB {
     }
 
     /// Inserts or updates the row for `domain.id`, then saves.
+    ///
+    /// Convenience single-row API (used by tests and one-off tooling). The
+    /// plugin's flush path uses ``apply(writes:deletions:as:)``, which batches
+    /// everything into a single transaction — prefer it for multi-row changes,
+    /// since a sequence of single-row saves can be interrupted part-way.
     public func upsert<M: PersistableModel>(_ domain: M.Domain, as type: M.Type) throws {
         if let existing = try fetchByID(domain.id, as: M.self) {
             existing.update(from: domain)
@@ -62,6 +67,9 @@ public actor EntityDB {
     }
 
     /// Deletes the row for `id` if present, then saves.
+    ///
+    /// Convenience single-row API — see ``apply(writes:deletions:as:)`` for
+    /// the transactional batch path the plugin uses.
     public func delete<M: PersistableModel>(id: UUID, as type: M.Type) throws {
         guard let existing = try fetchByID(id, as: M.self) else { return }
         modelContext.delete(existing)

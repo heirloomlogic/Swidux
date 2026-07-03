@@ -7,7 +7,8 @@
 **Redux-style state management for SwiftUI.** State lives in one observable store, mutations go through reducers, and side effects run as async closures. Macros generate the observability boilerplate. Built-in plugins handle persistence and undo/redo. Optional plugins ship ready-made paywalls, version killswitches, parental gates, analytics, feature flags, and SwiftData/iCloud persistence.
 
 [![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20|%20iOS%20|%20tvOS%20|%20watchOS%20-blue.svg)](https://swift.org)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20|%20iOS-blue.svg)](https://swift.org)
+[![Tests](https://github.com/heirloomlogic/Swidux/actions/workflows/test.yml/badge.svg)](https://github.com/heirloomlogic/Swidux/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Documentation](https://img.shields.io/badge/Documentation-DocC-blue.svg)](https://heirloomlogic.github.io/Swidux/documentation/swidux/)
 
@@ -57,7 +58,7 @@ The shape of a Swidux app, condensed:
 
 ```swift
 import SwiftUI
-@_exported import Swidux
+import Swidux
 
 @Swidux
 nonisolated struct AppState: Equatable, Sendable {
@@ -191,6 +192,7 @@ Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swid
 - **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Middleware Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [KeyValueStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/keyvaluestoreguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
 - **I want to understand the design** — [Architecture Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/architectureguide), [Plugin Architecture](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginarchitecture), [Design Principles](https://heirloomlogic.github.io/Swidux/documentation/swidux/designprinciples)
 - **I want to write my own plugin** — [Building a Domain Plugin](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingadomainplugin)
+- **Something isn't working** — [Troubleshooting](https://heirloomlogic.github.io/Swidux/documentation/swidux/troubleshooting)
 
 ## Installing the agent skill
 
@@ -215,6 +217,10 @@ For Codex, Cursor, Gemini CLI, and other agents — plus a `curl`-only fallback 
 ## Requirements
 
 Swift 6.2+ / Xcode 26+, macOS 15+ / iOS 18+. Strict concurrency (`.swiftLanguageMode(.v6)`).
+
+## Contributing
+
+Release history lives in [CHANGELOG.md](CHANGELOG.md). Development setup — including the `.dev-tooling` sentinel that gates the lint and DocC tooling — is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
