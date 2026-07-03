@@ -49,7 +49,7 @@ struct TestReducer: SwiduxReducer {
 @Suite("SwiduxReducer")
 struct SwiduxReducerTests {
     @Test("Reduce inserts entity and returns an effect")
-    @MainActor func reduceInsert() async {
+    @MainActor func reduceInsert() async throws {
         let reducer = TestReducer()
         var state = TestState()
         let entity = TestEntity(name: "Hello")
@@ -61,7 +61,7 @@ struct SwiduxReducerTests {
 
         // Execute the effect and verify the dispatched action
         var dispatched: TestAction?
-        await effect! { action in
+        try await effect! { action in
             dispatched = action
         }
         #expect(dispatched == .effectAction("inserted Hello"))

@@ -1,4 +1,45 @@
+import SwiftDiagnostics
 import SwiftSyntax
+import SwiftSyntaxMacros
+
+/// Diagnoses stored properties the classifiers would silently skip — a missing
+/// type annotation or a combined (multi-binding) declaration. A skipped
+/// property never reaches the generated observer/model, so its value resets on
+/// every pack (or never persists) with no other signal; make it a compile error.
+///
+/// `includesLetBindings` matches the caller's classifier: `@Persisted` mirrors
+/// `let` properties, `@Swidux` does not (an unmutable leaf can't lose state —
+/// and a `let` without a default already fails the generated initializer).
+func diagnoseSkippedStoredProperties(
+    of structDecl: StructDeclSyntax,
+    includesLetBindings: Bool,
+    in context: some MacroExpansionContext
+) {
+    for member in structDecl.memberBlock.members {
+        guard let varDecl = member.decl.as(VariableDeclSyntax.self) else { continue }
+        let keyword = varDecl.bindingSpecifier.tokenKind
+        guard keyword == .keyword(.var) || (includesLetBindings && keyword == .keyword(.let))
+        else { continue }
+        // Type-level members aren't instance state; computed properties
+        // (accessor block on the first binding) aren't stored.
+        let isStatic = varDecl.modifiers.contains { modifier in
+            modifier.name.tokenKind == .keyword(.static)
+                || modifier.name.tokenKind == .keyword(.class)
+        }
+        guard !isStatic, let first = varDecl.bindings.first, first.accessorBlock == nil
+        else { continue }
+
+        if varDecl.bindings.count > 1 {
+            context.diagnose(
+                Diagnostic(node: varDecl, message: SwiduxDiagnostic.singleBindingPerDeclaration))
+            continue
+        }
+        if first.typeAnnotation == nil {
+            context.diagnose(
+                Diagnostic(node: first, message: SwiduxDiagnostic.requiresTypeAnnotation))
+        }
+    }
+}
 
 enum PropertyKind {
     case leaf

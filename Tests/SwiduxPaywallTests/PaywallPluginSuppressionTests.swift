@@ -102,7 +102,7 @@ struct PaywallPluginSuppressionTests {
     }
 
     @Test("redundant snapshot does not notify the paywall slice")
-    func redundantSnapshotIsSilent() async {
+    func redundantSnapshotIsSilent() async throws {
         let store = makeStore()
         store.send(
             .paywall(
@@ -129,7 +129,7 @@ struct PaywallPluginSuppressionTests {
     }
 
     @Test("real entitlement change notifies the paywall slice")
-    func realChangeNotifies() async {
+    func realChangeNotifies() async throws {
         let store = makeStore()
         store.send(
             .paywall(

@@ -6,6 +6,13 @@
 //
 
 import Foundation
+import os
+
+/// Logs dispatch diagnostics such as deferred re-entrant sends.
+private let dispatchLogger = Logger(subsystem: "swidux", category: "dispatch")
+
+/// Logs unhandled errors thrown by effects.
+private let effectLogger = Logger(subsystem: "swidux", category: "effects")
 
 /// Generic store that owns the dispatch cycle, plugin lifecycle, and
 /// observation layer.
@@ -59,9 +66,23 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Platform undo manager for menu/gesture integration.
     public weak var undoManager: UndoManager?
 
-    /// Guards against re-entrant dispatch (DEBUG diagnostics only).
+    /// Guards against re-entrant dispatch; see `send(_:)`.
     @ObservationIgnored
     private var isDispatching = false
+
+    /// Actions dispatched re-entrantly, run as full cycles after the current one.
+    @ObservationIgnored
+    private var pendingActions: [Action] = []
+
+    // MARK: - Effect Lifecycle
+
+    /// In-flight effect tasks. Each removes itself on completion; all are
+    /// cancelled by `cancelEffects()` and on deinit.
+    @ObservationIgnored
+    private var effectTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Whether any effects are still in flight. Test hook.
+    var hasInFlightEffects: Bool { !effectTasks.isEmpty }
 
     // MARK: - Init
 
@@ -98,21 +119,35 @@ public final class Store<State: SwiduxObservable, Action> {
     // MARK: - Dispatch
 
     /// Dispatches an action through the full plugin → reducer → effect cycle.
+    ///
+    /// Re-entrant calls — a synchronous `send` from inside a reducer or plugin
+    /// hook — are deferred and run as full cycles immediately after the current
+    /// one, in FIFO order. Running them inline would pack stale state and let
+    /// the outer dispatch clobber the inner one's changes. Prefer dispatching
+    /// follow-up actions from an `Effect`; deferral is a safety net, and each
+    /// occurrence logs a fault.
     public func send(_ action: Action) {
-        // A synchronous send from inside a reducer or plugin hook packs stale
-        // state, and the outer dispatch then clobbers the inner one's changes.
-        // Dispatch follow-up actions from effects instead — their `send` runs
-        // after this cycle completes.
-        assert(
-            !isDispatching,
-            """
-            Re-entrant Store.send(\(action)) — dispatch follow-up actions from an Effect, \
-            not synchronously from a reducer or plugin hook.
-            """
-        )
+        guard !isDispatching else {
+            dispatchLogger.fault(
+                """
+                Re-entrant Store.send(\(String(describing: action))) — deferring until the \
+                current dispatch completes. Dispatch follow-up actions from an Effect instead.
+                """
+            )
+            pendingActions.append(action)
+            return
+        }
         isDispatching = true
         defer { isDispatching = false }
 
+        dispatch(action)
+        while !pendingActions.isEmpty {
+            dispatch(pendingActions.removeFirst())
+        }
+    }
+
+    /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.
+    private func dispatch(_ action: Action) {
         var state = State(observer: observer)
 
         plugins.willReduce(state: state, action: action)
@@ -132,10 +167,38 @@ public final class Store<State: SwiduxObservable, Action> {
         }
         let allEffects = [effect].compactMap { $0 } + pluginEffects
         for eff in allEffects {
-            Task { @concurrent in
-                await eff(send)
+            // `send` is synchronous on the MainActor, so the task is registered
+            // before the completion hop below can possibly run.
+            let id = UUID()
+            effectTasks[id] = Task { @concurrent [weak self] in
+                do {
+                    try await eff(send)
+                } catch is CancellationError {
+                    // Expected on teardown / cancelEffects() — not an error.
+                } catch {
+                    effectLogger.error("Unhandled effect error: \(String(describing: error))")
+                }
+                await self?.effectFinished(id)
             }
         }
+    }
+
+    private func effectFinished(_ id: UUID) {
+        effectTasks.removeValue(forKey: id)
+    }
+
+    /// Cancels all in-flight effects.
+    ///
+    /// Streaming effects (`for await …`) end at their next suspension point.
+    /// Called automatically when the store deinitializes; call it directly to
+    /// tear down long-lived effects earlier (for example on scene teardown).
+    public func cancelEffects() {
+        for task in effectTasks.values { task.cancel() }
+        effectTasks.removeAll()
+    }
+
+    deinit {
+        for task in effectTasks.values { task.cancel() }
     }
 
     // MARK: - Undo / Redo

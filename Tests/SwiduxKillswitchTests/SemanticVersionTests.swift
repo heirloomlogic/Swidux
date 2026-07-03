@@ -36,9 +36,34 @@ struct SemanticVersionTests {
         )
     }
 
-    @Test("rejects malformed", arguments: ["", "1", "1.2", "a.b.c", "1.2.3.4"])
+    @Test("rejects malformed", arguments: ["", "1", "1.2", "a.b.c", "1.2.3.4", "1.2.3."])
     func rejectsMalformed(input: String) {
         #expect(SemanticVersion(input) == nil)
+    }
+
+    @Test(
+        "tolerant parse pads partial versions",
+        arguments: [("2", 2, 0, 0), ("2.1", 2, 1, 0), ("2.1.5", 2, 1, 5)]
+    )
+    func tolerantPadsPartialVersions(input: String, major: Int, minor: Int, patch: Int) {
+        let v = SemanticVersion(tolerant: input)
+        #expect(v?.major == major)
+        #expect(v?.minor == minor)
+        #expect(v?.patch == patch)
+    }
+
+    @Test("tolerant parse handles prerelease on a partial core")
+    func tolerantHandlesPrerelease() {
+        let v = SemanticVersion(tolerant: "2.1-beta.1")
+        #expect(v == SemanticVersion(major: 2, minor: 1, patch: 0, prerelease: [.alphanumeric("beta"), .numeric(1)]))
+    }
+
+    @Test(
+        "tolerant parse still rejects malformed",
+        arguments: ["", "a.b", "1.2.3.4", "1.", "1..2"]
+    )
+    func tolerantRejectsMalformed(input: String) {
+        #expect(SemanticVersion(tolerant: input) == nil)
     }
 
     @Test("strips build metadata")

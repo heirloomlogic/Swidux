@@ -41,8 +41,11 @@ struct KillswitchBlockerModifier<Blocker: View>: ViewModifier {
         content
             .disabled(verdict.isBlocked)
             .overlay {
-                if case .blocked(let title, let message, let url) = verdict {
-                    blocker(title, message, url != nil)
+                if case .blocked(let title, let message, _) = verdict {
+                    // Offer the Update button only for URLs the plugin will
+                    // actually open — a remote config with a disallowed scheme
+                    // must not render a dead button on a non-dismissible blocker.
+                    blocker(title, message, verdict.openableUpdateURL != nil)
                 }
             }
     }

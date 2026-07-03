@@ -88,6 +88,23 @@ Swidux gives you a `Store`, a reducer protocol, a plugin protocol, and three opt
 
 The store owns one job: take an action, produce a new state, run effects. Everything else is yours.
 
+## 11. Service shapes: protocol when others implement it, closures when we own it
+
+Swidux services deliberately come in two shapes, chosen by who supplies the implementation:
+
+- **Protocol** — when apps or vendor adapters implement the backend:
+  `PaywallService` (RevenueCat, StoreKit, simulated), `AnalyticsService`
+  (Mixpanel, Amplitude, console), `FeatureFlagsService` (any JSON host).
+  A protocol gives conformers a stable, documented contract.
+- **Struct of closures** — when the library owns the shape and apps only
+  configure or mock it: `KillswitchService`, `ParentalChallengeSource`,
+  `SyncPreflightService`. Closures make the built-in `.live`/`.mock`
+  factories and per-test overrides trivial without a conformance ceremony.
+
+The split is a signal, not an accident: if you find yourself conforming to a
+struct-of-closures service, that service was designed to be configured, not
+replaced.
+
 ## Anti-patterns
 
 - ❌ `await` or `try` inside a reducer — return an effect instead.

@@ -29,6 +29,7 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
     public let url: URL
     private let session: URLSession
     private let decoder: JSONDecoder
+    private let fetchTimeout: TimeInterval
 
     /// Creates a service that fetches the feature-flags JSON from `url`.
     ///
@@ -36,10 +37,19 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
     /// `127.0.0.1` development servers) — flags gate features and rollouts,
     /// so the channel must not be tamperable in transit, regardless of the
     /// host app's ATS configuration.
+    ///
+    /// - Parameters:
+    ///   - url: The JSON config endpoint; must be HTTPS.
+    ///   - session: The URL session to fetch with.
+    ///   - decoder: The decoder for the wire-format config.
+    ///   - fetchTimeout: Per-request timeout in seconds. Flags are a small
+    ///     control channel; a hung request shouldn't wait the URLSession
+    ///     default 60 s to fall back to the cached config.
     public init(
         url: URL,
         session: URLSession = .shared,
-        decoder: JSONDecoder = .init()
+        decoder: JSONDecoder = .init(),
+        fetchTimeout: TimeInterval = 10
     ) {
         precondition(
             url.scheme == "https"
@@ -49,6 +59,7 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
         self.url = url
         self.session = session
         self.decoder = decoder
+        self.fetchTimeout = fetchTimeout
     }
 
     /// Fetches and decodes the wire-format config. Throws on transport
@@ -57,6 +68,7 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
     public func fetch() async throws -> FeatureFlagsConfig {
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = fetchTimeout
 
         let (data, response) = try await session.data(for: request)
 

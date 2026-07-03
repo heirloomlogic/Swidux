@@ -15,10 +15,61 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Test (Debug)
-        run: swift test
+      - name: Test (Debug, with coverage)
+        run: swift test --enable-code-coverage
+
+      - name: Coverage summary
+        run: |
+          BIN=$(swift build --show-bin-path)
+          # Collect every test bundle: llvm-cov takes the first binary
+          # positionally and the rest as -object flags, hence the shift.
+          set --
+          for bundle in "$BIN"/*.xctest; do
+            set -- "$@" -object "$bundle/Contents/MacOS/$(basename "$bundle" .xctest)"
+          done
+          shift
+          xcrun llvm-cov report "$@" \
+            -instr-profile "$BIN/codecov/default.profdata" \
+            -ignore-filename-regex='(Tests|\.build)/' \
+            >> "$GITHUB_STEP_SUMMARY"
 
       # Release run guards against optimization-only regressions (e.g. generic
       # `#Predicate` miscompiles) that the Debug suite passes through silently.
       - name: Test (Release)
         run: swift test -c release
+
+  # The package is macOS + iOS; swift test above only exercises macOS. This
+  # job is build-only: every Xcode 26.x on the runner image mislinks the
+  # host-built macro object into iOS *test* bundles ("building for
+  # 'iOS-simulator', but linking in object file (SwiduxMacros.o) built for
+  # 'macOS'"), so `xcodebuild test` cannot work until a fixed Xcode ships.
+  # Building the library products still catches iOS-only compile breaks;
+  # functional coverage runs on macOS.
+  build-ios:
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -skipMacroValidation: SwiduxMacros is a compiler plugin and xcodebuild
+      # otherwise blocks on the interactive fingerprint-trust prompt.
+      - name: Build (iOS Simulator)
+        run: |
+          xcodebuild build -scheme Swidux-Package \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipMacroValidation -skipPackagePluginValidation
+
+  # Build-only: CounterTests duplicate library suites; this guards the example
+  # against API drift so the tutorial always compiles.
+  build-example:
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Examples/Counter (macOS)
+        run: |
+          xcodebuild build -project Examples/Counter/Counter.xcodeproj \
+            -scheme Counter -destination 'platform=macOS' \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO

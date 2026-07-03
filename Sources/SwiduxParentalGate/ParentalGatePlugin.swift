@@ -3,9 +3,16 @@
 //  SwiduxParentalGate
 //
 
+import Foundation
 import Swidux
 
 /// A Swidux plugin that guards actions behind a math challenge.
+///
+/// Wrong answers are limited: after `attemptLimit` consecutive rejections the
+/// gate enters a cooldown during which `.submitAnswer` is ignored — even with
+/// the correct answer — and `.dismiss`/`.request` don't reset it. Host UIs
+/// should disable the submit control and show a countdown while
+/// ``ParentalGateState/cooldownUntil`` is non-`nil`.
 @MainActor
 public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
     /// Root state type of the host app.
@@ -17,18 +24,36 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
     private let toRootAction: @Sendable (ParentalGateAction) -> RootAction
     private let extractAction: @Sendable (RootAction) -> ParentalGateAction?
     private let challengeSource: ParentalChallengeSource
+    private let attemptLimit: Int
+    private let cooldown: Duration
+    private let now: @Sendable () -> Date
 
     /// Creates a parental-gate plugin wired into the host app.
+    ///
+    /// - Parameters:
+    ///   - state: Key path to the ``ParentalGateState`` slice on the root state.
+    ///   - toRootAction: Lifts a local gate action into the root action type.
+    ///   - extractAction: Extracts a gate action from a root action, or `nil`.
+    ///   - challengeSource: Source of math challenges; defaults to `.standard`.
+    ///   - attemptLimit: Consecutive wrong answers before a cooldown starts.
+    ///   - cooldown: How long answers are refused after the limit is reached.
+    ///   - now: Clock read used for cooldown checks; injectable for tests.
     public init(
         state: WritableKeyPath<RootState, ParentalGateState>,
         action toRootAction: @escaping @Sendable (ParentalGateAction) -> RootAction,
         extractAction: @escaping @Sendable (RootAction) -> ParentalGateAction?,
-        challengeSource: ParentalChallengeSource = .standard
+        challengeSource: ParentalChallengeSource = .standard,
+        attemptLimit: Int = 3,
+        cooldown: Duration = .seconds(30),
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.stateKeyPath = state
         self.toRootAction = toRootAction
         self.extractAction = extractAction
         self.challengeSource = challengeSource
+        self.attemptLimit = attemptLimit
+        self.cooldown = cooldown
+        self.now = now
     }
 
     /// Routes parental-gate actions and returns effects for async work.
@@ -38,7 +63,7 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
         guard let localEffect else { return nil }
         let lift = toRootAction
         return { send in
-            await localEffect { localAction in
+            try await localEffect { localAction in
                 send(lift(localAction))
             }
         }
@@ -66,6 +91,12 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
             state.challenge = challengeSource.generate()
 
         case .submitAnswer(let answer):
+            if let until = state.cooldownUntil {
+                // Answers are refused during cooldown — even correct ones —
+                // so the limit can't be raced. `.cooldownExpired` clears it.
+                guard now() >= until else { return nil }
+                state.cooldownUntil = nil
+            }
             guard let challenge = state.challenge, let reason = state.pendingReason else { return nil }
             guard answer == challenge.expected else {
                 return { send in await send(.answerRejected) }
@@ -80,8 +111,26 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
 
         case .answerRejected:
             state.attempts += 1
+            if state.attempts >= attemptLimit {
+                state.attempts = 0
+                state.cooldownUntil = now().addingTimeInterval(cooldownInterval)
+                let cooldown = self.cooldown
+                return { send in
+                    try await Task.sleep(for: cooldown)
+                    await send(.cooldownExpired)
+                }
+            }
+            state.challenge = challengeSource.generate()
+
+        case .cooldownExpired:
+            state.cooldownUntil = nil
             state.challenge = challengeSource.generate()
         }
         return nil
+    }
+
+    private var cooldownInterval: TimeInterval {
+        TimeInterval(cooldown.components.seconds)
+            + TimeInterval(cooldown.components.attoseconds) * 1e-18
     }
 }

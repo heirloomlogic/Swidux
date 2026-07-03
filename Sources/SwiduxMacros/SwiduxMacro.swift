@@ -18,6 +18,7 @@ extension SwiduxMacro: PeerMacro {
             return []
         }
 
+        diagnoseSkippedStoredProperties(of: structDecl, includesLetBindings: false, in: context)
         let properties = classifyProperties(of: structDecl)
         let accessLevel = structDecl.modifiers.first { modifier in
             switch modifier.name.tokenKind {

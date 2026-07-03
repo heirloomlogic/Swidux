@@ -189,6 +189,9 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         else {
             return false
         }
-        return Date().timeIntervalSince(lastFetched) < minInterval
+        // A negative elapsed means the wall clock moved backward past the last
+        // fetch; refresh rather than starving fetches for the size of the skew.
+        let elapsed = Date().timeIntervalSince(lastFetched)
+        return elapsed >= 0 && elapsed < minInterval
     }
 }

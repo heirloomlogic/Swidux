@@ -158,8 +158,9 @@ struct StoreTests {
 
     @Test("effects dispatch follow-up actions")
     @MainActor
-    func effectsDispatchFollowUp() async throws {
+    func effectsDispatchFollowUp() async {
         let effectEntity = TestEntity(name: "From Effect")
+        let (inserted, insertedIn) = AsyncStream<Void>.makeStream()
 
         func reducer(state: inout TestState, action: TestAction) -> Effect<TestAction>? {
             switch action {
@@ -169,6 +170,7 @@ struct StoreTests {
                 }
             case .insert(let entity):
                 state.items[entity.id] = entity
+                insertedIn.yield()
                 return nil
             default:
                 return nil
@@ -181,9 +183,76 @@ struct StoreTests {
         )
 
         store.send(.noOp)
-        try await Task.sleep(for: .milliseconds(50))
+        // Deterministic: the reducer signals when the follow-up action lands.
+        var signals = inserted.makeAsyncIterator()
+        await signals.next()
 
         #expect(store.items[effectEntity.id] == effectEntity)
+    }
+
+    @Test("re-entrant send is deferred and runs after the current cycle")
+    @MainActor
+    func reentrantSendDefers() {
+        let e1 = TestEntity(name: "Outer")
+        let e2 = TestEntity(name: "Inner")
+
+        let holder = StoreHolder()
+        var resent = false
+        let spy = SpyPlugin<TestState, TestAction>(
+            onWillReduce: {
+                if !resent {
+                    resent = true
+                    holder.store?.send(.insert(e2))
+                }
+            }
+        )
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(spy)
+
+        let store = Store<TestState, TestAction>(
+            initialState: TestState(),
+            reducer: testReducer,
+            plugins: plugins
+        )
+        holder.store = store
+
+        store.send(.insert(e1))
+
+        // The inner send must be deferred, then run as a full cycle — neither
+        // mutation may be lost to a stale-state clobber.
+        #expect(store.items[e1.id] == e1)
+        #expect(store.items[e2.id] == e2)
+    }
+
+    @Test("multiple re-entrant sends run in FIFO order")
+    @MainActor
+    func reentrantSendsAreFIFO() {
+        let id = UUID()
+        let holder = StoreHolder()
+        var resent = false
+        let spy = SpyPlugin<TestState, TestAction>(
+            onWillReduce: {
+                if !resent {
+                    resent = true
+                    holder.store?.send(.rename(id, "first"))
+                    holder.store?.send(.rename(id, "second"))
+                }
+            }
+        )
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(spy)
+
+        let store = Store<TestState, TestAction>(
+            initialState: TestState(),
+            reducer: testReducer,
+            plugins: plugins
+        )
+        holder.store = store
+
+        store.send(.insert(TestEntity(id: id, name: "original")))
+
+        // Deferred renames apply after the insert, in dispatch order.
+        #expect(store.items[id]?.name == "second")
     }
 
     @Test("undo restores previous state")
@@ -277,6 +346,52 @@ struct StoreTests {
         #expect(deletes.contains(entity.id))
     }
 
+    @Test("undo of a delete persists the restored entity, not the deletion")
+    @MainActor
+    func undoOfDeletePersistsRestore() async {
+        let collector = PersistCollector()
+
+        let persistencePlugin = PersistencePlugin<TestState, TestAction>(
+            writers: [
+                StateWriter(keyPath: \.items) { writes, deletes in
+                    await collector.record(writes: writes, deletes: deletes)
+                }
+            ],
+            debounce: .milliseconds(20)
+        )
+
+        let undoPlugin = UndoPlugin<TestState, TestAction>()
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(undoPlugin)
+        plugins.register(persistencePlugin)
+
+        let store = Store<TestState, TestAction>(
+            initialState: TestState(),
+            reducer: testReducer,
+            plugins: plugins,
+            undoPlugin: undoPlugin,
+            persistencePlugin: persistencePlugin,
+            isUndoable: { _ in true }
+        )
+
+        let entity = TestEntity(name: "Keep")
+        store.send(.insert(entity))
+        await persistencePlugin.flush()
+        await collector.reset()
+
+        // Delete drains a pending deletion; the undo re-inserts the entity in
+        // the same flush window. The restore must win — flushing both would
+        // let the delete destroy the row while the entity is live in memory.
+        store.send(.delete(entity.id))
+        store.undo()
+        await persistencePlugin.flush()
+
+        let writes = await collector.writes
+        let deletes = await collector.deletes
+        #expect(writes.contains(entity))
+        #expect(!deletes.contains(entity.id))
+    }
+
     @Test("multiple send calls accumulate state")
     @MainActor
     func multipleSends() {
@@ -329,6 +444,14 @@ struct StoreTests {
         #expect(store.canUndo)
         #expect(!store.canRedo)
     }
+}
+
+// MARK: - Store Holder
+
+/// Lets a plugin closure reference the store that owns it (set after init).
+@MainActor
+private final class StoreHolder {
+    var store: Store<TestState, TestAction>?
 }
 
 // MARK: - Persist Collector

@@ -64,6 +64,7 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 - <doc:KeyValueStoreGuide>
 - <doc:UndoRedo>
 - <doc:GettingStarted>
+- <doc:Troubleshooting>
 
 ### Explanation
 

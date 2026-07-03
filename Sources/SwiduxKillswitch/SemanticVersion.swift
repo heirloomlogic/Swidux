@@ -32,8 +32,25 @@ public struct SemanticVersion: Sendable, Hashable, Comparable {
     }
 
     /// Parses a SemVer string such as `"1.2.3"`, `"1.2.3-beta.1"`,
-    /// or `"1.2.3-beta.1+build42"`. Returns `nil` on malformed input.
+    /// or `"1.2.3-beta.1+build42"`. Returns `nil` on malformed input,
+    /// including version cores with fewer than three components.
     public init?(_ string: String) {
+        self.init(string, padPartialCore: false)
+    }
+
+    /// Leniently parses a locally-sourced version such as
+    /// `CFBundleShortVersionString`, which Apple permits to have one to three
+    /// components: missing components are padded with zero, so `"2"` parses
+    /// as `2.0.0` and `"2.1"` as `2.1.0`. Prerelease and build metadata are
+    /// handled as in the strict parser.
+    ///
+    /// Use the strict ``init(_:)`` for server-authored config versions, which
+    /// should be exact.
+    public init?(tolerant string: String) {
+        self.init(string, padPartialCore: true)
+    }
+
+    private init?(_ string: String, padPartialCore: Bool) {
         guard !string.isEmpty else { return nil }
 
         // Strip build metadata (everything after '+')
@@ -49,8 +66,12 @@ public struct SemanticVersion: Sendable, Hashable, Comparable {
         guard !coreAndPrerelease.isEmpty else { return nil }
         let coreString = String(coreAndPrerelease[0])
 
-        // Parse major.minor.patch
-        let parts = coreString.split(separator: ".")
+        // Parse major.minor.patch — omitting trailing dots is not tolerated,
+        // so "1." stays malformed even in tolerant mode.
+        var parts = coreString.split(separator: ".", omittingEmptySubsequences: false)
+        if padPartialCore, (1...2).contains(parts.count) {
+            parts.append(contentsOf: repeatElement("0", count: 3 - parts.count))
+        }
         guard parts.count == 3,
             let major = Int(parts[0]),
             let minor = Int(parts[1]),

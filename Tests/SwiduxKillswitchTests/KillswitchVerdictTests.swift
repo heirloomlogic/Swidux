@@ -68,6 +68,40 @@ struct KillswitchVerdictTests {
         #expect(verdict == .allowed)
     }
 
+    @Test("two-component marketing version below minimum is blocked")
+    func marketingVersionBelowMinimumBlocked() {
+        // CFBundleShortVersionString may carry 1–3 components; "1.5" must
+        // evaluate (as 1.5.0) instead of failing open and going inert.
+        let config = KillswitchConfig(minimumSupportedVersion: "2.0.0")
+        let verdict = KillswitchVerdict.evaluate(config, against: "1.5")
+        #expect(verdict == .blocked(title: nil, message: nil, updateURL: nil))
+    }
+
+    @Test("two-component marketing version at minimum is allowed")
+    func marketingVersionAtMinimumAllowed() {
+        let config = KillswitchConfig(minimumSupportedVersion: "2.0.0")
+        let verdict = KillswitchVerdict.evaluate(config, against: "2.0")
+        #expect(verdict == .allowed)
+    }
+
+    @Test(
+        "openableUpdateURL honours only safe schemes",
+        arguments: [
+            ("https://example.com/update", true),
+            ("itms-apps://apps.apple.com/app/id1", true),
+            ("macappstore://apps.apple.com/app/id1", true),
+            ("http://example.com/update", false),
+            ("ftp://example.com/update", false),
+            ("someapp://deeplink", false),
+        ]
+    )
+    func openableUpdateURLSchemes(urlString: String, openable: Bool) {
+        let verdict = KillswitchVerdict.blocked(
+            title: nil, message: nil, updateURL: URL(string: urlString)
+        )
+        #expect((verdict.openableUpdateURL != nil) == openable)
+    }
+
     @Test("uses config title and message when blocked")
     func usesConfigTitleAndMessage() {
         let config = KillswitchConfig(

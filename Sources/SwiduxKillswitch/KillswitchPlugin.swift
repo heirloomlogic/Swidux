@@ -83,7 +83,7 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
         guard let localEffect else { return nil }
         let lift = toRootAction
         return { send in
-            await localEffect { localAction in
+            try await localEffect { localAction in
                 send(lift(localAction))
             }
         }
@@ -99,8 +99,11 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             let appVersion = self.appVersion()
             let lastFetch = state.lastFetch
             return { send in
-                if let lastFetch,
-                    Date().timeIntervalSince(lastFetch) < service.cacheLifetime,
+                // A negative age means the wall clock moved backward past the
+                // last fetch; treat the cache as expired rather than letting a
+                // clock change pin this install to a stale verdict.
+                let cacheAge = lastFetch.map { Date().timeIntervalSince($0) }
+                if let cacheAge, cacheAge >= 0, cacheAge < service.cacheLifetime,
                     let cached = service.loadCached()
                 {
                     let verdict = KillswitchVerdict.evaluate(

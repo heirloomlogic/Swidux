@@ -55,7 +55,7 @@ Actions are the plugin's public API. The host app dispatches them by wrapping in
 
 ## Step 3: Define the Service
 
-Inject async dependencies as a struct with closure properties. This makes testing trivial — swap closures instead of subclassing or mocking protocols.
+Inject async dependencies as a struct with closure properties. This makes testing trivial — swap closures instead of subclassing or mocking protocols. (Reach for a protocol instead only when third parties will implement the backend — see the service-shapes principle in <doc:DesignPrinciples>.)
 
 ```swift
 public struct AnnouncementService: Sendable {

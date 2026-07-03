@@ -17,5 +17,8 @@ public enum ParentalGateAction: Sendable {
     /// The challenge was passed for the given reason; reason is added to `passedReasons`.
     case answerAccepted(reason: String)
     /// The submitted answer was wrong; `attempts` increments and a new challenge generates.
+    /// Reaching the plugin's attempt limit starts a cooldown instead.
     case answerRejected
+    /// The cooldown window elapsed; answers are accepted again.
+    case cooldownExpired
 }

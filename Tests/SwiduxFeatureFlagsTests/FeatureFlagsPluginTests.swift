@@ -52,7 +52,7 @@ struct FeatureFlagsPluginTests {
     // MARK: - .refresh
 
     @Test(".refresh hits the service and dispatches refreshSucceeded")
-    func refreshSuccess() async {
+    func refreshSuccess() async throws {
         let config = FeatureFlagsConfig(version: 1, flags: ["f": .boolean(rollout: 50)])
         let service = MockFeatureFlagsService(outcome: .success(config))
         let plugin = makePlugin(service: service)
@@ -62,7 +62,7 @@ struct FeatureFlagsPluginTests {
         #expect(state.featureFlags.isFetching)
 
         var dispatched: [TestAction] = []
-        await effect?({ action in dispatched.append(action) })
+        try await effect?({ action in dispatched.append(action) })
 
         #expect(service.fetchCount == 1)
         #expect(dispatched.count == 1)
@@ -74,14 +74,14 @@ struct FeatureFlagsPluginTests {
     }
 
     @Test(".refresh dispatches refreshFailed on service error")
-    func refreshFailure() async {
+    func refreshFailure() async throws {
         let service = MockFeatureFlagsService(outcome: .failure(URLError(.notConnectedToInternet)))
         let plugin = makePlugin(service: service)
         var state = TestState()
 
         let effect = plugin.reduce(state: &state, action: .featureFlags(.refresh))
         var dispatched: [TestAction] = []
-        await effect?({ action in dispatched.append(action) })
+        try await effect?({ action in dispatched.append(action) })
 
         #expect(dispatched.count == 1)
         guard case .featureFlags(.refreshFailed) = dispatched[0] else {
@@ -122,27 +122,42 @@ struct FeatureFlagsPluginTests {
     }
 
     @Test("automatic policy debounces refresh inside minInterval")
-    func automaticDebounce() async {
+    func automaticDebounce() async throws {
         let service = MockFeatureFlagsService(outcome: .success(.empty))
         let plugin = makePlugin(service: service, refreshPolicy: .automatic(minInterval: 300))
         var state = TestState()
         state.featureFlags.lastFetchedAt = Date()
 
         let effect = plugin.reduce(state: &state, action: .featureFlags(.refresh))
-        await effect?({ _ in })
+        try await effect?({ _ in })
 
         #expect(service.fetchCount == 0)
     }
 
+    @Test("automatic policy refreshes when lastFetchedAt is in the future (clock skew)")
+    func automaticRefreshesOnClockSkew() async throws {
+        let service = MockFeatureFlagsService(outcome: .success(.empty))
+        let plugin = makePlugin(service: service, refreshPolicy: .automatic(minInterval: 300))
+        var state = TestState()
+        // A wall clock rolled backward leaves lastFetchedAt in the future;
+        // that must count as expired, not starve refreshes for the skew.
+        state.featureFlags.lastFetchedAt = Date(timeIntervalSinceNow: 3600)
+
+        let effect = plugin.reduce(state: &state, action: .featureFlags(.refresh))
+        try await effect?({ _ in })
+
+        #expect(service.fetchCount == 1)
+    }
+
     @Test("manual policy never debounces")
-    func manualNeverDebounces() async {
+    func manualNeverDebounces() async throws {
         let service = MockFeatureFlagsService(outcome: .success(.empty))
         let plugin = makePlugin(service: service, refreshPolicy: .manual)
         var state = TestState()
         state.featureFlags.lastFetchedAt = Date()
 
         let effect = plugin.reduce(state: &state, action: .featureFlags(.refresh))
-        await effect?({ _ in })
+        try await effect?({ _ in })
 
         #expect(service.fetchCount == 1)
     }
@@ -187,7 +202,7 @@ struct FeatureFlagsPluginTests {
     // MARK: - Exposure
 
     @Test("recordExposure inserts key and fires onExposure once")
-    func recordExposureFiresOnce() async {
+    func recordExposureFiresOnce() async throws {
         let counter = ExposureCounter()
         let plugin = makePlugin(onExposure: { key, value in
             Task { @MainActor in counter.record(key: key, value: value) }
@@ -199,14 +214,14 @@ struct FeatureFlagsPluginTests {
         )
 
         let effect1 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
-        await effect1?({ _ in })
+        try await effect1?({ _ in })
         await Task.yield()
 
         #expect(state.featureFlags.exposedKeys.contains("k"))
         #expect(counter.count == 1)
 
         let effect2 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
-        await effect2?({ _ in })
+        try await effect2?({ _ in })
         await Task.yield()
 
         #expect(counter.count == 1)
@@ -248,7 +263,7 @@ struct FeatureFlagsPluginTests {
     }
 
     @Test("exposure records bucket by the same identity as default reads")
-    func exposureUsesResolvedIdentity() async {
+    func exposureUsesResolvedIdentity() async throws {
         let counter = ExposureCounter()
         let plugin = makePlugin(
             userIDKeyPath: \.userID,
@@ -265,7 +280,7 @@ struct FeatureFlagsPluginTests {
         plugin.afterReduce(state: &state, action: .unrelated)
 
         let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
-        await effect?({ _ in })
+        try await effect?({ _ in })
         await Task.yield()
 
         let expected = Bucketing.bucket(id: "user-1", flagKey: "k") < 50
@@ -273,7 +288,7 @@ struct FeatureFlagsPluginTests {
     }
 
     @Test("recordExposure with a programmatically-built empty variant set does not trap")
-    func recordExposureEmptyVariants() async {
+    func recordExposureEmptyVariants() async throws {
         let counter = ExposureCounter()
         let plugin = makePlugin(onExposure: { key, value in
             Task { @MainActor in counter.record(key: key, value: value) }
@@ -286,14 +301,14 @@ struct FeatureFlagsPluginTests {
         )
 
         let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
-        await effect?({ _ in })
+        try await effect?({ _ in })
         await Task.yield()
 
         #expect(counter.count == 0)
     }
 
     @Test("recordExposure for unknown key does not fire callback")
-    func recordExposureUnknownKey() async {
+    func recordExposureUnknownKey() async throws {
         let counter = ExposureCounter()
         let plugin = makePlugin(onExposure: { key, value in
             Task { @MainActor in counter.record(key: key, value: value) }
@@ -304,7 +319,7 @@ struct FeatureFlagsPluginTests {
             state: &state,
             action: .featureFlags(.recordExposure(key: "nope"))
         )
-        await effect?({ _ in })
+        try await effect?({ _ in })
         await Task.yield()
 
         #expect(counter.count == 0)

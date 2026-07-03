@@ -7,6 +7,8 @@ enum SwiduxDiagnostic: String, DiagnosticMessage {
     case mirrorRequiresDefault
     case relationRequiresOptional
     case inlineRequiresDefault
+    case requiresTypeAnnotation
+    case singleBindingPerDeclaration
 
     var severity: DiagnosticSeverity { .error }
 
@@ -27,6 +29,12 @@ enum SwiduxDiagnostic: String, DiagnosticMessage {
         case .inlineRequiresDefault:
             return
                 "Non-optional @Inline properties must provide a default value (= …) or be optional, so a missing or undecodable blob can be recovered instead of crashing"
+        case .requiresTypeAnnotation:
+            return
+                "Stored properties need an explicit type annotation (var name: Type = …); a property with an inferred type is invisible to the macro, so its value would silently reset instead of being observed/persisted"
+        case .singleBindingPerDeclaration:
+            return
+                "Declare each stored property separately (var a: Int; var b: Int); only the first binding of a combined declaration is visible to the macro, so the rest would silently reset instead of being observed/persisted"
         }
     }
 

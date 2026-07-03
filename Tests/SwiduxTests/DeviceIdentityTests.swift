@@ -51,4 +51,41 @@ struct DeviceIdentityTests {
         #expect(store.value(custom) == id)
         #expect(store.value(.deviceID) == nil)
     }
+
+    @Test("the persisted value is authoritative when a concurrent racer wins")
+    func persistedValueIsAuthoritative() {
+        // Simulates losing a first-mint race: this caller's write is
+        // overwritten by a racer's before the re-read. The returned identity
+        // must be the persisted (winning) one, not the local mint.
+        let store = RacingKeyValueStore(winner: "racer-id")
+        let id = store.deviceIdentity()
+        #expect(id == "racer-id")
+    }
+}
+
+/// A store whose reads return a fixed winner once anything has been written —
+/// as if a concurrent first-caller's write landed after ours.
+private final class RacingKeyValueStore: KeyValueStore, @unchecked Sendable {
+    private let winner: String
+    private var hasWritten = false
+
+    init(winner: String) {
+        self.winner = winner
+    }
+
+    func value<Value>(_ key: KVKey<Value>) -> Value? {
+        hasWritten ? winner as? Value : nil
+    }
+
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) {
+        hasWritten = true
+    }
+
+    func removeValue<Value>(for key: KVKey<Value>) {
+        hasWritten = false
+    }
+
+    func contains<Value>(_ key: KVKey<Value>) -> Bool {
+        hasWritten
+    }
 }
