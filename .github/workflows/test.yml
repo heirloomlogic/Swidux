@@ -42,6 +42,12 @@ jobs:
   # Debug-only: the Release regression net already runs on macOS.
   test-ios:
     runs-on: macos-26
+    env:
+      # The image's default Xcode (26.5) mislinks host-built macro objects
+      # into iOS test bundles ("building for 'iOS-simulator', but linking in
+      # object file (SwiduxMacros.o) built for 'macOS'"). Use the newest
+      # installed Xcode instead.
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
