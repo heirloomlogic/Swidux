@@ -204,6 +204,11 @@ public nonisolated struct EntityStore<
     ///     the second is the incoming entity from `other`. Return `true` to
     ///     replace the current value with the incoming one.
     ///
+    /// An ID that is absent from `self` only because it has a pending *local*
+    /// deletion (still in `changes.deletions`, not yet flushed to disk) is **not**
+    /// re-added: a "refresh from disk" that races an unflushed delete must not
+    /// resurrect the entity. The pending deletion is preserved so it still flushes.
+    ///
     /// Does **not** record changes — this is a hydration operation.
     public mutating func merge(
         from other: EntityStore,
@@ -215,11 +220,12 @@ public nonisolated struct EntityStore<
                     entities[index] = entity
                 }
                 // else: keep self's current value
-            } else {
-                // Entity only in other — add it
+            } else if !changes.deletions.contains(entity.id) {
+                // Entity only in other, and not pending local deletion — add it.
                 positions[entity.id] = entities.count
                 entities.append(entity)
             }
+            // else: locally deleted but not yet flushed — do not resurrect.
         }
     }
 

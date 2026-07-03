@@ -298,6 +298,28 @@ struct EntityStoreTests {
         #expect(store[b.id] != nil)
     }
 
+    @Test("Merge does not resurrect an entity with a pending local deletion")
+    func mergeDoesNotResurrectPendingDeletion() {
+        let a = TestEntity(name: "A")
+        let doomed = TestEntity(name: "Doomed")
+
+        // Both exist on disk; the user deletes `doomed` in memory but the delete
+        // has not flushed yet (still in `changes.deletions`).
+        var store = EntityStore([a, doomed])
+        store.resetChanges()
+        store[doomed.id] = nil
+        #expect(store.changes.deletions.contains(doomed.id))
+
+        // A remote-change refresh fetches the still-present disk rows and merges.
+        let disk = EntityStore([a, doomed])
+        store.merge(from: disk) { _, _ in false }
+
+        // The delete must survive — no zombie, and the deletion still pending.
+        #expect(store[doomed.id] == nil)
+        #expect(store.count == 1)
+        #expect(store.changes.deletions.contains(doomed.id))
+    }
+
     // MARK: - Restore (Undo/Redo)
 
     @Test("Restore records upserts for changed entities")
