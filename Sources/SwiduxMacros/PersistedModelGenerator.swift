@@ -12,8 +12,10 @@ func generatePersistedModelClass(
     let modelName = "\(structName)Model"
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
 
-    let memberLines = properties.compactMap { modelMemberLines(for: $0, accessPrefix: accessPrefix) }
-        .joined(separator: "\n")
+    let memberLines = properties.compactMap {
+        modelMemberLines(for: $0, accessPrefix: accessPrefix, modelName: modelName)
+    }
+    .joined(separator: "\n")
     // Shared codec for @Inline blob columns, allocated once per model type
     // rather than on every property access.
     let hasInline = properties.contains { if case .inlineBlob = $0.kind { true } else { false } }
@@ -134,7 +136,11 @@ private func relationshipAttribute(deleteRule: String?, inverse: String?) -> Str
     return parts.isEmpty ? "@Relationship" : "@Relationship(\(parts.joined(separator: ", ")))"
 }
 
-private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String) -> String? {
+private func modelMemberLines(
+    for prop: PersistedProperty,
+    accessPrefix: String,
+    modelName: String
+) -> String? {
     let type = prop.typeSyntax.trimmedDescription
     switch prop.kind {
     case .mirror:
@@ -164,7 +170,11 @@ private func modelMemberLines(for prop: PersistedProperty, accessPrefix: String)
                     }
                 """
         }
-        let getter = "(try? Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)) ?? \(fallback)"
+        // Decode through SwiduxInlineCodec so an undecodable blob (schema
+        // drift, corruption) logs before falling back — a silent `try?` here
+        // would let the next save overwrite the old payload with the default.
+        let getter =
+            "SwiduxInlineCodec.decode(\(type).self, from: \(prop.name)Data, decoder: Self.swiduxInlineDecoder, model: \"\(modelName)\", property: \"\(prop.name)\") ?? \(fallback)"
         return """
                 private var \(prop.name)Data: Data = Data()
                 \(accessPrefix)var \(prop.name): \(type) {

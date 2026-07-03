@@ -107,7 +107,7 @@ final class PersistedMacroTests: XCTestCase {
                     private var settingsData: Data = Data()
                     public var settings: Settings {
                         get {
-                            (try? Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)) ?? Settings()
+                            SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
                         }
                         set {
                             settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
@@ -371,7 +371,7 @@ final class PersistedMacroTests: XCTestCase {
                     private var metaData: Data = Data()
                     var meta: Meta? {
                         get {
-                            (try? Self.swiduxInlineDecoder.decode(Meta?.self, from: metaData)) ?? nil
+                            SwiduxInlineCodec.decode(Meta?.self, from: metaData, decoder: Self.swiduxInlineDecoder, model: "DocModel", property: "meta") ?? nil
                         }
                         set {
                             metaData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
@@ -426,6 +426,66 @@ final class PersistedMacroTests: XCTestCase {
                 """,
             diagnostics: [
                 DiagnosticSpec(message: "@Persisted can only be applied to structs", line: 1, column: 1)
+            ],
+            macros: macros
+        )
+    }
+
+    func testInferredTypeIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Note: Identifiable, Equatable, Sendable {
+                var id: UUID
+                let pinned = false
+            }
+            """,
+            expandedSource: """
+                struct Note: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    let pinned = false
+                }
+
+                @Model
+                final class NoteModel: PersistableModel {
+                    typealias Domain = Note
+
+                    var id: UUID = UUID()
+
+                    init(from domain: Note) {
+                        self.id = domain.id
+                    }
+
+                    func toDomain() -> Note {
+                        Note(
+                            id: id
+                        )
+                    }
+
+                    func update(from domain: Note) {
+
+                    }
+
+                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<NoteModel> {
+                        var descriptor = FetchDescriptor<NoteModel>(predicate: #Predicate {
+                                $0.id == id
+                            })
+                        descriptor.fetchLimit = 1
+                        return descriptor
+                    }
+                }
+
+                extension Note: PersistableEntity {
+                    typealias Model = NoteModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Stored properties need an explicit type annotation (var name: Type = …); a property with an inferred type is invisible to the macro, so its value would silently reset instead of being observed/persisted",
+                    line: 4,
+                    column: 9
+                )
             ],
             macros: macros
         )

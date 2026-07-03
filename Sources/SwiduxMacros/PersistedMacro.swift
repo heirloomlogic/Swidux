@@ -18,6 +18,7 @@ extension PersistedMacro: PeerMacro {
             return []
         }
 
+        diagnoseSkippedStoredProperties(of: structDecl, includesLetBindings: true, in: context)
         let properties = classifyPersistedProperties(of: structDecl)
 
         // `@Ignored` fields must be reconstructable as `nil` in `toDomain()`.

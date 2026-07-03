@@ -426,6 +426,189 @@ final class SwiduxMacroTests: XCTestCase {
         )
     }
 
+    func testInferredTypeEmitsDiagnostic() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct SkippedState: Equatable, Sendable {
+                var count: Int = 0
+                var flag = false
+            }
+            """,
+            expandedSource: """
+                struct SkippedState: Equatable, Sendable {
+                    var count: Int = 0
+                    var flag = false
+                }
+
+                @Observable
+                @MainActor
+                final class SkippedStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension SkippedState: SwiduxObservable {
+                    typealias Observer = SkippedStateObserver
+
+                    @MainActor
+                    init(observer: SkippedStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: SkippedState) -> SkippedStateObserver {
+                        SkippedStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: SkippedState, to observer: SkippedStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: SkippedState, to current: inout SkippedState) {
+                        current.count = snapshot.count
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Stored properties need an explicit type annotation (var name: Type = …); a property with an inferred type is invisible to the macro, so its value would silently reset instead of being observed/persisted",
+                    line: 4,
+                    column: 9
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    func testMultipleBindingsEmitDiagnostic() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct CombinedState: Equatable, Sendable {
+                var count: Int = 0
+                var a, b: Int
+            }
+            """,
+            expandedSource: """
+                struct CombinedState: Equatable, Sendable {
+                    var count: Int = 0
+                    var a, b: Int
+                }
+
+                @Observable
+                @MainActor
+                final class CombinedStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension CombinedState: SwiduxObservable {
+                    typealias Observer = CombinedStateObserver
+
+                    @MainActor
+                    init(observer: CombinedStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: CombinedState) -> CombinedStateObserver {
+                        CombinedStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: CombinedState, to observer: CombinedStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: CombinedState, to current: inout CombinedState) {
+                        current.count = snapshot.count
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Declare each stored property separately (var a: Int; var b: Int); only the first binding of a combined declaration is visible to the macro, so the rest would silently reset instead of being observed/persisted",
+                    line: 4,
+                    column: 5
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    func testComputedAndStaticPropertiesAreNotDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct QuietState: Equatable, Sendable {
+                var count: Int = 0
+                static let shared = QuietState()
+                var doubled: Int { count * 2 }
+            }
+            """,
+            expandedSource: """
+                struct QuietState: Equatable, Sendable {
+                    var count: Int = 0
+                    static let shared = QuietState()
+                    var doubled: Int { count * 2 }
+                }
+
+                @Observable
+                @MainActor
+                final class QuietStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension QuietState: SwiduxObservable {
+                    typealias Observer = QuietStateObserver
+
+                    @MainActor
+                    init(observer: QuietStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: QuietState) -> QuietStateObserver {
+                        QuietStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: QuietState, to observer: QuietStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: QuietState, to current: inout QuietState) {
+                        current.count = snapshot.count
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
     // MARK: Edge Cases
 
     func testPropertyWithNoDefault() throws {
