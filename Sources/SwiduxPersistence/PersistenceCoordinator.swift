@@ -102,9 +102,16 @@ public final class PersistenceCoordinator<State, Action> {
     /// > live UI edits; per-ID dirty tracking that relaxes this is a possible
     /// > future refinement.
     ///
+    /// Pending writes and deletions are flushed to disk *before* the merge, so a
+    /// remote-change refresh that fires during the debounce window can't read a
+    /// stale disk row for an entity the user just edited or deleted and resurrect
+    /// it. This mirrors `SyncCoordinator.setSyncEnabled`'s flush-first discipline
+    /// and makes every `rehydrate` caller safe by construction.
+    ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// and the failure is reported via `onFailure`.
     public func rehydrate(into state: inout State) async {
+        await corePlugin.flush()
         for entity in entities {
             await entity.mergeRemote(handle, &state, onFailure)
         }

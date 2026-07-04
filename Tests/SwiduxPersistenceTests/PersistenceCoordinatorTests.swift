@@ -15,12 +15,14 @@ import Testing
 @Suite("PersistenceCoordinator hydration")
 @MainActor
 struct PersistenceCoordinatorTests {
-    private func makeCoordinator() throws -> PersistenceCoordinator<NotesState, Never> {
+    private func makeCoordinator(
+        debounce: Duration = .milliseconds(10)
+    ) throws -> PersistenceCoordinator<NotesState, Never> {
         let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
         return PersistenceCoordinator<NotesState, Never>(
             entities: [.entity(\.notes)],
             container: container,
-            debounce: .milliseconds(10)
+            debounce: debounce
         )
     }
 
@@ -78,5 +80,36 @@ struct PersistenceCoordinatorTests {
         await coordinator.rehydrate(into: &state)
 
         #expect(state.notes[live.id] == live)
+    }
+
+    @Test("rehydrate flushes first, so an unflushed local delete is not resurrected")
+    func rehydrateDoesNotResurrectUnflushedDelete() async throws {
+        // Large debounce so the scheduled flush never fires on its own during the
+        // test — the pending delete stays buffered until rehydrate flushes it.
+        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let keep = UUID()
+        let doomed = UUID()
+        var state = NotesState()
+
+        // Persist two notes through the plugin pipeline.
+        state.notes[keep] = Note(id: keep, title: "keep", pinned: false)
+        state.notes[doomed] = Note(id: doomed, title: "doomed", pinned: false)
+        coordinator.corePlugin.drainAndScheduleFlush(&state)
+        await coordinator.corePlugin.flush()
+
+        // Delete one in memory and drain — now buffered but NOT flushed to disk.
+        state.notes[doomed] = nil
+        coordinator.corePlugin.drainAndScheduleFlush(&state)
+        #expect(state.notes[doomed] == nil)
+
+        // A remote-change refresh arrives mid-window. rehydrate must flush the
+        // pending delete first, so the merge can't read the stale disk row.
+        await coordinator.rehydrate(into: &state)
+
+        #expect(state.notes[doomed] == nil)  // no zombie in memory
+        #expect(state.notes.count == 1)
+        let onDisk = try await coordinator.database.fetchAll(NoteModel.self)
+        #expect(onDisk.count == 1)  // and gone from disk
+        #expect(onDisk.first?.id == keep)
     }
 }
