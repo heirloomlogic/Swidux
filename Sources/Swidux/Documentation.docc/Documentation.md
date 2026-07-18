@@ -46,6 +46,7 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 - <doc:HowToAddAParentalGate>
 - <doc:HowToAddAnalytics>
 - <doc:HowToAddFeatureFlags>
+- <doc:HowToCancelEffects>
 - <doc:HowToAddPersistence>
 - <doc:HowToAddICloudSync>
 - <doc:BuildingADomainPlugin>
@@ -80,6 +81,8 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 - ``SwiduxDispatcher``
 - ``Effect``
 - ``Send``
+- ``cancellable(id:cancelInFlight:_:)``
+- ``cancel(id:)``
 
 ### Data
 

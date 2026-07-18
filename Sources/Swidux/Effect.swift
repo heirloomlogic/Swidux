@@ -27,4 +27,9 @@ public typealias Send<Action> = @MainActor @Sendable (Action) -> Void
 ///     await send(.dataLoaded(result))
 /// }
 /// ```
+///
+/// To cancel a specific effect early — rather than all of them via
+/// `Store.cancelEffects()` — tag it with ``cancellable(id:cancelInFlight:_:)``
+/// and stop it with ``cancel(id:)`` or `Store.cancel(id:)`. See
+/// <doc:HowToCancelEffects>.
 public typealias Effect<Action> = @Sendable (@escaping Send<Action>) async throws -> Void
