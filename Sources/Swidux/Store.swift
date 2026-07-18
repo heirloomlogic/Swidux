@@ -76,10 +76,13 @@ public final class Store<State: SwiduxObservable, Action> {
 
     // MARK: - Effect Lifecycle
 
-    /// In-flight effect tasks. Each removes itself on completion; all are
-    /// cancelled by `cancelEffects()` and on deinit.
+    /// In-flight effect tasks, keyed by an internal UUID. Each entry carries an
+    /// optional caller-supplied cancellation id (see
+    /// ``cancellable(id:cancelInFlight:_:)``). Entries remove themselves on
+    /// completion via `effectFinished`; all are cancelled by `cancelEffects()`
+    /// and on deinit.
     @ObservationIgnored
-    private var effectTasks: [UUID: Task<Void, Never>] = [:]
+    private var effectTasks: [UUID: EffectHandle] = [:]
 
     /// Whether any effects are still in flight. Test hook.
     var hasInFlightEffects: Bool { !effectTasks.isEmpty }
@@ -170,16 +173,21 @@ public final class Store<State: SwiduxObservable, Action> {
             // `send` is synchronous on the MainActor, so the task is registered
             // before the completion hop below can possibly run.
             let id = UUID()
-            effectTasks[id] = Task { @concurrent [weak self] in
-                do {
-                    try await eff(send)
-                } catch is CancellationError {
-                    // Expected on teardown / cancelEffects() — not an error.
-                } catch {
-                    effectLogger.error("Unhandled effect error: \(String(describing: error))")
+            // Weak `registrar`, so binding the context does not retain the store.
+            let context = EffectContext(registrar: self, taskID: id)
+            let task = Task { @concurrent [weak self] in
+                await EffectContext.$current.withValue(context) {
+                    do {
+                        try await eff(send)
+                    } catch is CancellationError {
+                        // Expected on teardown / cancelEffects() / cancel(id:) — not an error.
+                    } catch {
+                        effectLogger.error("Unhandled effect error: \(String(describing: error))")
+                    }
                 }
                 await self?.effectFinished(id)
             }
+            effectTasks[id] = EffectHandle(task: task)
         }
     }
 
@@ -193,12 +201,22 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Called automatically when the store deinitializes; call it directly to
     /// tear down long-lived effects earlier (for example on scene teardown).
     public func cancelEffects() {
-        for task in effectTasks.values { task.cancel() }
+        for handle in effectTasks.values { handle.task.cancel() }
         effectTasks.removeAll()
     }
 
+    /// Cancels every in-flight effect tagged with `id` via
+    /// ``cancellable(id:cancelInFlight:_:)``.
+    ///
+    /// Safe to call from view or scene lifecycle code (e.g. `.onDisappear`);
+    /// ids with nothing running are ignored. To cancel from *inside* a reducer,
+    /// return the ``cancel(id:)`` effect instead.
+    public func cancel(id: some Hashable & Sendable) {
+        cancelCancellable(id: AnyHashableSendable(id))
+    }
+
     deinit {
-        for task in effectTasks.values { task.cancel() }
+        for handle in effectTasks.values { handle.task.cancel() }
     }
 
     // MARK: - Undo / Redo
@@ -243,3 +261,27 @@ public final class Store<State: SwiduxObservable, Action> {
 }
 
 extension Store: @MainActor SwiduxDispatcher {}
+
+// MARK: - Effect Cancellation Registry
+
+/// A running effect task plus its optional caller-supplied cancellation id.
+private struct EffectHandle {
+    let task: Task<Void, Never>
+    var cancelID: AnyHashableSendable?
+}
+
+extension Store: EffectCancellationRegistrar {
+    func register(_ taskID: UUID, id: AnyHashableSendable, cancelInFlight: Bool) {
+        // The new task is still untagged, so cancelling `id` here can't hit it.
+        if cancelInFlight { cancelCancellable(id: id) }
+        effectTasks[taskID]?.cancelID = id
+    }
+
+    func cancelCancellable(id: AnyHashableSendable) {
+        // Cancelled tasks remove themselves from `effectTasks` via their own
+        // completion hop (`effectFinished`).
+        for handle in effectTasks.values where handle.cancelID == id {
+            handle.task.cancel()
+        }
+    }
+}
