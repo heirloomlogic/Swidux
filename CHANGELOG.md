@@ -50,6 +50,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `SimulatedPaywallService` logs a fault at init in Release builds as an App
   Store submission tripwire.
 
+### Security
+- Killswitch and feature-flags remote fetches now stream the response body and
+  abort the transfer the moment it exceeds the 1 MB cap (a declared
+  `Content-Length` above the cap is rejected before reading), instead of
+  buffering the whole payload in memory first.
+- `ConsoleAnalyticsService` logs a fault at init in Release builds — it logs
+  analytics identity and properties publicly to the unified log — as an App
+  Store submission tripwire, mirroring `SimulatedPaywallService`.
+- CI workflows: `GITHUB_TOKEN` permissions reduced to `contents: read`
+  (`contents: write` scoped to the documentation deploy job only) and all
+  third-party actions pinned to full commit SHAs.
+
 ## [1.6.0] — 2026-06-30
 - Add `ResilientPaywallService`, a last-known-good entitlement decorator so a
   transient entitlement-read failure never presents a paid user as free (#41).

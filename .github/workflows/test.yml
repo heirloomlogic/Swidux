@@ -8,12 +8,15 @@ on:
     branches:
       - "**"
 
+permissions:
+  contents: read
+
 jobs:
   test-macos:
     runs-on: macos-26
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Test (Debug, with coverage)
         run: swift test --enable-code-coverage
@@ -49,7 +52,7 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # -skipMacroValidation: SwiduxMacros is a compiler plugin and xcodebuild
       # otherwise blocks on the interactive fingerprint-trust prompt.
@@ -65,7 +68,7 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Build Examples/Counter (macOS)
         run: |
