@@ -33,6 +33,7 @@ which pairs a backing-store name with its `Codable` value type at compile time.
 | Collection of identifiable entities (decks, cards, sessions) | ``EntityStore`` + ``PersistencePlugin`` |
 | Scalar preference (theme, sort order, last-seen version) | ``KeyValueStore`` (UserDefaults) |
 | Anonymous device identity that must survive reinstall | ``KeyValueStore`` (Keychain) |
+| Last-known-good entitlement cache (offline pro gate) | ``KeyValueStore`` (Keychain) — backs `ResilientPaywallService` |
 
 `EntityStore` is for many-of-a-kind data with change tracking and batched
 writes. `KeyValueStore` is for one-of-a-kind values that you read once at
@@ -46,10 +47,18 @@ startup and overwrite on change.
 | Backup / device migration | Included | Excluded with default accessibility |
 | Throughput | Fast (in-memory cache) | Slower (system call) |
 | Visible to other apps? | No (per app/group) | Optionally (App Groups via `accessGroup:`) |
-| Best for | Theme, sort order, feature toggles, last-seen version | Anonymous device ID, opaque tokens |
+| Best for | Theme, sort order, feature toggles, last-seen version | Anonymous device ID, opaque tokens, last-known-good entitlement |
 
 The Keychain costs more per access — hydrate once at launch and observe state
 afterward, never read inside a reducer.
+
+Prefer the Keychain for anything a user could gain by forging it. A
+last-known-good entitlement cache is the clearest case: it grants pro offline,
+so a `UserDefaults` plist (editable directly or via a doctored-backup restore)
+lets a spoofed value unlock the app. `SwiduxPaywall`'s `ResilientPaywallService`
+persists that cache through an injected `KeyValueStore` and takes a
+`migratingFrom:` store so an app can move an existing cache from `UserDefaults`
+to the Keychain once, at face value.
 
 ### macOS sandbox & entitlements
 

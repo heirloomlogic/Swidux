@@ -139,6 +139,21 @@ let paywallPlugin = PaywallPlugin<AppState, AppAction>(
 plugins.register(paywallPlugin)
 ```
 
+> Tip: In production, wrap the service in `ResilientPaywallService` so a
+> transient entitlement-read failure at cold launch never gates a paid user as
+> free. Back its cache with `KeychainKeyValueStore` (not `UserDefaults`, whose
+> plist a user can edit to spoof entitlements):
+>
+> ```swift
+> service: ResilientPaywallService(
+>     base: RevenueCatPaywallService(),
+>     store: KeychainKeyValueStore(service: "com.example.myapp")
+> )
+> ```
+>
+> See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the
+> staleness policy, threat model, and `migratingFrom:` cache migration.
+
 ## Step 5: Observe customer info on launch
 
 Start the long-lived entitlement stream once, on the root view:
