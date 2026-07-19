@@ -71,7 +71,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<CounterModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<CounterModel> {
                         FetchDescriptor<CounterModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -152,7 +152,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel>? {
+                    public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
                         FetchDescriptor<ProfileModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -225,7 +225,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel> {
                         FetchDescriptor<DeckModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -289,7 +289,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel> {
                         FetchDescriptor<PetModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -364,7 +364,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel> {
                         FetchDescriptor<PetModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -436,7 +436,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DocModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DocModel> {
                         FetchDescriptor<DocModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -514,7 +514,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<NoteModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<NoteModel> {
                         FetchDescriptor<NoteModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -581,7 +581,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<FooModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<FooModel> {
                         FetchDescriptor<FooModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -654,7 +654,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<CounterModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<CounterModel> {
                         FetchDescriptor<CounterModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -716,7 +716,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PersonModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PersonModel> {
                         FetchDescriptor<PersonModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -779,7 +779,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<TaskModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<TaskModel> {
                         FetchDescriptor<TaskModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
@@ -865,7 +865,7 @@ final class PersistedMacroTests: XCTestCase {
                         return descriptor
                     }
 
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel>? {
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
                         FetchDescriptor<ProfileModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })

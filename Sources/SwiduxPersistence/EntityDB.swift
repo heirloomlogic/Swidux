@@ -47,8 +47,7 @@ public actor EntityDB {
     /// All touched rows are fetched up front in chunks of
     /// ``batchFetchChunkSize`` via the model's generated
     /// `swiduxBatchFetchDescriptor(ids:)` — one round trip per chunk instead
-    /// of one per row. Hand-written conformances without a batch descriptor
-    /// fall back to per-ID fetches.
+    /// of one per row.
     ///
     /// On failure the context is rolled back before rethrowing, leaving no
     /// half-applied changes behind for a later save to pick up.
@@ -59,37 +58,22 @@ public actor EntityDB {
     ) throws {
         do {
             let touchedIDs = Set(writes.map(\.id)).union(deletions)
-            if var existingByID = try fetchByIDs(touchedIDs, as: M.self) {
-                for domain in writes {
-                    if let existing = existingByID[domain.id] {
-                        existing.update(from: domain)
-                    } else {
-                        let inserted = M(from: domain)
-                        modelContext.insert(inserted)
-                        // Keep the map faithful to context state: a later
-                        // deletion of the same ID must see the pending row,
-                        // exactly as a per-ID fetch would.
-                        existingByID[domain.id] = inserted
-                    }
+            var existingByID = try fetchByIDs(touchedIDs, as: M.self)
+            for domain in writes {
+                if let existing = existingByID[domain.id] {
+                    existing.update(from: domain)
+                } else {
+                    let inserted = M(from: domain)
+                    modelContext.insert(inserted)
+                    // Keep the map faithful to context state: a later
+                    // deletion of the same ID must see the pending row,
+                    // exactly as a per-ID fetch would.
+                    existingByID[domain.id] = inserted
                 }
-                for id in deletions {
-                    if let existing = existingByID[id] {
-                        modelContext.delete(existing)
-                    }
-                }
-            } else {
-                // No generated batch descriptor — per-ID fallback.
-                for domain in writes {
-                    if let existing = try fetchByID(domain.id, as: M.self) {
-                        existing.update(from: domain)
-                    } else {
-                        modelContext.insert(M(from: domain))
-                    }
-                }
-                for id in deletions {
-                    if let existing = try fetchByID(id, as: M.self) {
-                        modelContext.delete(existing)
-                    }
+            }
+            for id in deletions {
+                if let existing = existingByID[id] {
+                    modelContext.delete(existing)
                 }
             }
             try modelContext.save()
@@ -116,21 +100,17 @@ public actor EntityDB {
 
     /// Fetches every existing row whose ID is in `ids`, keyed by ID, in
     /// chunks of ``batchFetchChunkSize``.
-    ///
-    /// Returns `nil` when the model has no generated batch descriptor
-    /// (a hand-written conformance) — callers fall back to per-ID fetches.
     private func fetchByIDs<M: PersistableModel>(
         _ ids: Set<UUID>,
         as type: M.Type
-    ) throws -> [UUID: M]? {
+    ) throws -> [UUID: M] {
         var byID: [UUID: M] = [:]
         let allIDs = Array(ids)
         var start = 0
         while start < allIDs.count {
             let chunk = Array(allIDs[start..<min(start + Self.batchFetchChunkSize, allIDs.count)])
             // Per-model descriptor, not a generic `#Predicate` — see `swiduxBatchFetchDescriptor`.
-            guard let descriptor = M.swiduxBatchFetchDescriptor(ids: chunk) else { return nil }
-            for model in try modelContext.fetch(descriptor) {
+            for model in try modelContext.fetch(M.swiduxBatchFetchDescriptor(ids: chunk)) {
                 byID[model.id] = model
             }
             start += Self.batchFetchChunkSize

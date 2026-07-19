@@ -52,16 +52,6 @@ public protocol PersistableModel: PersistentModel {
     ///
     /// Generated per-model for the same `-O` reason as
     /// ``swiduxFetchDescriptor(id:)`` — the `#Predicate` must bind the concrete
-    /// stored attribute. The requirement is optional (defaulted to `nil`) so
-    /// hand-written conformances predating it keep compiling; callers such as
-    /// `EntityDB.apply` fall back to per-ID fetches when it returns `nil`.
-    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>?
-}
-
-extension PersistableModel {
-    /// Default for conformances without a generated batch descriptor: `nil`
-    /// signals "no batched fetch available; use per-ID fetches".
-    public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>? {
-        nil
-    }
+    /// stored attribute.
+    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>
 }
