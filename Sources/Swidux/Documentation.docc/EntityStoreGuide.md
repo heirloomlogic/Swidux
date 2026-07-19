@@ -22,6 +22,15 @@ cards.removeAll { $0.isArchived }          // Rebuilds index in one pass
 
 Every mutation is tracked in a ``ChangeSet`` that the middleware drains after each reducer call.
 
+## Bulk Deletion
+
+Each `cards[id] = nil` shifts the storage array's tail and reindexes the shifted entries — O(tail) per delete, so a loop of k subscript deletes costs O(n·k). To delete many entities at once, use `remove(ids:)` (when you have the IDs) or `removeAll(where:)` (when you have a predicate) instead: both remove everything in a single pass with one index rebuild, record the same deletions, and cancel pending upserts exactly like the subscript.
+
+```swift
+cards.remove(ids: selection)          // One pass, not a subscript loop
+cards.removeAll { $0.isArchived }
+```
+
 ## Merging (Re-hydration)
 
 Replacing an ``EntityStore`` after startup destroys any in-memory state that was loaded lazily after initial hydration. Use `merge(from:shouldReplace:)` instead — entities only in the other store are always added, and the closure decides whether an incoming value overwrites the current one:

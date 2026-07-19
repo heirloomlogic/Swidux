@@ -46,4 +46,22 @@ public protocol PersistableModel: PersistentModel {
     /// is miscompiled under `-O` (the witness key path ≠ the stored-attribute
     /// key path), trapping in `modelContext.fetch`; building it concretely avoids that.
     static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<Self>
+
+    /// A monomorphic fetch descriptor locating every row whose `id` is in `ids`,
+    /// for batched lookups (one round trip instead of one per ID).
+    ///
+    /// Generated per-model for the same `-O` reason as
+    /// ``swiduxFetchDescriptor(id:)`` — the `#Predicate` must bind the concrete
+    /// stored attribute. The requirement is optional (defaulted to `nil`) so
+    /// hand-written conformances predating it keep compiling; callers such as
+    /// `EntityDB.apply` fall back to per-ID fetches when it returns `nil`.
+    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>?
+}
+
+extension PersistableModel {
+    /// Default for conformances without a generated batch descriptor: `nil`
+    /// signals "no batched fetch available; use per-ID fetches".
+    public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>? {
+        nil
+    }
 }

@@ -255,6 +255,44 @@ struct StoreTests {
         #expect(store.items[id]?.name == "second")
     }
 
+    @Test("re-entrant action that itself re-entrantly sends drains FIFO")
+    @MainActor
+    func reentrantSendDuringDrainAppendsFIFO() {
+        let id = UUID()
+        let holder = StoreHolder()
+        var queuedFirst = false
+        var queuedFollowUp = false
+        let spy = SpyPlugin<TestState, TestAction>(
+            onWillReduce: {
+                if !queuedFirst {
+                    // Re-entrant from the initial dispatch: queues a pending action.
+                    queuedFirst = true
+                    holder.store?.send(.rename(id, "first"))
+                } else if !queuedFollowUp {
+                    // Re-entrant from *draining* "first": appends mid-drain and
+                    // must still run in this pass, after "first".
+                    queuedFollowUp = true
+                    holder.store?.send(.rename(id, "follow-up"))
+                }
+            }
+        )
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(spy)
+
+        let store = Store<TestState, TestAction>(
+            initialState: TestState(),
+            reducer: testReducer,
+            plugins: plugins
+        )
+        holder.store = store
+
+        store.send(.insert(TestEntity(id: id, name: "original")))
+
+        // The mid-drain append is drained in the same pass, in FIFO order.
+        #expect(queuedFollowUp)
+        #expect(store.items[id]?.name == "follow-up")
+    }
+
     @Test("undo restores previous state")
     @MainActor
     func undoRestores() {

@@ -72,6 +72,11 @@ public nonisolated struct EntityStore<
     /// O(1) keyed access.
     ///
     /// Setting a value records an upsert; setting `nil` records a deletion.
+    ///
+    /// Deleting via the subscript shifts the array tail and reindexes the
+    /// shifted entries — O(tail) per delete, so k independent subscript
+    /// deletes cost O(n·k). For bulk deletion prefer ``remove(ids:)`` or
+    /// ``removeAll(where:)``, which do a single pass and one index rebuild.
     public subscript(id: UUID) -> Entity? {
         get {
             guard let index = positions[id] else { return nil }
@@ -153,7 +158,29 @@ public nonisolated struct EntityStore<
     ///
     /// Records deletions.
     public mutating func removeAll(where shouldRemove: (Entity) -> Bool) {
-        let removedIDs = Set(entities.filter(shouldRemove).map(\.id))
+        removeBatch(Set(entities.filter(shouldRemove).map(\.id)))
+    }
+
+    /// Removes the entities with the given IDs in a single pass.
+    ///
+    /// Each ID actually present records a deletion and cancels any pending
+    /// upsert, exactly like `store[id] = nil`. Unknown IDs (and duplicates)
+    /// are ignored and record nothing. Survivor order is preserved.
+    ///
+    /// Prefer this over a subscript loop for bulk deletion: each
+    /// `store[id] = nil` shifts the array tail and reindexes (O(tail)), so
+    /// k subscript deletes cost O(n·k); this removes everything in one pass
+    /// with one index rebuild.
+    public mutating func remove(ids: some Sequence<UUID>) {
+        removeBatch(Set(ids.filter { positions[$0] != nil }))
+    }
+
+    /// Shared removal tail: one filtering pass over storage, one index
+    /// rebuild, and a deletion record (cancelling any pending upsert) per
+    /// removed ID.
+    ///
+    /// `removedIDs` must contain only IDs currently present in the store.
+    private mutating func removeBatch(_ removedIDs: Set<UUID>) {
         guard !removedIDs.isEmpty else { return }
 
         entities.removeAll { removedIDs.contains($0.id) }
