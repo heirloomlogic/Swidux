@@ -56,9 +56,8 @@ Prefer the Keychain for anything a user could gain by forging it. A
 last-known-good entitlement cache is the clearest case: it grants pro offline,
 so a `UserDefaults` plist (editable directly or via a doctored-backup restore)
 lets a spoofed value unlock the app. `SwiduxPaywall`'s `ResilientPaywallService`
-persists that cache through an injected `KeyValueStore` and takes a
-`migratingFrom:` store so an app can move an existing cache from `UserDefaults`
-to the Keychain once, at face value.
+persists that cache through an injected `KeyValueStore`, so back it with the
+Keychain.
 
 ### macOS sandbox & entitlements
 

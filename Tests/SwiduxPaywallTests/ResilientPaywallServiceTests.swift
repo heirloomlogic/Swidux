@@ -215,29 +215,6 @@ struct ResilientPaywallServiceTests {
         }
     }
 
-    @Test("a v1 cache migrates as stale: license kept, isPro dropped, key removed")
-    func v1CacheMigratesAsStale() async throws {
-        let store = InMemoryKeyValueStore()
-        store.setValue(
-            LegacyV1Payload(isPro: true, hasPermanentLicense: true),
-            for: legacyV1TestKey
-        )
-        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
-        let service = ResilientPaywallService(
-            base: base, store: store, retryBaseDelay: .milliseconds(1)
-        )
-
-        let snapshot = try await service.customerInfo()
-
-        #expect(snapshot.isPro == false, "the v1 capture time is unknown — it must count as stale")
-        #expect(snapshot.hasPermanentLicense == true)
-        #expect(store.value(legacyV1TestKey) == nil, "the v1 payload is removed after migration")
-        #expect(
-            store.value(.lastKnownEntitlement) == nil,
-            "nothing is written under the v2 key until the next live success"
-        )
-    }
-
     @Test("a fresh live snapshot overwrites stale cache (genuine lapse honoured)")
     func freshSuccessOverwritesStaleCache() async throws {
         let store = InMemoryKeyValueStore()
@@ -343,88 +320,6 @@ struct ResilientPaywallServiceTests {
         #expect(snapshot.isPro == true)
     }
 
-    // MARK: Legacy-store migration (migratingFrom:)
-
-    @Test("a legacy-store v2 cache migrates on a primary miss: served, written forward, removed")
-    func legacyV2MigratesOnPrimaryMiss() async throws {
-        let primary = InMemoryKeyValueStore()
-        let legacy = InMemoryKeyValueStore()
-        let cached = CachedEntitlement(isPro: true, hasPermanentLicense: false)
-        legacy.setValue(cached, for: .lastKnownEntitlement)
-        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
-        let service = ResilientPaywallService(
-            base: base, store: primary, migratingFrom: legacy, retryBaseDelay: .milliseconds(1)
-        )
-
-        let snapshot = try await service.customerInfo()
-
-        #expect(snapshot.isPro == true, "the migrated value is served at face value")
-        #expect(primary.value(.lastKnownEntitlement) == cached, "the value is written into the primary store")
-        #expect(legacy.value(.lastKnownEntitlement) == nil, "the value is removed from the legacy store")
-    }
-
-    @Test("a legacy-store v1 cache migrates as stale: license kept, isPro dropped, written forward")
-    func legacyStoreV1CacheMigratesAsStale() async throws {
-        let primary = InMemoryKeyValueStore()
-        let legacy = InMemoryKeyValueStore()
-        legacy.setValue(
-            LegacyV1Payload(isPro: true, hasPermanentLicense: true),
-            for: legacyV1TestKey
-        )
-        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
-        let service = ResilientPaywallService(
-            base: base, store: primary, migratingFrom: legacy, retryBaseDelay: .milliseconds(1)
-        )
-
-        let snapshot = try await service.customerInfo()
-
-        #expect(snapshot.isPro == false, "the v1 capture time is unknown — it must count as stale")
-        #expect(snapshot.hasPermanentLicense == true)
-        #expect(legacy.value(legacyV1TestKey) == nil, "the legacy v1 payload is removed after migration")
-        #expect(legacy.value(.lastKnownEntitlement) == nil, "nothing remains in the legacy store")
-        #expect(
-            primary.value(.lastKnownEntitlement)
-                == CachedEntitlement(isPro: true, hasPermanentLicense: true),
-            "the migrated value is written forward into the primary store"
-        )
-        #expect(
-            primary.value(.lastKnownEntitlement)?.cachedAt == .distantPast,
-            "the migrated value is stamped stale so isPro is never honoured from it"
-        )
-    }
-
-    @Test("a primary v2 hit never consults the legacy store")
-    func primaryHitLeavesLegacyUntouched() async throws {
-        let primary = InMemoryKeyValueStore()
-        let legacy = InMemoryKeyValueStore()
-        primary.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: false), for: .lastKnownEntitlement)
-        let legacyValue = CachedEntitlement(isPro: false, hasPermanentLicense: true)
-        legacy.setValue(legacyValue, for: .lastKnownEntitlement)
-        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
-        let service = ResilientPaywallService(
-            base: base, store: primary, migratingFrom: legacy, retryBaseDelay: .milliseconds(1)
-        )
-
-        let snapshot = try await service.customerInfo()
-
-        #expect(snapshot.isPro == true, "the primary value is served")
-        #expect(legacy.value(.lastKnownEntitlement) == legacyValue, "the legacy store is left untouched")
-    }
-
-    @Test("a live success persists to the primary store only, never the legacy")
-    func liveSuccessPersistsToPrimaryOnly() async throws {
-        let primary = InMemoryKeyValueStore()
-        let legacy = InMemoryKeyValueStore()
-        let base = FlakyPaywallService(success: EntitlementSnapshot(isPro: true))
-        let service = ResilientPaywallService(base: base, store: primary, migratingFrom: legacy)
-
-        let snapshot = try await service.customerInfo()
-
-        #expect(snapshot.isPro == true)
-        #expect(primary.value(.lastKnownEntitlement) == CachedEntitlement(isPro: true, hasPermanentLicense: false))
-        #expect(legacy.value(.lastKnownEntitlement) == nil, "the legacy store never receives writes")
-    }
-
     // MARK: restorePurchases
 
     @Test("a successful restore persists the snapshot")
@@ -457,14 +352,6 @@ struct ResilientPaywallServiceTests {
 private enum TestError: Error {
     case boom
 }
-
-/// The pre-`cachedAt` v1 payload shape, redeclared here to seed migration tests.
-private struct LegacyV1Payload: Codable, Sendable {
-    var isPro: Bool
-    var hasPermanentLicense: Bool
-}
-
-private let legacyV1TestKey = KVKey<LegacyV1Payload>("swidux.paywall.lastKnownEntitlement.v1")
 
 /// Configurable `PaywallService` double: fails `customerInfo()` a set number of
 /// times before succeeding (`.max` to always fail), emits a fixed list of stream

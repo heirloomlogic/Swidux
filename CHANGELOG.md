@@ -19,8 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previously skipped silently: missing type annotations (`var flag = false`)
   and combined declarations (`var a, b: Int`). Previously such properties reset
   on every dispatch (or never persisted) with no diagnostic.
-- `CachedEntitlement` gains `cachedAt`; the persisted last-known-good key bumps
-  to v2 with automatic one-shot migration. A stale cache (default 72 h) stops
+- `CachedEntitlement` records `cachedAt`, so a stale cache (default 72 h) stops
   vouching for `isPro` but keeps `hasPermanentLicense`.
 - The killswitch evaluates 1–2 component marketing versions (`"2.0"`) by
   padding them, instead of failing open forever; config-side versions remain
@@ -32,10 +31,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ParentalGatePlugin` attempt limiting: consecutive wrong answers (default 3)
   start a cooldown (default 30 s); `.dismiss`/`.request` don't reset it.
 - `ResilientPaywallService` retry backoff with jitter and cancellation support.
-- `ResilientPaywallService(migratingFrom:)` migrates a last-known-good cache out
-  of a prior store (e.g. `UserDefaults` → Keychain) once, on a primary miss. The
-  docs now recommend backing the offline entitlement cache with
-  `KeychainKeyValueStore` rather than a plist-editable `UserDefaults`.
+- The docs now recommend backing `ResilientPaywallService`'s offline entitlement
+  cache with `KeychainKeyValueStore` rather than a plist-editable `UserDefaults`.
 - `AnalyticsPlugin.flush(timeout:)` for shutdown paths where an unbounded wait
   risks the watchdog.
 - `HTTPFeatureFlagsService` request timeout (`fetchTimeout`, default 10 s).

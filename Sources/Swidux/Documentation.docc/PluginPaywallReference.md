@@ -39,8 +39,7 @@ For other backends (StoreKit, custom server), implement `PaywallService` directl
 ```swift
 let resilient = ResilientPaywallService(
     base: paywallService,
-    store: KeychainKeyValueStore(service: "com.example.myapp"),
-    migratingFrom: UserDefaultsKeyValueStore()  // one-shot, only when upgrading an existing cache
+    store: KeychainKeyValueStore(service: "com.example.myapp")
 )
 ```
 

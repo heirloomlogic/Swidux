@@ -152,7 +152,7 @@ plugins.register(paywallPlugin)
 > ```
 >
 > See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the
-> staleness policy, threat model, and `migratingFrom:` cache migration.
+> staleness policy and threat model.
 
 ## Step 5: Observe customer info on launch
 

@@ -61,17 +61,6 @@ extension KVKey where Value == CachedEntitlement {
     )
 }
 
-/// The pre-`cachedAt` payload shape persisted under the v1 key. Read once for
-/// migration, then removed.
-private struct LegacyCachedEntitlementV1: Codable, Sendable {
-    var isPro: Bool
-    var hasPermanentLicense: Bool
-}
-
-private let legacyV1Key = KVKey<LegacyCachedEntitlementV1>(
-    "swidux.paywall.lastKnownEntitlement.v1"
-)
-
 /// Wraps a ``PaywallService`` so a transient failure to read entitlements never
 /// presents a previously-seen paid user as free.
 ///
@@ -103,9 +92,7 @@ private let legacyV1Key = KVKey<LegacyCachedEntitlementV1>(
 /// ```swift
 /// let resilient = ResilientPaywallService(
 ///     base: paywallService,
-///     store: KeychainKeyValueStore(service: "com.example.myapp"),
-///     // Apps upgrading from a UserDefaults-backed cache migrate it once:
-///     migratingFrom: UserDefaultsKeyValueStore()
+///     store: KeychainKeyValueStore(service: "com.example.myapp")
 /// )
 /// // PaywallPlugin(..., service: resilient)   // gate + account display
 /// // await resilient.currentSnapshot()        // server payload, off-main
@@ -121,16 +108,10 @@ private let legacyV1Key = KVKey<LegacyCachedEntitlementV1>(
 /// authoritative whenever the app is online: any live snapshot overwrites the
 /// cache, so a genuine lapse or downgrade is honoured on the next successful
 /// read. `hasPermanentLicense` deliberately never expires — a lifetime purchase
-/// must keep working offline indefinitely. One residual is accepted: a
-/// `UserDefaults`-backed cache edited *before* the app adopts the Keychain is
-/// migrated forward at face value exactly once.
+/// must keep working offline indefinitely.
 public struct ResilientPaywallService: PaywallService {
     private let base: any PaywallService
     private let store: any KeyValueStore
-    /// Optional store to migrate a last-known-good *out of* on first read — set
-    /// when an app moves the cache to a more secure backing (e.g. `UserDefaults`
-    /// → Keychain). Consulted only on a primary miss; see ``readCache()``.
-    private let legacyStore: (any KeyValueStore)?
     /// Total attempts at a live `customerInfo()` read before falling back to cache.
     private let maxAttempts: Int
     /// When `true`, ``customerInfoStream()`` yields the persisted last-known-good
@@ -150,11 +131,6 @@ public struct ResilientPaywallService: PaywallService {
     /// - Parameters:
     ///   - base: The live service to decorate.
     ///   - store: Where the last-known-good entitlement persists.
-    ///   - legacyStore: A prior backing to migrate the cache out of, once, on a
-    ///     primary miss. Pass the app's old store (e.g. `UserDefaultsKeyValueStore()`)
-    ///     when moving the cache to a more secure one; the value is deleted from
-    ///     `legacyStore` and written forward into `store`. `nil` (default) skips
-    ///     migration entirely.
     ///   - maxAttempts: Total live-read attempts before the cache fallback.
     ///   - seedsFromCache: Whether the stream yields the cache before live data.
     ///   - maxCacheAge: Cache age beyond which `isPro` is no longer honoured
@@ -165,7 +141,6 @@ public struct ResilientPaywallService: PaywallService {
     public init(
         base: any PaywallService,
         store: any KeyValueStore,
-        migratingFrom legacyStore: (any KeyValueStore)? = nil,
         maxAttempts: Int = 2,
         seedsFromCache: Bool = true,
         maxCacheAge: Duration = .seconds(72 * 3600),
@@ -174,7 +149,6 @@ public struct ResilientPaywallService: PaywallService {
     ) {
         self.base = base
         self.store = store
-        self.legacyStore = legacyStore
         self.maxAttempts = maxAttempts
         self.seedsFromCache = seedsFromCache
         self.maxCacheAgeInterval = Self.interval(of: maxCacheAge)
@@ -267,55 +241,9 @@ public struct ResilientPaywallService: PaywallService {
         store.setValue(CachedEntitlement(snapshot, cachedAt: now()), for: .lastKnownEntitlement)
     }
 
-    /// Reads the cache in priority order:
-    ///
-    /// 1. Primary v2 hit → returned as-is; the legacy store is never consulted.
-    /// 2. Primary v1 (pre-`cachedAt`) → migrated in place as stale (permanent
-    ///    license survives, `isPro` dropped since the capture time is unknown),
-    ///    the v1 key removed. Nothing is written under the v2 key until the next
-    ///    live success.
-    /// 3. Primary miss with a `migratingFrom` store present, legacy v2 hit →
-    ///    deleted from the legacy store, written forward into the primary, and
-    ///    returned at face value (its own `cachedAt`, so the staleness policy
-    ///    still applies).
-    /// 4. Legacy v1 → migrated forward as stale exactly like (2), then written
-    ///    into the primary and the legacy v1 key removed.
-    ///
-    /// The one-shot legacy read/delete/write-forward mirrors the primary v1→v2
-    /// precedent: the legacy source is consulted once, then emptied.
+    /// Reads the persisted last-known-good, or `nil` when nothing is cached.
     private func readCache() -> CachedEntitlement? {
-        if let cached = store.value(.lastKnownEntitlement) { return cached }
-        if let migrated = migrateV1(from: store, writeForward: false) { return migrated }
-
-        guard let legacyStore else { return nil }
-        if let cached = legacyStore.value(.lastKnownEntitlement) {
-            legacyStore.removeValue(for: .lastKnownEntitlement)
-            store.setValue(cached, for: .lastKnownEntitlement)
-            return cached
-        }
-        return migrateV1(from: legacyStore, writeForward: true)
-    }
-
-    /// Reads a v1 (pre-`cachedAt`) payload from `source`, removes it, and returns
-    /// the stale-migrated equivalent: permanent license kept, `isPro` dropped
-    /// (its capture time is unknown), stamped `.distantPast`. When `writeForward`
-    /// is `true` the result is also persisted into the primary store so the
-    /// legacy source is emptied for good; the primary-store path leaves the v2
-    /// key untouched until the next live success. Returns `nil` on no v1 payload.
-    private func migrateV1(
-        from source: any KeyValueStore, writeForward: Bool
-    ) -> CachedEntitlement? {
-        guard let legacy = source.value(legacyV1Key) else { return nil }
-        source.removeValue(for: legacyV1Key)
-        let migrated = CachedEntitlement(
-            isPro: legacy.isPro,
-            hasPermanentLicense: legacy.hasPermanentLicense,
-            cachedAt: .distantPast
-        )
-        if writeForward {
-            store.setValue(migrated, for: .lastKnownEntitlement)
-        }
-        return migrated
+        store.value(.lastKnownEntitlement)
     }
 
     /// Applies the staleness policy. Fresh cache: full snapshot. Stale cache
