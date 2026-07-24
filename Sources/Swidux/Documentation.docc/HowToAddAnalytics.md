@@ -232,6 +232,26 @@ Toggle("Share usage analytics", isOn: Binding(
 
 When `setOptedOut(true)` fires, the plugin clears `lastIdentifiedUserID` and calls `service.reset()` to clear server-side identity. While opted out, all tracking is dropped and auto-identify is paused. Opting back in re-identifies the user automatically on the next dispatch.
 
+### Engage the SDK's own consent switch
+
+The gate above stops events Swidux dispatches. It does not tell your vendor's SDK anything — so if that SDK collects automatic events, or is still holding its own queue, data can leave the device after the user opts out.
+
+If your provider has a consent API, wire it through `onConsentChange` when you build the plugin:
+
+```swift
+AnalyticsPlugin(
+    state: \.analytics,
+    action: AppAction.analytics,
+    extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
+    service: mixpanel,
+    onConsentChange: { optedOut in
+        optedOut ? mixpanel.optOutTracking() : mixpanel.optInTracking()
+    }
+)
+```
+
+The hook fires for either value, and on opt-out it runs before `service.reset()` — so the SDK's own opt-out closes the tap before the reset hands it an identity change that is still eligible to be sent. Events already in flight when the toggle fires are not retracted; the hook shuts off what happens next. This is the one place your app names the vendor, which the line constructing the service already does.
+
 ## Step 10: Flush on app shutdown
 
 Call `flush()` when the app moves to the background or terminates so in-flight events aren't lost:

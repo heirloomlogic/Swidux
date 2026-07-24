@@ -20,6 +20,28 @@ import Swidux
 /// re-evaluates `userID` and `userProperties` each non-analytics dispatch
 /// and fires `service.identify` whenever either side changes;
 /// `service.reset` fires on `userID → nil`.
+///
+/// ## Consent
+///
+/// Opting out gates events *plugin-side* — every dispatch path returns early,
+/// so nothing reaches the service. That alone does not engage a vendor SDK's
+/// own consent switch, which matters when the SDK tracks automatic events or
+/// still holds a queue of its own. Supply `onConsentChange` to bridge the two:
+///
+/// ```swift
+/// AnalyticsPlugin(
+///     state: \.analytics,
+///     action: AppAction.analytics,
+///     extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
+///     service: mixpanel,
+///     onConsentChange: { optedOut in
+///         optedOut ? mixpanel.optOutTracking() : mixpanel.optInTracking()
+///     }
+/// )
+/// ```
+///
+/// ``AnalyticsService`` stays at five members: consent APIs vary too much
+/// between vendors to abstract, and only the app knows which it is using.
 @MainActor
 public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// Root state type of the host app.
@@ -33,6 +55,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let service: any AnalyticsService
     private let mapper: AnalyticsMapper<RootState, RootAction>
     private let identity: AnalyticsIdentity<RootState>?
+    private let onConsentChange: (@Sendable (Bool) async -> Void)?
 
     /// Number of fire-and-forget service calls in flight.
     private var inflightCount: Int = 0
@@ -59,13 +82,19 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     ///   - identity: Optional identity source. When present, the plugin
     ///     auto-fires `service.identify` / `service.reset` whenever the
     ///     userID transitions across dispatches.
+    ///   - onConsentChange: Optional hook invoked on every `.setOptedOut`
+    ///     dispatch with the new opted-out value, so a vendor SDK's own
+    ///     consent API engages alongside the plugin's gate. Dispatching the
+    ///     value the state already holds calls it again — vendor consent
+    ///     APIs are idempotent. See ``AnalyticsAction/setOptedOut(_:)``.
     public init(
         state: WritableKeyPath<RootState, AnalyticsState>,
         action toRootAction: @escaping @Sendable (AnalyticsAction) -> RootAction,
         extractAction: @escaping @Sendable (RootAction) -> AnalyticsAction?,
         service: any AnalyticsService,
         mapper: AnalyticsMapper<RootState, RootAction> = .none,
-        identity: AnalyticsIdentity<RootState>? = nil
+        identity: AnalyticsIdentity<RootState>? = nil,
+        onConsentChange: (@Sendable (Bool) async -> Void)? = nil
     ) {
         self.stateKeyPath = state
         self.toRootAction = toRootAction
@@ -73,6 +102,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.service = service
         self.mapper = mapper
         self.identity = identity
+        self.onConsentChange = onConsentChange
     }
 
     // MARK: - Reduce (explicit AnalyticsAction handling)
@@ -135,10 +165,19 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
 
         case .setOptedOut(let optedOut):
             state.isOptedOut = optedOut
-            guard optedOut else { return nil }
-            state.clearIdentified()
+            if optedOut { state.clearIdentified() }
+            let onConsentChange = self.onConsentChange
+            // Opting in with no consent hook configured has nothing to do.
+            guard optedOut || onConsentChange != nil else { return nil }
             let service = self.service
-            return { _ in await service.reset() }
+            return { _ in
+                // Consent first: the SDK's own opt-out closes the tap and
+                // purges whatever it has already queued. Resetting first
+                // would hand it an identity change that is still eligible
+                // to be sent.
+                await onConsentChange?(optedOut)
+                if optedOut { await service.reset() }
+            }
         }
     }
 

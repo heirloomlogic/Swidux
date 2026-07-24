@@ -51,9 +51,12 @@ public init(
     extractAction: @escaping @Sendable (RootAction) -> AnalyticsAction?,
     service: any AnalyticsService,
     mapper: AnalyticsMapper<RootState, RootAction> = .none,
-    identity: AnalyticsIdentity<RootState>? = nil
+    identity: AnalyticsIdentity<RootState>? = nil,
+    onConsentChange: (@Sendable (Bool) async -> Void)? = nil
 )
 ```
+
+`onConsentChange` fires on every `.setOptedOut` dispatch with the new opted-out value. Use it to drive a vendor SDK's own consent API — see *Consent* below.
 
 The plugin is a `final class` (not a struct) because it tracks pending fire-and-forget service calls so that `flush()` can deterministically await them — same reason `PersistencePlugin` and `UndoPlugin` are classes.
 
@@ -237,8 +240,18 @@ Sets `lastIdentifiedUserID = nil` and returns an effect calling `service.reset()
 
 ### `setOptedOut(Bool)`
 
-- `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, returns an effect calling `service.reset()` to clear server-side identity.
-- `setOptedOut(false)` — Clears the flag without a service call. Auto-identify on the next dispatch will re-establish identity.
+- `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, returns an effect that invokes `onConsentChange(true)` and then calls `service.reset()` to clear server-side identity.
+- `setOptedOut(false)` — Clears the flag. Returns an effect invoking `onConsentChange(false)`, or `nil` when no hook is configured. Auto-identify on the next dispatch will re-establish identity.
+
+## Consent
+
+Opting out is enforced *plugin-side*: `track`, `screenView`, `identify`, `alias`, the mapper, and auto-identify all return early while `isOptedOut`, so nothing reaches the service. Only `reset` and `flush` still pass through.
+
+That gate stops Swidux-dispatched events. It does not touch the vendor SDK's own consent switch — so an SDK configured to collect automatic events, or one still holding a queue of its own, can keep sending after the user opts out. `AnalyticsService` deliberately stays at five members (consent APIs differ too much between vendors to abstract, and only the app knows which one it is using), so the bridge is the `onConsentChange` closure.
+
+Semantics: it fires on every `.setOptedOut` dispatch with the new value, and on opt-out it runs **before** `service.reset()`, so the SDK's opt-out closes the tap before the reset hands it an identity change that is still eligible to be sent. Events already in flight are not retracted.
+
+Treat this as required wiring for any vendor with a consent API, not an optional extra: without it, "opted out" means only that Swidux stopped sending. See <doc:HowToAddAnalytics> Step 9 for the wiring.
 
 ## Mapper semantics
 

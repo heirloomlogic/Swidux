@@ -25,24 +25,39 @@ actor RecordingAnalyticsService: AnalyticsService {
     private(set) var resetCount: Int = 0
     private(set) var flushCount: Int = 0
 
+    /// Every call in arrival order, for tests that care about sequencing
+    /// across call kinds — the per-kind collections above can't express it.
+    private(set) var log: [String] = []
+
+    /// Call from the plugin's `onConsentChange` hook so consent invocations
+    /// interleave into ``log`` alongside the service calls.
+    func consentChanged(to optedOut: Bool) {
+        log.append("consent(\(optedOut))")
+    }
+
     func track(_ event: AnalyticsEvent) async {
         trackedEvents.append(event)
+        log.append("track")
     }
 
     func identify(userID: String, properties: [String: AnalyticsValue]) async {
         identifyCalls.append(IdentifyCall(userID: userID, properties: properties))
+        log.append("identify")
     }
 
     func alias(newID: String, previousID: String?) async {
         aliasCalls.append(AliasCall(newID: newID, previousID: previousID))
+        log.append("alias")
     }
 
     func reset() async {
         resetCount += 1
+        log.append("reset")
     }
 
     func flush() async {
         flushCount += 1
+        log.append("flush")
     }
 }
 
