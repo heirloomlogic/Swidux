@@ -46,4 +46,12 @@ public protocol PersistableModel: PersistentModel {
     /// is miscompiled under `-O` (the witness key path ≠ the stored-attribute
     /// key path), trapping in `modelContext.fetch`; building it concretely avoids that.
     static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<Self>
+
+    /// A monomorphic fetch descriptor locating every row whose `id` is in `ids`,
+    /// for batched lookups (one round trip instead of one per ID).
+    ///
+    /// Generated per-model for the same `-O` reason as
+    /// ``swiduxFetchDescriptor(id:)`` — the `#Predicate` must bind the concrete
+    /// stored attribute.
+    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>
 }

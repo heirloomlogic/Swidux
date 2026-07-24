@@ -215,6 +215,92 @@ struct EntityStoreTests {
         #expect(store.changes.deletions.contains(c.id))
     }
 
+    @Test("Remove(ids:) removes entities and records deletions")
+    func removeIDsRecordsDeletions() {
+        let a = TestEntity(name: "keep")
+        let b = TestEntity(name: "remove")
+        let c = TestEntity(name: "remove")
+        var store = EntityStore([a, b, c])
+        store.resetChanges()
+
+        store.remove(ids: [b.id, c.id])
+
+        #expect(store.count == 1)
+        #expect(store.values == [a])
+        #expect(store.changes.deletions == [b.id, c.id])
+        #expect(store.changes.upserts.isEmpty)
+    }
+
+    @Test("Remove(ids:) ignores unknown IDs and records nothing for them")
+    func removeIDsUnknownIsNoOp() {
+        let a = TestEntity(name: "keep")
+        var store = EntityStore([a])
+        store.resetChanges()
+
+        store.remove(ids: [UUID(), UUID()])
+
+        #expect(store.count == 1)
+        #expect(store.values == [a])
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("Remove(ids:) cancels pending upserts for removed entities")
+    func removeIDsCancelsPendingUpserts() {
+        var store = EntityStore<TestEntity>()
+        let entity = TestEntity(name: "Ephemeral")
+        store[entity.id] = entity
+        #expect(store.changes.upserts.contains(entity.id))
+
+        store.remove(ids: [entity.id])
+
+        // After removal, ONLY in deletions — not upserts.
+        #expect(!store.changes.upserts.contains(entity.id))
+        #expect(store.changes.deletions.contains(entity.id))
+    }
+
+    @Test("Remove(ids:) preserves survivor order")
+    func removeIDsPreservesOrder() {
+        let a = TestEntity(name: "A")
+        let b = TestEntity(name: "B")
+        let c = TestEntity(name: "C")
+        let d = TestEntity(name: "D")
+        var store = EntityStore([a, b, c, d])
+        store.resetChanges()
+
+        store.remove(ids: [b.id, d.id])
+
+        #expect(store.values == [a, c])
+        // Index still consistent after the rebuild.
+        #expect(store[a.id] == a)
+        #expect(store[c.id] == c)
+    }
+
+    @Test("Remove(ids:) with an empty sequence is a total no-op")
+    func removeIDsEmptySequence() {
+        let a = TestEntity(name: "keep")
+        var store = EntityStore([a])
+        store.resetChanges()
+
+        store.remove(ids: [])
+
+        #expect(store.values == [a])
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("Remove(ids:) handles duplicate IDs in the input")
+    func removeIDsDuplicates() {
+        let a = TestEntity(name: "keep")
+        let b = TestEntity(name: "remove")
+        var store = EntityStore([a, b])
+        store.resetChanges()
+
+        store.remove(ids: [b.id, b.id, b.id])
+
+        #expect(store.count == 1)
+        #expect(store.values == [a])
+        #expect(store.changes.deletions == [b.id])
+    }
+
     // MARK: - Change Tracking
 
     @Test("ResetChanges clears the changelog")

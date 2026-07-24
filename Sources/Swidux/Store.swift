@@ -144,9 +144,16 @@ public final class Store<State: SwiduxObservable, Action> {
         defer { isDispatching = false }
 
         dispatch(action)
-        while !pendingActions.isEmpty {
-            dispatch(pendingActions.removeFirst())
+        // Index-based drain rather than repeated `removeFirst()` (each O(k),
+        // so the loop was O(k²)). Re-read `count` every iteration: an action
+        // dispatched mid-drain may append further pending actions, which must
+        // still drain FIFO in this same pass.
+        var index = 0
+        while index < pendingActions.count {
+            dispatch(pendingActions[index])
+            index += 1
         }
+        pendingActions.removeAll()
     }
 
     /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.
