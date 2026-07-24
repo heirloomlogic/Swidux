@@ -18,6 +18,11 @@ import os
 ///
 /// Swapping in a real provider later is the usual two-line change in
 /// `Store.configured()` — nothing else in the app changes.
+///
+/// > Warning: This service logs the analytics user ID and full property bags
+/// > at `privacy: .public` to the unified log, so it emits a fault at init in
+/// > Release as a submission tripwire: replace it with a real
+/// > `AnalyticsService` before shipping to the App Store.
 public struct ConsoleAnalyticsService: AnalyticsService {
     private let logger: Logger
 
@@ -28,6 +33,17 @@ public struct ConsoleAnalyticsService: AnalyticsService {
     ///   - category: OSLog category. Defaults to `"Analytics"`.
     public init(subsystem: String = "Swidux", category: String = "Analytics") {
         self.logger = Logger(subsystem: subsystem, category: category)
+        #if !DEBUG
+        // Deliberate for TestFlight/QA, fatal for the App Store. Loud and
+        // greppable in Console/sysdiagnose during submission prep.
+        logger.fault(
+            """
+            ConsoleAnalyticsService active in a Release build — analytics identity \
+            and properties are logged PUBLICLY to the unified log. Replace with a \
+            real AnalyticsService before App Store submission.
+            """
+        )
+        #endif
     }
 
     /// Logs the event name and its properties.
