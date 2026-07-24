@@ -215,29 +215,6 @@ struct ResilientPaywallServiceTests {
         }
     }
 
-    @Test("a v1 cache migrates as stale: license kept, isPro dropped, key removed")
-    func v1CacheMigratesAsStale() async throws {
-        let store = InMemoryKeyValueStore()
-        store.setValue(
-            LegacyV1Payload(isPro: true, hasPermanentLicense: true),
-            for: legacyV1TestKey
-        )
-        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
-        let service = ResilientPaywallService(
-            base: base, store: store, retryBaseDelay: .milliseconds(1)
-        )
-
-        let snapshot = try await service.customerInfo()
-
-        #expect(snapshot.isPro == false, "the v1 capture time is unknown — it must count as stale")
-        #expect(snapshot.hasPermanentLicense == true)
-        #expect(store.value(legacyV1TestKey) == nil, "the v1 payload is removed after migration")
-        #expect(
-            store.value(.lastKnownEntitlement) == nil,
-            "nothing is written under the v2 key until the next live success"
-        )
-    }
-
     @Test("a fresh live snapshot overwrites stale cache (genuine lapse honoured)")
     func freshSuccessOverwritesStaleCache() async throws {
         let store = InMemoryKeyValueStore()
@@ -375,14 +352,6 @@ struct ResilientPaywallServiceTests {
 private enum TestError: Error {
     case boom
 }
-
-/// The pre-`cachedAt` v1 payload shape, redeclared here to seed migration tests.
-private struct LegacyV1Payload: Codable, Sendable {
-    var isPro: Bool
-    var hasPermanentLicense: Bool
-}
-
-private let legacyV1TestKey = KVKey<LegacyV1Payload>("swidux.paywall.lastKnownEntitlement.v1")
 
 /// Configurable `PaywallService` double: fails `customerInfo()` a set number of
 /// times before succeeding (`.max` to always fail), emits a fixed list of stream

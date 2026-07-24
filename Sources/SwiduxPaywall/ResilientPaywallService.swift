@@ -61,17 +61,6 @@ extension KVKey where Value == CachedEntitlement {
     )
 }
 
-/// The pre-`cachedAt` payload shape persisted under the v1 key. Read once for
-/// migration, then removed.
-private struct LegacyCachedEntitlementV1: Codable, Sendable {
-    var isPro: Bool
-    var hasPermanentLicense: Bool
-}
-
-private let legacyV1Key = KVKey<LegacyCachedEntitlementV1>(
-    "swidux.paywall.lastKnownEntitlement.v1"
-)
-
 /// Wraps a ``PaywallService`` so a transient failure to read entitlements never
 /// presents a previously-seen paid user as free.
 ///
@@ -91,13 +80,35 @@ private let legacyV1Key = KVKey<LegacyCachedEntitlementV1>(
 /// Provider-agnostic by construction — it speaks only ``PaywallService``, so it
 /// wraps any base (simulated, RevenueCat, StoreKit, …). Feed the wrapped instance
 /// to *both* ``PaywallPlugin`` and any app-side reader that builds a
-/// monetization/context payload from entitlements:
+/// monetization/context payload from entitlements.
+///
+/// Back the cache with `KeychainKeyValueStore` rather than `UserDefaults`: the
+/// cache vouches for a paid entitlement offline, and `UserDefaults` is a plist
+/// a user can edit or restore from a doctored backup, whereas the Keychain is
+/// encrypted and not plist-editable. (On unsigned macOS dev builds the Keychain
+/// can return `errSecMissingEntitlement` / −34018 — see *Sandboxing &
+/// entitlements (macOS)* on ``KeychainKeyValueStore``.)
 ///
 /// ```swift
-/// let resilient = ResilientPaywallService(base: paywallService, store: UserDefaultsKeyValueStore())
+/// let resilient = ResilientPaywallService(
+///     base: paywallService,
+///     store: KeychainKeyValueStore(service: "com.example.myapp")
+/// )
 /// // PaywallPlugin(..., service: resilient)   // gate + account display
 /// // await resilient.currentSnapshot()        // server payload, off-main
 /// ```
+///
+/// ## Threat model
+///
+/// Backed by ``KeychainKeyValueStore``, the cache defends against casual plist
+/// editing and a doctored-backup restore: the persisted last-known-good is
+/// encrypted and not a user-editable file. It does **not** defend against a
+/// jailbroken device — nothing client-side does; entitlements can always be
+/// forged on a device the attacker fully controls. The live provider stays
+/// authoritative whenever the app is online: any live snapshot overwrites the
+/// cache, so a genuine lapse or downgrade is honoured on the next successful
+/// read. `hasPermanentLicense` deliberately never expires — a lifetime purchase
+/// must keep working offline indefinitely.
 public struct ResilientPaywallService: PaywallService {
     private let base: any PaywallService
     private let store: any KeyValueStore
@@ -230,19 +241,9 @@ public struct ResilientPaywallService: PaywallService {
         store.setValue(CachedEntitlement(snapshot, cachedAt: now()), for: .lastKnownEntitlement)
     }
 
-    /// Reads the cache, migrating a v1 (pre-`cachedAt`) payload on first
-    /// encounter: it counts as stale — the permanent license survives, `isPro`
-    /// doesn't, since its capture time is unknown. Nothing is written under
-    /// the v2 key until the next live success.
+    /// Reads the persisted last-known-good, or `nil` when nothing is cached.
     private func readCache() -> CachedEntitlement? {
-        if let cached = store.value(.lastKnownEntitlement) { return cached }
-        guard let legacy = store.value(legacyV1Key) else { return nil }
-        store.removeValue(for: legacyV1Key)
-        return CachedEntitlement(
-            isPro: legacy.isPro,
-            hasPermanentLicense: legacy.hasPermanentLicense,
-            cachedAt: .distantPast
-        )
+        store.value(.lastKnownEntitlement)
     }
 
     /// Applies the staleness policy. Fresh cache: full snapshot. Stale cache

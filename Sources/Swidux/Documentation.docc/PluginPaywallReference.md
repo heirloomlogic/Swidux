@@ -32,6 +32,19 @@ Full API documentation lives in the package's own [DocC reference](https://heirl
 
 For other backends (StoreKit, custom server), implement `PaywallService` directly — see <doc:HowToAddAPaywall> Step 3, Path B.
 
+### Resilient last-known-good decorator
+
+`ResilientPaywallService` wraps any `PaywallService` so a transient failure to read entitlements at cold launch never presents a previously-seen paid user as free. It retries with backoff, then falls back to a last-known-good snapshot persisted through an injected `KeyValueStore`. Because that cache vouches for a paid entitlement while offline, back it with `KeychainKeyValueStore` — not `UserDefaults`, whose plist a user can edit or restore from a doctored backup:
+
+```swift
+let resilient = ResilientPaywallService(
+    base: paywallService,
+    store: KeychainKeyValueStore(service: "com.example.myapp")
+)
+```
+
+Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: any successful snapshot overwrites the cache. See the type's own documentation for the staleness policy and threat model.
+
 ## Types
 
 ### `PaywallPlugin<RootState, RootAction>`
