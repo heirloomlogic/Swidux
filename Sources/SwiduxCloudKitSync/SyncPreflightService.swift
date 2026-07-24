@@ -60,15 +60,10 @@ public struct SyncPreflightService: Sendable {
                 #if canImport(CloudKit)
                 let container = containerID.map { CKContainer(identifier: $0) } ?? CKContainer.default()
                 do {
-                    switch try await container.accountStatus() {
-                    case .available: return .available
-                    case .noAccount: return .noAccount
-                    case .restricted: return .restricted
-                    case .temporarilyUnavailable: return .temporarilyUnavailable
-                    case .couldNotDetermine: return .couldNotDetermine
-                    @unknown default: return .couldNotDetermine
-                    }
+                    return mapAccountStatus(try await container.accountStatus())
                 } catch {
+                    // A container that can't answer is unknown, not absent —
+                    // the caller degrades to not-signed-in either way.
                     return .couldNotDetermine
                 }
                 #else
@@ -77,6 +72,24 @@ public struct SyncPreflightService: Sendable {
             }
         )
     }
+
+    #if canImport(CloudKit)
+    /// Maps CloudKit's account status onto the coarse ``ICloudAccountState``.
+    ///
+    /// Split out of ``live(containerID:)`` so the mapping — including the
+    /// `@unknown default` — is reachable from tests without a real
+    /// `CKContainer`. Internal: it is a seam, not API.
+    static func mapAccountStatus(_ status: CKAccountStatus) -> ICloudAccountState {
+        switch status {
+        case .available: return .available
+        case .noAccount: return .noAccount
+        case .restricted: return .restricted
+        case .temporarilyUnavailable: return .temporarilyUnavailable
+        case .couldNotDetermine: return .couldNotDetermine
+        @unknown default: return .couldNotDetermine
+        }
+    }
+    #endif
 
     /// Deterministic stub for tests.
     public static func mock(ubiquityToken: Bool, account: ICloudAccountState) -> SyncPreflightService {
