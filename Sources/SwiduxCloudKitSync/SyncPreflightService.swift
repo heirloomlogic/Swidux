@@ -23,6 +23,26 @@ public enum ICloudAccountState: Sendable, Equatable {
     case couldNotDetermine
 }
 
+#if canImport(CloudKit)
+extension ICloudAccountState {
+    /// Translates CloudKit's `CKAccountStatus` into this coarser vocabulary.
+    ///
+    /// A status this build doesn't recognise degrades to ``couldNotDetermine``
+    /// rather than claiming availability — an unknown account is treated as
+    /// unusable, never as usable.
+    init(_ status: CKAccountStatus) {
+        switch status {
+        case .available: self = .available
+        case .noAccount: self = .noAccount
+        case .restricted: self = .restricted
+        case .temporarilyUnavailable: self = .temporarilyUnavailable
+        case .couldNotDetermine: self = .couldNotDetermine
+        @unknown default: self = .couldNotDetermine
+        }
+    }
+}
+#endif
+
 /// Probes iCloud availability. Inject `.mock(...)` in tests.
 public struct SyncPreflightService: Sendable {
     /// Whether an iCloud ubiquity token is present — a proxy for "entitled and
@@ -60,15 +80,10 @@ public struct SyncPreflightService: Sendable {
                 #if canImport(CloudKit)
                 let container = containerID.map { CKContainer(identifier: $0) } ?? CKContainer.default()
                 do {
-                    switch try await container.accountStatus() {
-                    case .available: return .available
-                    case .noAccount: return .noAccount
-                    case .restricted: return .restricted
-                    case .temporarilyUnavailable: return .temporarilyUnavailable
-                    case .couldNotDetermine: return .couldNotDetermine
-                    @unknown default: return .couldNotDetermine
-                    }
+                    return ICloudAccountState(try await container.accountStatus())
                 } catch {
+                    // A container that can't answer is unknown, not absent —
+                    // the caller degrades to not-signed-in either way.
                     return .couldNotDetermine
                 }
                 #else

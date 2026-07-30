@@ -51,6 +51,10 @@ struct SyncStatusResolveTests {
         #expect(
             SyncStatus.resolve(desired: .iCloud, entitled: true, account: .couldNotDetermine) == .unavailableNotSignedIn
         )
+        #expect(
+            SyncStatus.resolve(desired: .iCloud, entitled: true, account: .temporarilyUnavailable)
+                == .unavailableNotSignedIn
+        )
     }
 }
 
