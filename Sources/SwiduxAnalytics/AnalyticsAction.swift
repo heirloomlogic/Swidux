@@ -29,6 +29,10 @@ public enum AnalyticsAction: Sendable, Equatable {
 
     /// Opt the user in (`false`) or out (`true`) of analytics. Opting out
     /// also clears local identity and calls `service.reset()`.
+    ///
+    /// Either value invokes the plugin's `onConsentChange` hook when one is
+    /// configured, so a vendor SDK's own consent switch follows the plugin's
+    /// gate. On opt-out the hook runs *before* `service.reset()`.
     case setOptedOut(Bool)
 }
 

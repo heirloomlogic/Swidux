@@ -30,7 +30,8 @@ struct AnalyticsPluginTests {
     func makePlugin(
         service: any AnalyticsService = MockAnalyticsService(),
         mapper: AnalyticsMapper<TestState, TestAction> = .none,
-        identity: AnalyticsIdentity<TestState>? = nil
+        identity: AnalyticsIdentity<TestState>? = nil,
+        onConsentChange: (@Sendable (Bool) async -> Void)? = nil
     ) -> AnalyticsPlugin<TestState, TestAction> {
         AnalyticsPlugin(
             state: \.analytics,
@@ -41,7 +42,8 @@ struct AnalyticsPluginTests {
             },
             service: service,
             mapper: mapper,
-            identity: identity
+            identity: identity,
+            onConsentChange: onConsentChange
         )
     }
 
@@ -399,6 +401,94 @@ struct AnalyticsPluginTests {
         #expect(effect == nil)
         let resets = await service.resetCount
         #expect(resets == 0)
+    }
+
+    // MARK: - Explicit AnalyticsAction: consent hook
+
+    @Test("opt-out invokes the consent hook before service.reset")
+    func optOutRunsConsentHookBeforeReset() async throws {
+        let recorder = RecordingAnalyticsService()
+        let plugin = makePlugin(
+            service: recorder,
+            onConsentChange: { optedOut in await recorder.consentChanged(to: optedOut) }
+        )
+        var state = TestState()
+
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        )
+
+        // Order matters: the SDK's own opt-out must close the tap before the
+        // reset hands it an identity change that is still eligible to be sent.
+        let log = await recorder.log
+        #expect(log == ["consent(true)", "reset"])
+    }
+
+    @Test("opt-in invokes the consent hook without resetting")
+    func optInRunsConsentHookOnly() async throws {
+        let recorder = RecordingAnalyticsService()
+        let plugin = makePlugin(
+            service: recorder,
+            onConsentChange: { optedOut in await recorder.consentChanged(to: optedOut) }
+        )
+        var state = TestState()
+        state.analytics.isOptedOut = true
+
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        )
+
+        #expect(state.analytics.isOptedOut == false)
+        let log = await recorder.log
+        #expect(log == ["consent(false)"])
+    }
+
+    @Test("consent hook is optional — opt-in stays effect-free without one")
+    func consentHookDefaultsToNil() async throws {
+        let recorder = RecordingAnalyticsService()
+        let plugin = makePlugin(service: recorder)
+        var state = TestState()
+        state.analytics.isOptedOut = true
+
+        let effect = plugin.reduce(
+            state: &state,
+            action: .analytics(.setOptedOut(false))
+        )
+
+        #expect(effect == nil)
+        let log = await recorder.log
+        #expect(log.isEmpty)
+    }
+
+    @Test("consent hook does not reopen the plugin-side gate")
+    func consentHookDoesNotUngateDispatch() async throws {
+        let recorder = RecordingAnalyticsService()
+        let plugin = makePlugin(
+            service: recorder,
+            onConsentChange: { optedOut in await recorder.consentChanged(to: optedOut) }
+        )
+        var state = TestState()
+
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        )
+        // Every dispatch path must still short-circuit while opted out.
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("e"))))
+        )
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.screenView("home")))
+        )
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1", properties: [:])))
+        )
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.alias(newID: "n", previousID: nil)))
+        )
+        await plugin.flush()
+
+        let log = await recorder.log
+        #expect(log == ["consent(true)", "reset", "flush"])
     }
 
     // MARK: - Auto-identify
