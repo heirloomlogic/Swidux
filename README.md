@@ -220,7 +220,7 @@ Swift 6.2+ / Xcode 26+, macOS 15+ / iOS 18+. Strict concurrency (`.swiftLanguage
 
 ## Contributing
 
-Release history lives in [CHANGELOG.md](CHANGELOG.md). Development setup — including the `.dev-tooling` sentinel that gates the lint and DocC tooling — is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
+Release history lives in [Releases](https://github.com/heirloomlogic/Swidux/releases). Development setup — including the `.dev-tooling` sentinel that gates the lint and DocC tooling — is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
