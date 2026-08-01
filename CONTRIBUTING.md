@@ -49,3 +49,14 @@ locally before opening a PR. With the sentinel in place, Persnoop lints on every
 ```sh
 swift package plugin --allow-writing-to-package-directory format-source-code
 ```
+
+## Release notes
+
+Write release notes on the GitHub Release. `CHANGELOG.md` is generated from the
+Releases API by `.github/workflows/changelog.yml` and regenerated on every
+release publish, edit, or delete — hand edits are overwritten, so don't make
+them. `bin/generate-changelog` previews the output locally.
+
+Label your PR `enhancement`, `changed`, `bug`, `security`, or `documentation`.
+`.github/release.yml` groups the auto-generated notes under those headings;
+unlabeled PRs land in **Other Changes** rather than being dropped.
