@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Regenerates CHANGELOG.md from this repo's published GitHub Releases.
+#
+# Releases are the source of truth; CHANGELOG.md is a generated mirror so the
+# history is readable from a checkout. `.github/workflows/changelog.yml` runs
+# this on every release publish/edit/delete. Run it by hand to preview:
+#
+#   bin/generate-changelog                 # writes ./CHANGELOG.md
+#   bin/generate-changelog owner/repo out  # explicit repo and destination
+#
+set -euo pipefail
+
+out="${2:-CHANGELOG.md}"
+
+command -v gh >/dev/null || { echo "gh is required" >&2; exit 1; }
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+
+# Nothing here is repo-specific: the target is the argument, the one CI sets,
+# or whatever checkout you are standing in. This script is meant to drop into
+# any Heirloom Logic repo unchanged.
+repo="${1:-${GITHUB_REPOSITORY:-}}"
+[ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+
+# Release bodies carry their own headings ("## What's Changed", or the
+# categories from .github/release.yml). Demote them one level so they nest
+# under the version heading instead of competing with it. Fenced blocks are
+# left alone so a shell comment never reads as a heading.
+demote_headings() {
+  awk '
+    /^(```|~~~)/ { fence = !fence }
+    !fence && /^#{1,5} / { sub(/^/, "#") }
+    { print }
+  '
+}
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+{
+  printf '# Changelog\n\n'
+  printf 'Generated from [GitHub Releases](https://github.com/%s/releases) by\n' "$repo"
+  printf '`.github/workflows/changelog.yml`. Edits here are overwritten on the next\n'
+  printf 'release — write release notes on the release itself.\n'
+
+  gh api --paginate "repos/$repo/releases" \
+    --jq '.[] | select(.draft | not)
+          | {tag: .tag_name,
+             date: ((.published_at // .created_at) | .[0:10]),
+             url: .html_url,
+             prerelease: .prerelease,
+             body: (.body // "")}' \
+  | while IFS= read -r release; do
+      tag="$(jq -r '.tag' <<<"$release")"
+      date="$(jq -r '.date' <<<"$release")"
+      url="$(jq -r '.url' <<<"$release")"
+      prerelease="$(jq -r '.prerelease' <<<"$release")"
+      body="$(jq -r '.body' <<<"$release")"
+
+      suffix=""
+      [ "$prerelease" = "true" ] && suffix=" (pre-release)"
+
+      printf '\n## [%s](%s) — %s%s\n\n' "$tag" "$url" "$date" "$suffix"
+
+      # Strip CRs that GitHub stores in release bodies, then normalise to
+      # exactly one trailing newline so spacing stays even between versions.
+      trimmed="$(printf '%s' "$body" | tr -d '\r' | demote_headings)"
+      if [ -n "$(printf '%s' "$trimmed" | tr -d '[:space:]')" ]; then
+        printf '%s\n' "$trimmed"
+      else
+        printf '_No release notes._\n'
+      fi
+    done
+} > "$tmp"
+
+# Collapse any run of blank lines to one, so demoted bodies with trailing
+# whitespace don't leave gaps.
+awk 'NF == 0 { blank = 1; next } { if (blank) print ""; blank = 0; print }' "$tmp" > "$out"
+
+echo "Wrote $out ($(wc -l < "$out" | tr -d ' ') lines) from $repo releases." >&2
