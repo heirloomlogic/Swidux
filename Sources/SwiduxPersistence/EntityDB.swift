@@ -159,6 +159,72 @@ public actor EntityDB {
         try modelContext.save()
     }
 
+    /// Collapses the stored rows of `M` using an app-supplied resolver, in a
+    /// single transaction.
+    ///
+    /// `collapse` receives **every** row on disk in fetch order, duplicates
+    /// included, and returns the survivors. IDs present in the input and absent
+    /// from the output are deleted, including every row carrying them.
+    /// Survivors whose value differs from the stored row are written back to
+    /// every row for that ID.
+    ///
+    /// Rows that share a *surviving* ID are converged, not deleted — see
+    /// ``EntityCollapse`` for why removing an ID is safe under CloudKit and
+    /// removing one of several rows sharing an ID is not.
+    ///
+    /// This is the only operation that deletes anything the caller did not
+    /// explicitly name, and it is opt-in for a reason: the framework cannot
+    /// pick a survivor safely on its own.
+    ///
+    /// - Returns: The survivors and the IDs removed from disk.
+    /// - Throws: Whatever the underlying fetch or save throws. The context is
+    ///   rolled back before rethrowing.
+    @discardableResult
+    public func collapseDuplicates<M: PersistableModel>(
+        as type: M.Type,
+        using collapse: @Sendable ([M.Domain]) -> [M.Domain]
+    ) throws -> CollapseOutcome<M.Domain> {
+        do {
+            let rows = try modelContext.fetch(FetchDescriptor<M>())
+            var byID: [UUID: [M]] = [:]
+            for row in rows { byID[row.id, default: []].append(row) }
+
+            let survivors = collapse(rows.map { $0.toDomain() })
+            let survivingIDs = Set(survivors.map(\.id))
+
+            assert(
+                Set(collapse(survivors).map(\.id)) == survivingIDs,
+                """
+                collapse must be idempotent: re-running it on its own output changed the surviving IDs. \
+                A collapse that keeps rewriting its own result never converges.
+                """
+            )
+
+            let removedIDs = Set(byID.keys).subtracting(survivingIDs)
+            for id in removedIDs {
+                for row in byID[id] ?? [] { modelContext.delete(row) }
+            }
+            for survivor in survivors {
+                let existing = byID[survivor.id] ?? []
+                if existing.isEmpty {
+                    // A survivor the collapse synthesized under an ID that was
+                    // not on disk. Insert it rather than dropping it silently.
+                    modelContext.insert(M(from: survivor))
+                } else {
+                    for row in existing where row.toDomain() != survivor {
+                        row.update(from: survivor)
+                    }
+                }
+            }
+
+            try modelContext.save()
+            return CollapseOutcome(survivors: survivors, removedIDs: removedIDs)
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
     /// Every row matching `id` — plural, because there is no unique constraint.
     private func rows<M: PersistableModel>(for id: UUID, as type: M.Type) throws -> [M] {
         // Per-model descriptor, not a generic `#Predicate` — see `swiduxBatchFetchDescriptor`.

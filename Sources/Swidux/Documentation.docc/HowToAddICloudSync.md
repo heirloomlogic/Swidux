@@ -157,6 +157,35 @@ Capture the store **weakly**: the observer usually outlives the view layer, and 
 
 > Important: The same merge rule makes mid-session sync **additive-only**. Rows created on another device appear live; remote *edits* to entities already in memory and remote *deletions* do **not** surface until the next launch (the in-memory value always wins, and a merge never removes). This is the deliberate trade against clobbering unflushed writes and live UI edits — set expectations accordingly in your UI, and don't chase "stale until relaunch" reports as bugs.
 
+## Step 8: Duplicates (optional)
+
+CloudKit forbids unique constraints, so `@Persisted` generates none — and two devices can legitimately end up holding two rows for the same entity. This is handled for you by default: writes update every matching row, deletions remove every matching row, and reads collapse to one value per `id`. Duplicates cost storage and nothing else, so most apps can stop here.
+
+Two situations are worth an explicit resolver:
+
+**Duplicate `id`s.** Converge them on a winner you choose:
+
+```swift
+.entity(\.cards, collapse: EntityCollapse.byID { $0.updatedAt >= $1.updatedAt ? $0 : $1 })
+```
+
+**Singletons.** An entity your app holds exactly one of — app settings, a profile — created independently on two fresh installs has two *different* UUIDs, so nothing pairs them and no `id`-keyed resolver can ever see the conflict. Merge them by hand:
+
+```swift
+.entity(\.settings, collapse: { rows in
+    guard rows.count > 1 else { return rows }
+    // `id` is replicated, so min-by-UUID is the same choice on every device.
+    let winner = rows.min { $0.id.uuidString < $1.id.uuidString }!
+    return [rows.dropFirst().reduce(winner) { $0.merging($1) }]
+})
+```
+
+Resolvers run on hydration and re-hydration; call `persistence.collapseDuplicates(into:)` for an on-demand "repair my data" action.
+
+> Important: A resolver must be a pure function of **replicated content** — never `persistentModelID`, a local timestamp, or array position — so every device computes the same answer. It must also be idempotent (asserted in debug builds).
+>
+> Note what a resolver can and cannot remove. Dropping an `id` deletes it everywhere, and that is safe because `id` is replicated: every device independently decides to delete the same thing. Rows that *share* a surviving `id` are converged onto the winner's value but never deleted — nothing replicated distinguishes them, so two devices could each keep a different physical row, tombstone the other's, and lose both.
+
 ## What the privacy toggle does (and doesn't)
 
 Be accurate about CloudKit semantics in your UI copy:

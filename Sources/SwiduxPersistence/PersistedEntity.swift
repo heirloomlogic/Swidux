@@ -45,10 +45,26 @@ public struct PersistedEntity<State> {
     /// Phase 1 of re-hydration: reads the database, touches no state.
     let readForMerge: @MainActor (DatabaseHandle, PersistenceFailureHandler) async -> Apply
 
+    /// Runs the registered collapse against disk, if any, and returns the fold
+    /// that removes the losers from live state.
+    let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceFailureHandler) async -> Apply
+
     /// Registers the `EntityStore<E>` at `keyPath` for persistence.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The path to this entity's `EntityStore` on the root state.
+    ///   - collapse: An optional resolver that removes duplicate rows from
+    ///     disk. Without one, duplicates are harmless but permanent: writes and
+    ///     deletions converge across every matching row, and reads collapse to
+    ///     one value per ID, but nothing is ever deleted. Supply one to
+    ///     actually reclaim them — see ``EntityCollapse`` for the determinism
+    ///     and idempotence requirements, which are load-bearing under CloudKit.
+    ///     Runs on hydration and re-hydration, not on the write path.
+    /// - Returns: The registration to pass to ``PersistenceCoordinator``.
     @MainActor
     public static func entity<E: PersistableEntity>(
-        _ keyPath: WritableKeyPath<State, EntityStore<E>>
+        _ keyPath: WritableKeyPath<State, EntityStore<E>>,
+        collapse: (@Sendable (_ rows: [E]) -> [E])? = nil
     ) -> PersistedEntity<State> where E.Model: PersistentModel {
         PersistedEntity(
             model: E.Model.self,
@@ -89,6 +105,25 @@ public struct PersistedEntity<State> {
                 } catch {
                     onFailure(
                         PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
+                    return { _ in }
+                }
+            },
+            collapseOnDisk: { handle, onFailure in
+                guard let collapse else { return { _ in } }
+                do {
+                    let outcome = try await handle.db.collapseDuplicates(as: E.Model.self, using: collapse)
+                    guard !outcome.removedIDs.isEmpty else { return { _ in } }
+                    return { state in
+                        // Record the removals. A collapsed-away loser would
+                        // otherwise linger in memory as a zombie until relaunch,
+                        // and the merge that follows would happily keep it. The
+                        // recorded deletions flush later as no-ops against rows
+                        // that are already gone, which is harmless.
+                        state[keyPath: keyPath].remove(ids: outcome.removedIDs)
+                    }
+                } catch {
+                    onFailure(
+                        PersistenceFailure(operation: .save, entityType: "\(E.self)", underlying: error))
                     return { _ in }
                 }
             }

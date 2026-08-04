@@ -153,13 +153,36 @@ public final class PersistenceCoordinator<State, Action> {
     /// pack its snapshot after the last `await`.
     private func readPhase(merging: Bool) async -> [PersistedEntity<State>.Apply] {
         var applies: [PersistedEntity<State>.Apply] = []
-        applies.reserveCapacity(entities.count)
+        applies.reserveCapacity(entities.count * 2)
+        // Collapse first, so the read that follows sees the reclaimed store and
+        // the removals are recorded before the merge could re-absorb a loser.
+        for entity in entities {
+            applies.append(await entity.collapseOnDisk(handle, onFailure))
+        }
         for entity in entities {
             let read = merging ? entity.readForMerge : entity.readForHydrate
             applies.append(await read(handle, onFailure))
         }
         await duringReadPhase?()
         return applies
+    }
+
+    /// Runs every registered collapse resolver against disk.
+    ///
+    /// Hydration and re-hydration already do this; call it directly for an
+    /// on-demand "repair my data" action, or from a remote-change observer that
+    /// doesn't want a full merge. A no-op for entities registered without a
+    /// resolver.
+    ///
+    /// Pending writes are flushed first, so a collapse can't run against a
+    /// stale row and resurrect an edit the user just made.
+    public func collapseDuplicates(into state: inout State) async {
+        await corePlugin.flush()
+        var applies: [PersistedEntity<State>.Apply] = []
+        for entity in entities {
+            applies.append(await entity.collapseOnDisk(handle, onFailure))
+        }
+        for apply in applies { apply(&state) }
     }
 }
 
@@ -208,6 +231,21 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     public func rehydrate(into store: Store<State, Action>) async {
         await corePlugin.flush()
         let applies = await readPhase(merging: true)
+        await store.mutate {
+            applies
+        } merging: { applies, state in
+            for apply in applies { apply(&state) }
+        }
+    }
+
+    /// Runs every registered collapse resolver against disk, applying the
+    /// result to a live store. See ``collapseDuplicates(into:)-(inout)``.
+    public func collapseDuplicates(into store: Store<State, Action>) async {
+        await corePlugin.flush()
+        var applies: [PersistedEntity<State>.Apply] = []
+        for entity in entities {
+            applies.append(await entity.collapseOnDisk(handle, onFailure))
+        }
         await store.mutate {
             applies
         } merging: { applies, state in
