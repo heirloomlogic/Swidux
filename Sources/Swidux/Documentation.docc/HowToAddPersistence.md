@@ -82,7 +82,7 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 | `@Relation(deleteRule:inverse:)` | A SwiftData relationship to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow. `inverse` is a key path on the generated model, e.g. `\TagModel.card`. `deleteRule` is a `SwiduxDeleteRule` (`.cascade`, `.nullify`, `.noAction`, `.deny`). |
 | `@Ignored` | Exclude a derived/denormalized property. Must be optional so it can be reconstructed as `nil` on load. |
 
-> Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints. Identity is enforced by upsert-by-`id` inside `EntityDB`, so the same generated model works for both local and synced containers.
+> Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints — so the same generated model works for both local and synced containers. The cost is that rows sharing an `id` are possible. `EntityDB` handles them by converging rather than by assuming uniqueness: writes update every matching row, deletions remove every matching row, and `fetchAll` collapses to one value per `id`. Nothing deletes a duplicate as a side effect of a write.
 
 ## Step 3: Put the `EntityStore` on your state
 
@@ -125,7 +125,28 @@ extension Store where State == AppState, Action == AppAction {
 }
 ```
 
-`hydrate(into:)` is **first-load only** — it replaces each ``EntityStore`` with the on-disk rows before any live edits exist. The only refresh path after launch is `rehydrate(into:)`, which always *merges* (preferring in-memory values) so a "refresh from disk" can never clobber unflushed writes or in-progress UI edits.
+`hydrate(into:)` is **first-load only** — it replaces each ``EntityStore`` with the on-disk rows before any live edits exist. It takes `inout State` because it runs *before the store is built*, so there is nothing to race with.
+
+The only refresh path after launch is `rehydrate(into:)`, which *reconciles* rather than replaces: rows on disk are authoritative except for IDs that still carry unflushed local intent, which always win. So a "refresh from disk" can never clobber pending writes or in-progress UI edits, while remote edits and deletions still surface mid-session. Pass `policy:` — or register an entity with `policy:` — to narrow that; see `MergePolicy` and <doc:HowToAddICloudSync>.
+
+It takes the **store**, not `inout State`: re-hydration is asynchronous, and a caller holding a state snapshot across those `await`s would discard everything dispatched while they were in flight. See <doc:Troubleshooting> if edits are vanishing after a load.
+
+If you need to *read* rows without touching state, don't re-hydrate into a throwaway `AppState()` — that idiom breaks silently the moment re-hydration starts reading the state it is handed. Use `fetchAll(of:)` / `snapshot(of:)` on the coordinator instead.
+
+### Reading rows without touching state
+
+For exports, migrations, diagnostics, or any other "what's actually on disk?" question, read directly — naming your domain type, not its generated shadow:
+
+```swift
+let notes = try await persistence.fetchAll(of: Note.self)
+let store = try await persistence.snapshot(of: Note.self)   // as an EntityStore
+```
+
+Both flush the debounce window first by default, so they can't return a stale row for something the user just edited; pass `flushPending: false` on a hot path where that doesn't matter. Both report failures to `onFailure` **and** rethrow — there is no state to leave untouched here, so swallowing the error could only present an unreadable database as "no data".
+
+The entity does not have to be registered with the coordinator; reading a model that is in the container's schema but not mirrored into state is fine.
+
+> Important: Don't answer these questions by re-hydrating into a throwaway `AppState()`. That reads like a pure fetch but is really a merge, and it breaks silently the moment re-hydration starts consulting the state it is handed.
 
 ### Surfacing failures
 

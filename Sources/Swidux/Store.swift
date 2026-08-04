@@ -144,16 +144,82 @@ public final class Store<State: SwiduxObservable, Action> {
         defer { isDispatching = false }
 
         dispatch(action)
-        // Index-based drain rather than repeated `removeFirst()` (each O(k),
-        // so the loop was O(k²)). Re-read `count` every iteration: an action
-        // dispatched mid-drain may append further pending actions, which must
-        // still drain FIFO in this same pass.
+        drainPending()
+    }
+
+    /// Runs every action deferred by a re-entrant `send`. Callers must hold
+    /// `isDispatching`.
+    ///
+    /// Index-based drain rather than repeated `removeFirst()` (each O(k), so
+    /// the loop was O(k²)). Re-reads `count` every iteration: an action
+    /// dispatched mid-drain may append further pending actions, which must
+    /// still drain FIFO in this same pass.
+    private func drainPending() {
         var index = 0
         while index < pendingActions.count {
             dispatch(pendingActions[index])
             index += 1
         }
         pendingActions.removeAll()
+    }
+
+    /// Runs async work that must not hold state across its suspensions, then
+    /// folds the result into a **freshly packed** snapshot in one
+    /// suspension-free step.
+    ///
+    /// This is the supported way to bring the result of an `await` into a live
+    /// store. The obvious hand-rolled shape is a lost-write bug:
+    ///
+    /// ```swift
+    /// var snapshot = State(observer: store.observer)   // ← packed BEFORE the await
+    /// await load(into: &snapshot)                      // ← dispatches land here…
+    /// State.apply(snapshot, to: store.observer)        // ← …and are overwritten here
+    /// ```
+    ///
+    /// `mutate` closes that window by construction. `produce` receives no
+    /// state, so it *cannot* hold one across an `await`; `apply` is
+    /// synchronous, so no dispatch can interleave between the pack and the
+    /// unpack (re-entering the main actor requires a suspension point, and
+    /// there is none).
+    ///
+    /// ```swift
+    /// await store.mutate {
+    ///     try await api.fetchItems()
+    /// } merging: { items, state in
+    ///     state.items.merge(from: EntityStore(items)) { _, _ in false }
+    /// }
+    /// ```
+    ///
+    /// Entity changes recorded by `apply` are drained and scheduled for
+    /// persistence exactly as after a dispatch, and a `send(_:)` issued from
+    /// inside `apply` is deferred and runs after the merge commits — see
+    /// ``send(_:)``.
+    public func mutate<Value>(
+        awaiting produce: @MainActor () async throws -> Value,
+        merging apply: @MainActor (Value, inout State) -> Void
+    ) async rethrows {
+        let value = try await produce()
+        mutate { apply(value, &$0) }
+    }
+
+    /// Folds a synchronous mutation into a freshly packed snapshot.
+    ///
+    /// The whole body runs without a suspension point, so no dispatch can land
+    /// between the pack and the unpack. Use this directly when the `await`ing
+    /// is already done and you just need the result folded in safely;
+    /// ``mutate(awaiting:merging:)`` is the same thing with the await attached.
+    ///
+    /// Entity changes recorded by `apply` are drained and scheduled for
+    /// persistence exactly as after a dispatch, and a `send(_:)` issued from
+    /// inside `apply` is deferred and runs after the merge commits.
+    public func mutate(_ apply: @MainActor (inout State) -> Void) {
+        isDispatching = true
+        defer { isDispatching = false }
+        var state = State(observer: observer)
+        apply(&state)
+        persistencePlugin?.drainAndScheduleFlush(&state)
+        State.apply(state, to: observer)
+        drainPending()
     }
 
     /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.

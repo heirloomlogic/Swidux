@@ -63,14 +63,6 @@ final class PersistedMacroTests: XCTestCase {
                         self.count = domain.count
                     }
 
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<CounterModel> {
-                        var descriptor = FetchDescriptor<CounterModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
-                    }
-
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<CounterModel> {
                         FetchDescriptor<CounterModel>(predicate: #Predicate {
                                 ids.contains($0.id)
@@ -144,14 +136,6 @@ final class PersistedMacroTests: XCTestCase {
                         self.ownerID = domain.ownerID
                     }
 
-                    public static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<ProfileModel> {
-                        var descriptor = FetchDescriptor<ProfileModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
-                    }
-
                     public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
                         FetchDescriptor<ProfileModel>(predicate: #Predicate {
                                 ids.contains($0.id)
@@ -217,14 +201,6 @@ final class PersistedMacroTests: XCTestCase {
                         }
                     }
 
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<DeckModel> {
-                        var descriptor = FetchDescriptor<DeckModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
-                    }
-
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel> {
                         FetchDescriptor<DeckModel>(predicate: #Predicate {
                                 ids.contains($0.id)
@@ -279,14 +255,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Pet) {
                         self.owner = PersonModel(from: domain.owner)
-                    }
-
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<PetModel> {
-                        var descriptor = FetchDescriptor<PetModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel> {
@@ -356,14 +324,6 @@ final class PersistedMacroTests: XCTestCase {
                         }
                     }
 
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<PetModel> {
-                        var descriptor = FetchDescriptor<PetModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
-                    }
-
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel> {
                         FetchDescriptor<PetModel>(predicate: #Predicate {
                                 ids.contains($0.id)
@@ -426,14 +386,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Doc) {
                         self.meta = domain.meta
-                    }
-
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<DocModel> {
-                        var descriptor = FetchDescriptor<DocModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DocModel> {
@@ -506,14 +458,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     }
 
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<NoteModel> {
-                        var descriptor = FetchDescriptor<NoteModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
-                    }
-
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<NoteModel> {
                         FetchDescriptor<NoteModel>(predicate: #Predicate {
                                 ids.contains($0.id)
@@ -571,14 +515,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Foo) {
 
-                    }
-
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<FooModel> {
-                        var descriptor = FetchDescriptor<FooModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<FooModel> {
@@ -646,14 +582,6 @@ final class PersistedMacroTests: XCTestCase {
                         self.count = domain.count
                     }
 
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<CounterModel> {
-                        var descriptor = FetchDescriptor<CounterModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
-                    }
-
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<CounterModel> {
                         FetchDescriptor<CounterModel>(predicate: #Predicate {
                                 ids.contains($0.id)
@@ -706,14 +634,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Person) {
                         self.nickname = domain.nickname
-                    }
-
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<PersonModel> {
-                        var descriptor = FetchDescriptor<PersonModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PersonModel> {
@@ -769,14 +689,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Task) {
                         self.status = domain.status
-                    }
-
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<TaskModel> {
-                        var descriptor = FetchDescriptor<TaskModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<TaskModel> {
@@ -855,14 +767,6 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Profile) {
                         self.settings = domain.settings
-                    }
-
-                    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<ProfileModel> {
-                        var descriptor = FetchDescriptor<ProfileModel>(predicate: #Predicate {
-                                $0.id == id
-                            })
-                        descriptor.fetchLimit = 1
-                        return descriptor
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {

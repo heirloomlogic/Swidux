@@ -77,6 +77,7 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 ### Store
 
 - ``Store``
+- ``Store/mutate(awaiting:merging:)``
 - ``SwiduxObservable``
 - ``SwiduxReducer``
 - ``SwiduxDispatcher``

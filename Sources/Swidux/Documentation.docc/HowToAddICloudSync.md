@@ -97,15 +97,16 @@ let sync = SyncCoordinator<AppState, AppAction>(
 )
 ```
 
-From a Settings toggle, call `setSyncEnabled(_:into:)`:
+From a Settings toggle, call `setSyncEnabled(_:into:)` with the **store**, then record the result with a normal dispatch:
 
 ```swift
-let status = await sync.setSyncEnabled(isOn, into: &state)
-state.persistence.syncMode = sync.mode
-state.persistence.syncStatus = status
+let status = await sync.setSyncEnabled(isOn, into: store)
+store.send(.syncSettingsChanged(mode: sync.mode, status: status))
 ```
 
 `setSyncEnabled` flushes pending writes, resolves availability, rebuilds the container in the *effective* mode (CloudKit only when actually usable, else a local fallback), swaps the active database behind the coordinator's handle, persists the user's choice, and re-hydrates via `merge` (never replace). It returns the resolved `SyncStatus`.
+
+It takes the store rather than `inout State` because all of that is asynchronous. Every one of those `await`s is a window in which the user can keep editing, and a caller holding a state snapshot across them would overwrite whatever landed. Here the flush, preflight, and rebuild all complete first; only then does one suspension-free step pack a fresh snapshot, merge, and unpack. Nothing can interleave between that pack and the follow-up `send` either — the main actor can only be re-entered at a suspension point, and there is none.
 
 ## Step 6: Detect availability and degrade gracefully
 
@@ -133,15 +134,68 @@ The Keychain `−34018` condition (from `KeychainKeyValueStore`, used for analyt
 Start a `RemoteChangeObserver` while in cloud mode to pull in changes from other devices:
 
 ```swift
-let observer = RemoteChangeObserver(debounce: .seconds(2)) {
-    await persistence.rehydrate(into: &state)   // merge, never replace
+let observer = RemoteChangeObserver(debounce: .seconds(2)) { [weak store] in
+    guard let store else { return }
+    await persistence.rehydrate(into: store)   // merge, never replace
 }
 observer.start()
 ```
 
+Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
+
 `.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Because re-hydration always **merges preferring in-memory state**, feeding the app its own writes is a no-op — the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
 
-> Important: The same merge rule makes mid-session sync **additive-only**. Rows created on another device appear live; remote *edits* to entities already in memory and remote *deletions* do **not** surface until the next launch (the in-memory value always wins, and a merge never removes). This is the deliberate trade against clobbering unflushed writes and live UI edits — set expectations accordingly in your UI, and don't chase "stale until relaunch" reports as bugs.
+> Warning: Do not hand-roll this by snapshotting state around the `await`:
+>
+> ```swift
+> var snapshot = AppState(observer: store.observer)   // ← packed BEFORE the awaits
+> await persistence.rehydrate(into: &snapshot)        // ← the user keeps typing here…
+> AppState.apply(snapshot, to: store.observer)        // ← …and those edits are gone
+> ```
+>
+> That loses every write dispatched while the flush and fetches are in flight, and it surfaces as intermittently vanishing keystrokes rather than as an obvious failure. `rehydrate(into:)` takes the store precisely so this shape has no reason to exist; for your own async work, use ``Store/mutate(awaiting:merging:)``.
+
+By default (`MergePolicy.preferRemote`) remote creations, edits, **and** deletions all surface mid-session. An ID is exempt whenever the local side still has something to say about it — an un-drained edit, a drained-but-unflushed write, a pending deletion, or a write whose save failed. Those always win, and that guarantee is not configurable.
+
+Two things are worth knowing:
+
+- **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing.
+- **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Bindings made with `store.binding(_:sending:)` dispatch on write and are covered.
+
+For a store backing a live text editor, where a remote edit arriving under the cursor is worse than a stale row, register it additive-only:
+
+```swift
+.entity(\.documents, policy: .preferInMemory)
+```
+
+## Step 8: Duplicates (optional)
+
+CloudKit forbids unique constraints, so `@Persisted` generates none — and two devices can legitimately end up holding two rows for the same entity. This is handled for you by default: writes update every matching row, deletions remove every matching row, and reads collapse to one value per `id`. Duplicates cost storage and nothing else, so most apps can stop here.
+
+Two situations are worth an explicit resolver:
+
+**Duplicate `id`s.** Converge them on a winner you choose:
+
+```swift
+.entity(\.cards, collapse: EntityCollapse.byID { $0.updatedAt >= $1.updatedAt ? $0 : $1 })
+```
+
+**Singletons.** An entity your app holds exactly one of — app settings, a profile — created independently on two fresh installs has two *different* UUIDs, so nothing pairs them and no `id`-keyed resolver can ever see the conflict. Merge them by hand:
+
+```swift
+.entity(\.settings, collapse: { rows in
+    guard rows.count > 1 else { return rows }
+    // `id` is replicated, so min-by-UUID is the same choice on every device.
+    let winner = rows.min { $0.id.uuidString < $1.id.uuidString }!
+    return [rows.dropFirst().reduce(winner) { $0.merging($1) }]
+})
+```
+
+Resolvers run on hydration and re-hydration; call `persistence.collapseDuplicates(into:)` for an on-demand "repair my data" action.
+
+> Important: A resolver must be a pure function of **replicated content** — never `persistentModelID`, a local timestamp, or array position — so every device computes the same answer. It must also be idempotent (asserted in debug builds).
+>
+> Note what a resolver can and cannot remove. Dropping an `id` deletes it everywhere, and that is safe because `id` is replicated: every device independently decides to delete the same thing. Rows that *share* a surviving `id` are converged onto the winner's value but never deleted — nothing replicated distinguishes them, so two devices could each keep a different physical row, tombstone the other's, and lose both.
 
 ## What the privacy toggle does (and doesn't)
 

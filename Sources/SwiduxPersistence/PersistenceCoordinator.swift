@@ -39,6 +39,13 @@ public final class PersistenceCoordinator<State, Action> {
     private let entities: [PersistedEntity<State>]
     private let onFailure: PersistenceFailureHandler
 
+    /// Index-aligned with `entities`. Kept so the merge can ask each writer
+    /// what it still holds unflushed.
+    private let writers: [StateWriter<State>]
+
+    /// The default policy for ``rehydrate(into:policy:)``.
+    public let mergePolicy: MergePolicy
+
     /// The currently active database actor.
     public var database: EntityDB { handle.db }
 
@@ -48,6 +55,10 @@ public final class PersistenceCoordinator<State, Action> {
     ///   - entities: The registered entity collections (``PersistedEntity/entity(_:)``).
     ///   - container: The prepared `ModelContainer`.
     ///   - debounce: How long the core plugin waits after the last change before flushing.
+    ///   - mergePolicy: How ``rehydrate(into:policy:)`` resolves storage
+    ///     against live state. Defaults to ``MergePolicy/preferRemote``, so
+    ///     remote edits and deletions surface mid-session. Individual entities
+    ///     can narrow it via ``PersistedEntity/entity(_:policy:collapse:)``.
     ///   - onFailure: Called when a save or fetch fails. Every failure is
     ///     logged regardless; supply a handler to additionally surface it
     ///     (e.g. dispatch an action that shows a "couldn't save" banner).
@@ -57,9 +68,11 @@ public final class PersistenceCoordinator<State, Action> {
         entities: [PersistedEntity<State>],
         container: ModelContainer,
         debounce: Duration = .milliseconds(250),
+        mergePolicy: MergePolicy = .preferRemote,
         onFailure: PersistenceFailureHandler? = nil
     ) {
         self.entities = entities
+        self.mergePolicy = mergePolicy
         let handle = DatabaseHandle(EntityDB(modelContainer: container))
         self.handle = handle
 
@@ -77,43 +90,211 @@ public final class PersistenceCoordinator<State, Action> {
         self.onFailure = handler
 
         let writers = entities.map { $0.makeWriter(handle, handler) }
+        self.writers = writers
         self.corePlugin = PersistencePlugin(writers: writers, debounce: debounce)
     }
 
+    /// Test seam: awaited once inside the read phase, after any flush and
+    /// before any state is packed — the window that used to lose writes.
+    var duringReadPhase: (@MainActor () async -> Void)?
+
+    // MARK: - Reading without mutating
+
+    /// Reads every persisted row of `E` **without touching state**.
+    ///
+    /// Use this for exports, migrations, diagnostics, and any "what's on disk?"
+    /// question. Do *not* answer those by re-hydrating into a throwaway
+    /// `AppState()`: that idiom reads as if it were a pure fetch but is
+    /// actually a merge, so it breaks silently the moment re-hydration starts
+    /// consulting the state it is handed.
+    ///
+    /// - Parameters:
+    ///   - type: The domain entity type, e.g. `Note.self`.
+    ///   - flushPending: Drains the debounce window first (the default), so the
+    ///     read cannot return a stale row for an entity the user just edited.
+    ///     Pass `false` on a hot path where staleness is acceptable. Never pass
+    ///     `true` from inside a persist handler — the flush would await itself.
+    /// - Returns: Every persisted row of `E`, in fetch order.
+    /// - Throws: Whatever the underlying fetch throws. Failures are reported to
+    ///   `onFailure` **and** rethrown: unlike hydration there is no state to
+    ///   leave untouched here, so swallowing the error could only present an
+    ///   unreadable database as "no data".
+    ///
+    /// `E` need not be a registered entity: reading a model that is in the
+    /// container's schema but not mirrored into state is legitimate.
+    public func fetchAll<E: PersistableEntity>(
+        of type: E.Type,
+        flushPending: Bool = true
+    ) async throws -> [E] {
+        if flushPending { await corePlugin.flush() }
+        do {
+            return try await handle.db.fetchAll(of: E.self)
+        } catch {
+            onFailure(PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
+            throw error
+        }
+    }
+
+    /// The same rows as ``fetchAll(of:flushPending:)``, as a change-free
+    /// ``EntityStore`` ready to `merge(from:)` or diff against live state.
+    public func snapshot<E: PersistableEntity>(
+        of type: E.Type,
+        flushPending: Bool = true
+    ) async throws -> EntityStore<E> {
+        EntityStore(try await fetchAll(of: E.self, flushPending: flushPending))
+    }
+
     /// First-load hydration: replaces each `EntityStore` with the on-disk rows.
-    /// Safe only at launch, before any live edits exist.
+    ///
+    /// Takes `inout State` because it runs *before the store exists* — the
+    /// canonical launch sequence hydrates a plain value and hands the result to
+    /// `Store(initialState:)`. There is no observer to race with, so there is
+    /// no lost-write hazard here. Use ``hydrate(into:)-(Store)`` if the store
+    /// is already built.
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// (it does **not** become empty) and the failure is reported via `onFailure`.
     public func hydrate(into state: inout State) async {
+        let applies = await hydratePhase()
+        for apply in applies { apply(&state) }
+    }
+
+    /// Runs every registered entity's hydration read in registration order,
+    /// touching no state, and returns the synchronous folds to apply.
+    ///
+    /// All fetches complete before any fold runs. That makes a multi-entity
+    /// read atomic with respect to dispatch, and it is what lets the caller
+    /// pack its snapshot after the last `await`.
+    private func hydratePhase() async -> [PersistedEntity<State>.Apply] {
+        var applies: [PersistedEntity<State>.Apply] = []
+        applies.reserveCapacity(entities.count)
         for entity in entities {
-            await entity.hydrate(handle, &state, onFailure)
+            applies.append(await entity.readForHydrate(handle, onFailure))
+        }
+        await duringReadPhase?()
+        return applies
+    }
+
+    /// The re-hydration equivalent of ``hydratePhase()``.
+    ///
+    /// Each fold arrives with its entity's policy and dirty set already bound,
+    /// resolved lazily inside the closure — so dirtiness is read once every
+    /// fetch has completed, and a write that landed during the flush or during
+    /// the fetch still counts as locally owned.
+    private func mergePhase() async -> [@MainActor (inout State, MergePolicy?) -> Void] {
+        var folds: [@MainActor (inout State, MergePolicy?) -> Void] = []
+        folds.reserveCapacity(entities.count)
+        for (entity, writer) in zip(entities, writers) {
+            let merge = await entity.readForMerge(handle, onFailure)
+            folds.append { [mergePolicy] state, override in
+                // Three sources, because no one of them is complete: the writer
+                // holds drained-but-unflushed IDs, the ledger holds IDs whose
+                // save failed, and the store's own `changes` hold mutations not
+                // yet drained. `reconcile` folds in the third.
+                let owned = writer.pendingIDs.union(entity.unpersisted.ids)
+                var resolved = mergePolicy
+                if let entityPolicy = entity.policy { resolved = resolved.restricted(by: entityPolicy) }
+                if let override { resolved = resolved.restricted(by: override) }
+                merge(&state, MergeContext(policy: resolved, locallyOwnedIDs: owned))
+            }
+        }
+        await duringReadPhase?()
+        return folds
+    }
+
+    /// Runs every registered collapse resolver against storage, in registration
+    /// order, touching no state.
+    private func collapsePhase() async -> [PersistedEntity<State>.Apply] {
+        var applies: [PersistedEntity<State>.Apply] = []
+        applies.reserveCapacity(entities.count)
+        for entity in entities {
+            applies.append(await entity.collapseOnDisk(handle, onFailure))
+        }
+        await duringReadPhase?()
+        return applies
+    }
+
+    /// Runs every registered collapse resolver against storage.
+    ///
+    /// Hydration and re-hydration already do this as part of their read; call
+    /// it directly for an on-demand "repair my data" action, or from a
+    /// remote-change observer that doesn't want a full merge. A no-op for
+    /// entities registered without a resolver.
+    ///
+    /// Pending writes are flushed first, so a collapse can't run against a
+    /// stale row and resurrect an edit the user just made.
+    public func collapseDuplicates(into state: inout State) async {
+        await corePlugin.flush()
+        for apply in await collapsePhase() { apply(&state) }
+    }
+}
+
+extension PersistenceCoordinator where State: SwiduxObservable {
+    /// First-load hydration straight into a live store.
+    ///
+    /// Registered `EntityStore`s are **replaced** — that is what first-load
+    /// means — so gate the UI on `hydrationPhase` until this returns. Slices
+    /// that hold no registered entity are preserved, including changes made
+    /// while the reads were in flight.
+    public func hydrate(into store: Store<State, Action>) async {
+        let applies = await hydratePhase()
+        store.mutate { state in
+            for apply in applies { apply(&state) }
         }
     }
 
-    /// Re-hydration that merges disk rows into the live `EntityStore`s without
-    /// dropping unflushed writes or in-progress edits (rule #8).
+    /// Re-hydration that reconciles stored rows into the live `EntityStore`s
+    /// without dropping unflushed writes or in-progress edits (rule #8).
     ///
-    /// > Important: The merge prefers the in-memory value for **every** ID
-    /// > already in memory, and never removes entities. Mid-session, remote
-    /// > *edits* to entities you already hold and remote *deletions* therefore
-    /// > do not surface until the next launch — re-hydration is additive-only
-    /// > by design. That is the price of never clobbering unflushed writes or
-    /// > live UI edits; per-ID dirty tracking that relaxes this is a possible
-    /// > future refinement.
+    /// Takes the store rather than `inout State` on purpose. Re-hydration is a
+    /// mid-session operation with two `await`s in it (the flush, then the
+    /// fetches), and any caller holding a state snapshot across those would
+    /// overwrite everything dispatched in between. Here the flush and every
+    /// fetch complete first; only then does one suspension-free step pack a
+    /// fresh snapshot, merge, and unpack.
+    ///
+    /// Under the default ``MergePolicy/preferRemote``, remote edits and remote
+    /// deletions surface mid-session. An ID is exempt whenever the local side
+    /// still has something to say about it — a drained-but-unflushed write, an
+    /// un-drained edit, a pending deletion, or a write whose save failed. Those
+    /// always win, and that guarantee is not configurable.
     ///
     /// Pending writes and deletions are flushed to disk *before* the merge, so a
     /// remote-change refresh that fires during the debounce window can't read a
     /// stale disk row for an entity the user just edited or deleted and resurrect
-    /// it. This mirrors `SyncCoordinator.setSyncEnabled`'s flush-first discipline
-    /// and makes every `rehydrate` caller safe by construction.
+    /// it. The flush closes most of the window; the dirty set closes what the
+    /// remaining suspension points let through.
+    ///
+    /// > Important: One case is beyond reach — an edit that is still in a view's
+    /// > local `@State` and has not been dispatched yet is invisible to the
+    /// > store, so a remote value can land underneath it. Bindings made with
+    /// > `store.binding(_:sending:)` dispatch on write and are therefore
+    /// > covered. For a store backing a live text editor, register it with
+    /// > ``MergePolicy/preferInMemory``.
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// and the failure is reported via `onFailure`.
-    public func rehydrate(into state: inout State) async {
+    ///
+    /// - Parameters:
+    ///   - store: The live store to reconcile.
+    ///   - policy: Narrows the configured policy for this call only. Pass
+    ///     ``MergePolicy/preferRemoteAdditive`` after a container rebuild,
+    ///     where a row's absence says nothing about whether it was deleted.
+    public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
         await corePlugin.flush()
-        for entity in entities {
-            await entity.mergeRemote(handle, &state, onFailure)
+        let folds = await mergePhase()
+        store.mutate { state in
+            for fold in folds { fold(&state, policy) }
+        }
+    }
+
+    /// Runs every registered collapse resolver against storage, applying the
+    /// result to a live store. See ``collapseDuplicates(into:)-(inout)``.
+    public func collapseDuplicates(into store: Store<State, Action>) async {
+        await corePlugin.flush()
+        let applies = await collapsePhase()
+        store.mutate { state in
+            for apply in applies { apply(&state) }
         }
     }
 }

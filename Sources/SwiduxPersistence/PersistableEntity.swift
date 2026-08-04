@@ -39,19 +39,18 @@ public protocol PersistableModel: PersistentModel {
     /// The entity's stable identity.
     var id: UUID { get }
 
-    /// A monomorphic fetch descriptor locating the row for `id`.
+    /// A monomorphic fetch descriptor locating every row whose `id` is in `ids`.
     ///
     /// Generated per-model so the `#Predicate` binds `\Self.id` to the concrete
     /// stored attribute. A generic `#Predicate` over the protocol-required `id`
     /// is miscompiled under `-O` (the witness key path ≠ the stored-attribute
-    /// key path), trapping in `modelContext.fetch`; building it concretely avoids that.
-    static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<Self>
-
-    /// A monomorphic fetch descriptor locating every row whose `id` is in `ids`,
-    /// for batched lookups (one round trip instead of one per ID).
+    /// key path), trapping in `modelContext.fetch`; building it concretely
+    /// avoids that. CI runs `swift test -c release` to keep that regression
+    /// class caught.
     ///
-    /// Generated per-model for the same `-O` reason as
-    /// ``swiduxFetchDescriptor(id:)`` — the `#Predicate` must bind the concrete
-    /// stored attribute.
+    /// This is the *only* descriptor, and it carries no `fetchLimit`: `id` has
+    /// no unique constraint (CloudKit forbids one), so a lookup for a single ID
+    /// may legitimately return several rows and every caller must see all of
+    /// them. See ``EntityDB`` for what that implies for reads and writes.
     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>
 }

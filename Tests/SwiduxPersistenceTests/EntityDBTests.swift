@@ -23,8 +23,18 @@ struct Note: Identifiable, Equatable, Sendable {
     var pinned: Bool
 }
 
-struct NotesState {
+/// Root state for the persistence tests.
+///
+/// `ui` is deliberately *not* a registered entity: it proves that a read path
+/// leaves unregistered slices alone, including changes dispatched while the
+/// read was in flight.
+struct NotesState: Equatable, Sendable {
     var notes = EntityStore<Note>()
+    var ui = NotesUI()
+}
+
+struct NotesUI: Equatable, Sendable {
+    var searchText = ""
 }
 
 // MARK: - Tests
@@ -170,7 +180,7 @@ struct EntityDBTests {
     @Test("rehydrate merges without clobbering live in-memory edits (rule #8)")
     func rehydratePreservesLiveEdits() async throws {
         let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
-        let coordinator = PersistenceCoordinator<NotesState, Never>(
+        let coordinator = PersistenceCoordinator<NotesState, NotesAction>(
             entities: [.entity(\.notes)],
             container: container
         )
@@ -178,15 +188,24 @@ struct EntityDBTests {
 
         try await coordinator.database.upsert(Note(id: id, title: "disk", pinned: false), as: NoteModel.self)
 
-        var state = NotesState()
-        await coordinator.hydrate(into: &state)
-        #expect(state.notes[id]?.title == "disk")
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        #expect(initial.notes[id]?.title == "disk")
+
+        let plugins = PluginHost<NotesState, NotesAction>()
+        plugins.register(coordinator.corePlugin)
+        let store = Store(
+            initialState: initial,
+            reducer: notesReducer,
+            plugins: plugins,
+            persistencePlugin: coordinator.corePlugin
+        )
 
         // An unflushed live edit.
-        state.notes[id] = Note(id: id, title: "live edit", pinned: true)
+        store.send(.add(Note(id: id, title: "live edit", pinned: true)))
 
         // Merge-based rehydrate must not overwrite the live edit.
-        await coordinator.rehydrate(into: &state)
-        #expect(state.notes[id]?.title == "live edit")
+        await coordinator.rehydrate(into: store)
+        #expect(store.notes[id]?.title == "live edit")
     }
 }

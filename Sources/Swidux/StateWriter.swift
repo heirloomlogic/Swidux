@@ -22,6 +22,7 @@ import Foundation
 public final class StateWriter<State> {
     private let drainBody: (inout State) -> Bool
     private let flushBody: () -> (@Sendable () async -> Void)?
+    private let pendingIDsBody: () -> Set<UUID>
 
     /// Creates a state writer for one `EntityStore` key path.
     ///
@@ -68,7 +69,22 @@ public final class StateWriter<State> {
             pendingDeletions.removeAll(keepingCapacity: true)
             return { await persist(writes, deletions) }
         }
+
+        pendingIDsBody = { Set(pendingWrites.keys).union(pendingDeletions) }
     }
+
+    /// IDs with a drained-but-unflushed local write or deletion.
+    ///
+    /// Read synchronously by the remote merge to decide which IDs a storage
+    /// snapshot has no authority over. Empty immediately after a successful
+    /// ``flush()``, and repopulated by any ``drain(_:)`` that follows —
+    /// including one that runs while a flush is suspended, which is precisely
+    /// the window the merge needs to know about.
+    ///
+    /// This is *not* the whole picture on its own: mutations that have not been
+    /// drained yet live in the `EntityStore`'s own `changes`, and a write whose
+    /// save failed is in neither place. Callers union all three.
+    public var pendingIDs: Set<UUID> { pendingIDsBody() }
 
     /// Drains the `EntityStore` `ChangeSet` into pending buffers.
     ///

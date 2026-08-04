@@ -60,10 +60,22 @@ public nonisolated struct EntityStore<
     /// > the gotcha is especially sharp: `.NSPersistentStoreRemoteChange` fires for
     /// > local saves too, so a naïve "refresh on remote change" observer feeds the
     /// > app its own writes.
+    ///
+    /// Entities sharing an ID are collapsed to the first occurrence. A store
+    /// cannot represent duplicates — `positions` holds one index per ID — and
+    /// admitting them corrupts the index: the map would keep only the last
+    /// index while the array kept every copy, so `count` over-reports and a
+    /// later delete orphans the earlier copy with no `positions` entry at all,
+    /// leaving a row that is visible in ``values`` but invisible to
+    /// ``contains(_:)`` and the subscript. Persisted rows can legitimately
+    /// share an ID (CloudKit forbids unique constraints), so this initializer
+    /// has to be total rather than trusting its input.
     public init(_ initialEntities: [Entity]) {
-        entities = initialEntities
-        for (index, entity) in initialEntities.enumerated() {
-            positions[entity.id] = index
+        entities.reserveCapacity(initialEntities.count)
+        positions = Dictionary(minimumCapacity: initialEntities.count)
+        for entity in initialEntities where positions[entity.id] == nil {
+            positions[entity.id] = entities.count
+            entities.append(entity)
         }
     }
 
@@ -180,17 +192,22 @@ public nonisolated struct EntityStore<
     /// removed ID.
     ///
     /// `removedIDs` must contain only IDs currently present in the store.
-    private mutating func removeBatch(_ removedIDs: Set<UUID>) {
+    ///
+    /// `recordingChanges` is `false` only for hydration-side removals, where
+    /// the row is already gone from disk and recording a deletion would echo it
+    /// straight back as a local write.
+    private mutating func removeBatch(_ removedIDs: Set<UUID>, recordingChanges: Bool = true) {
         guard !removedIDs.isEmpty else { return }
 
         entities.removeAll { removedIDs.contains($0.id) }
 
         // Rebuild index once
-        positions = [:]
+        positions = Dictionary(minimumCapacity: entities.count)
         for (i, entity) in entities.enumerated() {
             positions[entity.id] = i
         }
 
+        guard recordingChanges else { return }
         for id in removedIDs {
             changes.deletions.insert(id)
             changes.upserts.remove(id)
@@ -254,6 +271,58 @@ public nonisolated struct EntityStore<
             }
             // else: locally deleted but not yet flushed — do not resurrect.
         }
+    }
+
+    /// Reconciles this store against an authoritative snapshot from storage.
+    ///
+    /// Where ``merge(from:shouldReplace:)`` means *keep everything and absorb
+    /// what's new*, this means *storage is authoritative except where you say
+    /// otherwise* — which is what lets a remote edit or a remote deletion
+    /// surface mid-session instead of waiting for the next launch.
+    ///
+    /// - Parameters:
+    ///   - remote: The rows read from storage.
+    ///   - preserving: IDs the caller knows carry unflushed local intent — a
+    ///     drained-but-unflushed write, a write whose save failed, or a pending
+    ///     deletion. `remote` has no authority over them: they are neither
+    ///     overwritten, nor inserted, nor removed. This store's own un-drained
+    ///     ``changes`` are folded in automatically, so a pending local deletion
+    ///     is never resurrected even when `preserving` is empty.
+    ///   - removingMissing: When `true`, IDs held here that are absent from
+    ///     `remote` and not preserved are removed — a deletion made on another
+    ///     device. When `false` the reconcile is additive: remote edits still
+    ///     land, but nothing is ever removed.
+    ///
+    /// Does **not** record changes — this is a hydration operation, and every
+    /// value it writes or removes already reflects what is in storage.
+    /// Recording them would echo each remote change straight back as a local
+    /// write.
+    public mutating func reconcile(
+        with remote: EntityStore,
+        preserving: Set<UUID>,
+        removingMissing: Bool
+    ) {
+        var owned = preserving
+        if !changes.upserts.isEmpty { owned.formUnion(changes.upserts) }
+        if !changes.deletions.isEmpty { owned.formUnion(changes.deletions) }
+
+        for entity in remote.values where !owned.contains(entity.id) {
+            if let index = positions[entity.id] {
+                entities[index] = entity
+            } else {
+                positions[entity.id] = entities.count
+                entities.append(entity)
+            }
+        }
+
+        guard removingMissing else { return }
+        // One pass over the keys we hold, allocating only for what's actually
+        // missing — a sync tick that deleted nothing should allocate nothing.
+        var missing: Set<UUID> = []
+        for id in positions.keys where !remote.contains(id) && !owned.contains(id) {
+            missing.insert(id)
+        }
+        removeBatch(missing, recordingChanges: false)
     }
 
     // MARK: - Restore (Undo/Redo)
