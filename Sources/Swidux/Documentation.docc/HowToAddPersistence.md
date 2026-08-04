@@ -125,7 +125,11 @@ extension Store where State == AppState, Action == AppAction {
 }
 ```
 
-`hydrate(into:)` is **first-load only** — it replaces each ``EntityStore`` with the on-disk rows before any live edits exist. The only refresh path after launch is `rehydrate(into:)`, which always *merges* (preferring in-memory values) so a "refresh from disk" can never clobber unflushed writes or in-progress UI edits.
+`hydrate(into:)` is **first-load only** — it replaces each ``EntityStore`` with the on-disk rows before any live edits exist. It takes `inout State` because it runs *before the store is built*, so there is nothing to race with.
+
+The only refresh path after launch is `rehydrate(into:)`, which always *merges* (preferring in-memory values) so a "refresh from disk" can never clobber unflushed writes or in-progress UI edits. It takes the **store**, not `inout State`: re-hydration is asynchronous, and a caller holding a state snapshot across those `await`s would discard everything dispatched while they were in flight. See <doc:Troubleshooting> if edits are vanishing after a load.
+
+If you need to *read* rows without touching state, don't re-hydrate into a throwaway `AppState()` — that idiom breaks silently the moment re-hydration starts reading the state it is handed. Use `fetchAll(of:)` / `snapshot(of:)` on the coordinator instead.
 
 ### Surfacing failures
 

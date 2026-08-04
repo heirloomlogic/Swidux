@@ -80,19 +80,68 @@ public final class PersistenceCoordinator<State, Action> {
         self.corePlugin = PersistencePlugin(writers: writers, debounce: debounce)
     }
 
+    /// Test seam: awaited once inside the read phase, after any flush and
+    /// before any state is packed — the window that used to lose writes.
+    var duringReadPhase: (@MainActor () async -> Void)?
+
     /// First-load hydration: replaces each `EntityStore` with the on-disk rows.
-    /// Safe only at launch, before any live edits exist.
+    ///
+    /// Takes `inout State` because it runs *before the store exists* — the
+    /// canonical launch sequence hydrates a plain value and hands the result to
+    /// `Store(initialState:)`. There is no observer to race with, so there is
+    /// no lost-write hazard here. Use ``hydrate(into:)-(Store)`` if the store
+    /// is already built.
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// (it does **not** become empty) and the failure is reported via `onFailure`.
     public func hydrate(into state: inout State) async {
+        let applies = await readPhase(merging: false)
+        for apply in applies { apply(&state) }
+    }
+
+    /// Runs every registered entity's read phase in registration order,
+    /// touching no state, and returns the synchronous folds to apply.
+    ///
+    /// All fetches complete before any fold runs. That makes a multi-entity
+    /// read atomic with respect to dispatch, and it is what lets the caller
+    /// pack its snapshot after the last `await`.
+    private func readPhase(merging: Bool) async -> [PersistedEntity<State>.Apply] {
+        var applies: [PersistedEntity<State>.Apply] = []
+        applies.reserveCapacity(entities.count)
         for entity in entities {
-            await entity.hydrate(handle, &state, onFailure)
+            let read = merging ? entity.readForMerge : entity.readForHydrate
+            applies.append(await read(handle, onFailure))
+        }
+        await duringReadPhase?()
+        return applies
+    }
+}
+
+extension PersistenceCoordinator where State: SwiduxObservable {
+    /// First-load hydration straight into a live store.
+    ///
+    /// Registered `EntityStore`s are **replaced** — that is what first-load
+    /// means — so gate the UI on `hydrationPhase` until this returns. Slices
+    /// that hold no registered entity are preserved, including changes made
+    /// while the reads were in flight.
+    public func hydrate(into store: Store<State, Action>) async {
+        let applies = await readPhase(merging: false)
+        await store.mutate {
+            applies
+        } merging: { applies, state in
+            for apply in applies { apply(&state) }
         }
     }
 
     /// Re-hydration that merges disk rows into the live `EntityStore`s without
     /// dropping unflushed writes or in-progress edits (rule #8).
+    ///
+    /// Takes the store rather than `inout State` on purpose. Re-hydration is a
+    /// mid-session operation with two `await`s in it (the flush, then the
+    /// fetches), and any caller holding a state snapshot across those would
+    /// overwrite everything dispatched in between. Here the flush and every
+    /// fetch complete first; only then does one suspension-free step pack a
+    /// fresh snapshot, merge, and unpack.
     ///
     /// > Important: The merge prefers the in-memory value for **every** ID
     /// > already in memory, and never removes entities. Mid-session, remote
@@ -110,10 +159,13 @@ public final class PersistenceCoordinator<State, Action> {
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// and the failure is reported via `onFailure`.
-    public func rehydrate(into state: inout State) async {
+    public func rehydrate(into store: Store<State, Action>) async {
         await corePlugin.flush()
-        for entity in entities {
-            await entity.mergeRemote(handle, &state, onFailure)
+        let applies = await readPhase(merging: true)
+        await store.mutate {
+            applies
+        } merging: { applies, state in
+            for apply in applies { apply(&state) }
         }
     }
 }

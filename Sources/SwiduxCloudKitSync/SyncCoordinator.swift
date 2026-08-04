@@ -73,14 +73,15 @@ public final class SyncCoordinator<State, Action> {
         await preflight.resolve(desired: mode)
     }
 
-    /// Turns iCloud sync on or off.
-    ///
-    /// Flushes pending writes, rebuilds the container in the effective mode
-    /// (CloudKit only when actually available, else a local fallback), swaps the
-    /// active database, persists the preference, and re-hydrates via `merge`
-    /// (never replace). Returns the resolved ``SyncStatus``.
-    @discardableResult
-    public func setSyncEnabled(_ enabled: Bool, into state: inout State) async -> SyncStatus {
+    /// The outcome of everything the toggle does before any state is touched.
+    private enum TogglePreparation {
+        case rebuildFailed
+        case ready(SyncStatus)
+    }
+
+    /// Flush, preflight, container rebuild, preference write — the whole
+    /// toggle except the re-hydration. Holds no state across its `await`s.
+    private func prepareToggle(_ enabled: Bool) async -> TogglePreparation {
         let target: SyncMode = enabled ? .iCloud : .localOnly
 
         // 1. Drain the debounce window so no buffered write is lost on rebuild.
@@ -99,17 +100,14 @@ public final class SyncCoordinator<State, Action> {
         guard rebuildDatabase(mode: effectiveMode) else {
             // The old database stays active. Don't persist the choice or
             // report the preflight status — the toggle did not take effect.
-            return .unavailableRebuildFailed
+            return .rebuildFailed
         }
 
         // 4. Persist the user's *choice* (not the fallback) for next launch.
         keyValue.setValue(target, for: .syncMode)
         mode = target
 
-        // 5. Absorb anything the rebuilt store has without clobbering live edits.
-        await persistence.rehydrate(into: &state)
-
-        return enabled ? status : .localOnlyByChoice
+        return .ready(enabled ? status : .localOnlyByChoice)
     }
 
     /// Swaps the active database to a freshly built container.
@@ -126,5 +124,36 @@ public final class SyncCoordinator<State, Action> {
             )
             return false
         }
+    }
+}
+
+extension SyncCoordinator where State: SwiduxObservable {
+    /// Turns iCloud sync on or off.
+    ///
+    /// Flushes pending writes, rebuilds the container in the effective mode
+    /// (CloudKit only when actually available, else a local fallback), swaps the
+    /// active database, persists the preference, and re-hydrates via `merge`
+    /// (never replace). Returns the resolved ``SyncStatus``.
+    ///
+    /// The flush, preflight, and rebuild all complete before any state is
+    /// packed, so an edit made while the toggle is in flight survives it.
+    ///
+    /// Record the result with a normal dispatch afterwards — nothing can
+    /// interleave on the main actor in between:
+    ///
+    /// ```swift
+    /// let status = await sync.setSyncEnabled(isOn, into: store)
+    /// store.send(.syncSettingsChanged(mode: sync.mode, status: status))
+    /// ```
+    @discardableResult
+    public func setSyncEnabled(_ enabled: Bool, into store: Store<State, Action>) async -> SyncStatus {
+        guard case .ready(let status) = await prepareToggle(enabled) else {
+            return .unavailableRebuildFailed
+        }
+
+        // Absorb anything the rebuilt store has without clobbering live edits.
+        await persistence.rehydrate(into: store)
+
+        return status
     }
 }

@@ -9,11 +9,13 @@
 
 import Foundation
 import Swidux
-import SwiduxPersistence
 import SwiftData
 import Testing
 
 @testable import SwiduxCloudKitSync
+
+// @testable for the `duringReadPhase` seam used by the lost-write test.
+@testable import SwiduxPersistence
 
 // MARK: - Fixtures
 
@@ -23,8 +25,61 @@ struct Item: Identifiable, Equatable, Sendable {
     var label: String
 }
 
-struct ItemsState {
+struct ItemsState: Equatable, Sendable {
     var items = EntityStore<Item>()
+}
+
+@Observable
+@MainActor
+final class ItemsStateObserver {
+    var items: EntityStore<Item>
+    init(items: EntityStore<Item> = EntityStore()) { self.items = items }
+}
+
+extension ItemsState: SwiduxObservable {
+    typealias Observer = ItemsStateObserver
+
+    @MainActor init(observer: ItemsStateObserver) { self.items = observer.items }
+
+    @MainActor static func makeObserver(from state: ItemsState) -> ItemsStateObserver {
+        ItemsStateObserver(items: state.items)
+    }
+
+    @MainActor static func apply(_ snapshot: ItemsState, to observer: ItemsStateObserver) {
+        observer.items = snapshot.items
+    }
+
+    @MainActor static func applyRestore(from snapshot: ItemsState, to current: inout ItemsState) {
+        current.items.restore(from: snapshot.items)
+    }
+}
+
+enum ItemsAction: Equatable, Sendable {
+    case add(Item)
+}
+
+@MainActor
+func itemsReducer(state: inout ItemsState, action: ItemsAction) -> Effect<ItemsAction>? {
+    switch action {
+    case .add(let item): state.items[item.id] = item
+    }
+    return nil
+}
+
+/// Builds a live store over `coordinator`, seeded from `initialState`.
+@MainActor
+func makeItemsStore(
+    _ coordinator: PersistenceCoordinator<ItemsState, ItemsAction>,
+    initialState: ItemsState = ItemsState()
+) -> Store<ItemsState, ItemsAction> {
+    let plugins = PluginHost<ItemsState, ItemsAction>()
+    plugins.register(coordinator.corePlugin)
+    return Store(
+        initialState: initialState,
+        reducer: itemsReducer,
+        plugins: plugins,
+        persistencePlugin: coordinator.corePlugin
+    )
 }
 
 // MARK: - SyncStatus.resolve
@@ -85,12 +140,12 @@ struct SyncCoordinatorTests {
     @Test("opting out keeps local data and persists the choice")
     func optOutKeepsData() async throws {
         let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
-        let persistence = PersistenceCoordinator<ItemsState, Never>(
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
             entities: [.entity(\.items)],
             container: container
         )
         let store = InMemoryKeyValueStore()
-        let sync = SyncCoordinator<ItemsState, Never>(
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence,
             models: [ItemModel.self],
             mode: .iCloud,
@@ -100,23 +155,24 @@ struct SyncCoordinatorTests {
 
         let id = UUID()
         try await persistence.database.upsert(Item(id: id, label: "kept"), as: ItemModel.self)
-        var state = ItemsState()
-        await persistence.hydrate(into: &state)
-        #expect(state.items[id]?.label == "kept")
+        var initial = ItemsState()
+        await persistence.hydrate(into: &initial)
+        #expect(initial.items[id]?.label == "kept")
+        let appStore = makeItemsStore(persistence, initialState: initial)
 
-        let status = await sync.setSyncEnabled(false, into: &state)
+        let status = await sync.setSyncEnabled(false, into: appStore)
         #expect(status == .localOnlyByChoice)
         #expect(sync.mode == .localOnly)
         #expect(store.value(.syncMode) == .localOnly)
         // Data survives the toggle (merge-based rehydrate, never replace).
-        #expect(state.items[id]?.label == "kept")
+        #expect(appStore.items[id]?.label == "kept")
     }
 
     @MainActor
     @Test("opting in swaps to the rebuilt container and merges its rows")
     func optInRebuildsAndMerges() async throws {
         let local = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
-        let persistence = PersistenceCoordinator<ItemsState, Never>(
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
             entities: [.entity(\.items)],
             container: local
         )
@@ -128,7 +184,7 @@ struct SyncCoordinatorTests {
         try await EntityDB(modelContainer: rebuilt).upsert(Item(id: id, label: "from cloud"), as: ItemModel.self)
 
         let store = InMemoryKeyValueStore()
-        let sync = SyncCoordinator<ItemsState, Never>(
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
@@ -137,14 +193,50 @@ struct SyncCoordinatorTests {
             makeContainer: { _ in rebuilt }
         )
 
-        var state = ItemsState()
-        let status = await sync.setSyncEnabled(true, into: &state)
+        let appStore = makeItemsStore(persistence)
+        let status = await sync.setSyncEnabled(true, into: appStore)
 
         #expect(status == .syncing)
         #expect(sync.mode == .iCloud)
         #expect(store.value(.syncMode) == .iCloud)
         // The rebuilt container's row merged into live state.
-        #expect(state.items[id]?.label == "from cloud")
+        #expect(appStore.items[id]?.label == "from cloud")
+    }
+
+    @MainActor
+    @Test("a write dispatched while the toggle is in flight survives it")
+    func toggleKeepsConcurrentWrite() async throws {
+        let local = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)],
+            container: local,
+            debounce: .seconds(30)
+        )
+        let rebuilt = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let cloudID = UUID()
+        try await EntityDB(modelContainer: rebuilt).upsert(
+            Item(id: cloudID, label: "from cloud"), as: ItemModel.self)
+
+        let store = InMemoryKeyValueStore()
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence,
+            models: [ItemModel.self],
+            mode: .localOnly,
+            preflight: .mock(ubiquityToken: true, account: .available),
+            keyValue: store,
+            makeContainer: { _ in rebuilt }
+        )
+
+        let appStore = makeItemsStore(persistence)
+        // Lands after the flush, preflight and container rebuild — the window a
+        // caller holding a state snapshot across those awaits would lose.
+        let live = Item(id: UUID(), label: "typed mid-toggle")
+        persistence.duringReadPhase = { appStore.send(.add(live)) }
+
+        await sync.setSyncEnabled(true, into: appStore)
+
+        #expect(appStore.items[live.id] == live, "the concurrent write must survive the toggle")
+        #expect(appStore.items[cloudID]?.label == "from cloud")
     }
 
     @MainActor
@@ -153,17 +245,18 @@ struct SyncCoordinatorTests {
         struct BuildFailed: Error {}
 
         let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
-        let persistence = PersistenceCoordinator<ItemsState, Never>(
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
             entities: [.entity(\.items)],
             container: container
         )
         let id = UUID()
         try await persistence.database.upsert(Item(id: id, label: "local"), as: ItemModel.self)
-        var state = ItemsState()
-        await persistence.hydrate(into: &state)
+        var initial = ItemsState()
+        await persistence.hydrate(into: &initial)
+        let appStore = makeItemsStore(persistence, initialState: initial)
 
         let store = InMemoryKeyValueStore()
-        let sync = SyncCoordinator<ItemsState, Never>(
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
@@ -172,13 +265,13 @@ struct SyncCoordinatorTests {
             makeContainer: { _ in throw BuildFailed() }
         )
 
-        let status = await sync.setSyncEnabled(true, into: &state)
+        let status = await sync.setSyncEnabled(true, into: appStore)
         // The toggle did not take effect: status reports the failure, the
         // mode is unchanged, and the choice was not persisted for next launch.
         #expect(status == .unavailableRebuildFailed)
         #expect(sync.mode == .localOnly)
         #expect(store.value(.syncMode) == nil)
         // Rebuild threw, was caught; the original database and its data are intact.
-        #expect(state.items[id]?.label == "local")
+        #expect(appStore.items[id]?.label == "local")
     }
 }

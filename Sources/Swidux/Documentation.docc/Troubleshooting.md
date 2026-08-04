@@ -51,6 +51,44 @@ with `accessGroup: nil`; for unsigned local/CI builds add a single
 team-prefixed `keychain-access-groups` entitlement. Details in
 <doc:KeyValueStoreGuide>.
 
+## Edits disappear after a sync tick or an async load
+
+Symptom: a keystroke, a toggle, or a whole entity vanishes — intermittently,
+usually while something is loading or syncing, and never reproducibly.
+
+The cause is almost always a hand-rolled bridge from `async` work into the
+store. `Store` keeps state in an `@Observable` observer tree and converts to a
+value-type snapshot on the way in and out ("pack" and "unpack"). If you pack a
+snapshot, `await` something, and then unpack it, everything dispatched during
+the `await` is silently overwritten:
+
+```swift
+var snapshot = AppState(observer: store.observer)   // ← packed BEFORE the await
+await loadEverything(into: &snapshot)               // ← dispatches land here…
+AppState.apply(snapshot, to: store.observer)        // ← …and are discarded here
+```
+
+`inout State` across a suspension point is the tell. The window is only as wide
+as the `await`, which is why it presents as a rare glitch rather than a
+reproducible bug.
+
+Use ``Store/mutate(awaiting:merging:)`` instead. It runs the async work with no
+access to state, then packs a *fresh* snapshot, merges, and unpacks in a single
+step with no suspension point in between — so no dispatch can interleave:
+
+```swift
+await store.mutate {
+    try await api.fetchItems()          // no state in scope; nothing to stale
+} merging: { items, state in
+    state.items.merge(from: EntityStore(items)) { _, _ in false }
+}
+```
+
+The persistence stack's own async entry points already work this way — use
+`persistence.rehydrate(into: store)` and `sync.setSyncEnabled(_:into: store)`,
+not a snapshot you manage yourself. (`hydrate(into: &state)` is the exception,
+and safe: it runs at launch, before the store exists.)
+
 ## Contributors: the lint plugin doesn't run / dev tooling is missing
 
 Dev tooling (the Persnoop linter, the DocC plugin) is gated behind a
