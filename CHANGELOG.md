@@ -4,6 +4,67 @@ Generated from [GitHub Releases](https://github.com/heirloomlogic/Swidux/release
 `.github/workflows/changelog.yml`. Edits here are overwritten on the next
 release — write release notes on the release itself.
 
+## [1.8.0](https://github.com/heirloomlogic/Swidux/releases/tag/1.8.0) — 2026-08-04
+
+Fixes six hazards a [Fallow](https://heirloomlogic.com) audit traced to these packages rather than to the app, plus two latent bugs the audit didn't name. Most of it concerns what happens when a `rehydrate` or a sync tick overlaps a user who is still typing.
+
+### Breaking
+
+**`PersistenceCoordinator.rehydrate(into: inout State)` is gone.** Use `rehydrate(into: store, policy:)`.
+
+The `inout` form could only be driven by packing a snapshot, awaiting, and unpacking — which clobbers every dispatch that lands during the awaits. That is the footgun itself, so it's replaced rather than documented around. The store-taking form runs every fetch first, then folds the result into a **freshly packed** snapshot in one suspension-free step. (The tutorial snippet that taught the old idiom didn't compile anyway: an escaping `@MainActor () async -> Void` can't capture `state` as `inout`.)
+
+`hydrate(into: inout State)` **stays** — it runs before the store exists, so it has nothing to lose writes to.
+
+**`SyncCoordinator.setSyncEnabled(_:into: inout State)` is gone.** Use `setSyncEnabled(_:into: store)`, and record the result with a normal dispatch afterward:
+
+```swift
+let status = await sync.setSyncEnabled(isOn, into: store)
+store.send(.syncSettingsChanged(mode: sync.mode, status: status))
+```
+
+**`PersistableModel.swiduxFetchDescriptor(id:)` is gone**, and `@Persisted` no longer generates it. Its `fetchLimit = 1` is now actively wrong. `swiduxBatchFetchDescriptor(ids:)` is the only descriptor; the monomorphic-per-model construction stays, because the `-O` `#Predicate` miscompile it works around is still live.
+
+**`rehydrate` now defaults to remote-wins.** Remote edits *and* deletions surface mid-session instead of waiting for relaunch — on a sync library, the old additive-only behaviour was a correctness bug on the primary use case. `MergePolicy.preferInMemory` restores the old contract per entity, for stores backing live text editors where a remote edit landing under the cursor is worse than a stale row.
+
+### Added
+
+**`Store.mutate(awaiting:merging:)`** — run async work, then fold the result into state without losing concurrent dispatches. `produce` receives no state, so it *cannot* hold one across an `await`; `merging` is synchronous, so nothing can land between the pack and the unpack. If you have ever written `var s = State(observer:)` / `await …` / `State.apply(s, to:)`, this replaces it.
+
+**`fetchAll(of:)` and `snapshot(of:)`** on `PersistenceCoordinator` (and `EntityDB.fetchAll(of:)`) — read persisted rows without touching state, named by the entity you wrote rather than by its generated shadow model. Flushes pending writes first by default, so it can't return a row the user just edited away. Replaces the "rehydrate into a throwaway `AppState()`" idiom.
+
+**An opt-in `collapse:` resolver** for reclaiming duplicate rows, plus `EntityCollapse.byID(preferring:)` and `PersistenceCoordinator.collapseDuplicates(into:)` for a "repair my data" action. The closure must be a pure function of *replicated* content — never `persistentModelID`, local timestamps, or array position — or two devices pick different survivors and tombstone each other's.
+
+**`MergePolicy`** — `.preferRemote` (default), `.preferRemoteAdditive`, `.preferInMemory`, settable per coordinator, per entity, or per call.
+
+### Fixed
+
+**Duplicate-ID rows no longer lose writes.** CloudKit forbids unique constraints, so `@Persisted` emits none and two devices can legitimately end up holding two rows for one entity. `upsert` and `delete` previously acted on `.first` of the match: writes landed on an arbitrary row and deletes left survivors that resurrected the entity next launch. Now writes update **every** matching row, deletes remove **every** matching row, and reads collapse to one value per `id`. All order-independent and idempotent, so duplicates converge to identical content — which is why the framework still won't delete them for you without a `collapse:` closure.
+
+**`EntityStore.init(_:)` corrupted its own index** when handed duplicate IDs: `positions` kept only the last index while `entities` kept every copy, so `count` over-reported and a later delete orphaned the earlier copy with no `positions` entry at all — a row visible in `values`, invisible to `contains`/subscript, undeletable, and re-flushed forever. `EntityDB.fetchAll` was feeding it duplicates.
+
+**A drained-but-unflushed delete could be resurrected.** The [#44](https://github.com/heirloomlogic/Swidux/pull/44) guard reads `changes.deletions`, but `StateWriter.drain` has already cleared those — so once a delete reached the writer's buffers, the guard saw nothing and the merge re-added the row.
+
+**Writes are no longer lost to a mid-flight rehydrate or sync toggle.** Three sources of local dirtiness are now unioned in the synchronous apply phase: `StateWriter.pendingIDs` (drained but unflushed), an `UnpersistedIDs` ledger (last flush attempt *failed* — previously nothing anywhere recorded that memory ≠ disk), and `EntityStore.changes`. An ID the local side still has something to say about always wins, and that guarantee is not configurable.
+
+### Known limits
+
+An **empty snapshot never removes anything** — zero rows can't be told from a store that is rebuilding, mid-import, or unreadable. So the last surviving entity can't be removed remotely until relaunch. This disappears in [#46](https://github.com/heirloomlogic/Swidux/issues/46)'s remaining half, where deletions come from tombstones rather than from inferred absence.
+
+An **edit that hasn't been dispatched yet is invisible** to all of the above. Bindings made with `store.binding(_:sending:)` dispatch on write and are covered; a value sitting in a view's local `@State` is not ([#60](https://github.com/heirloomlogic/Swidux/issues/60)).
+
+Also filed rather than silently dropped: [#58](https://github.com/heirloomlogic/Swidux/issues/58) (a failed flush is never retried), [#59](https://github.com/heirloomlogic/Swidux/issues/59) (undo after a remote deletion resurrects the entity), [#61](https://github.com/heirloomlogic/Swidux/issues/61) (structured diagnostics).
+
+### Verification
+
+`swift test` and `swift test -c release` (460 tests), `swift-format lint --strict`, and the Counter example build. The two-device scenario at the root of the audit was **not** exercised on real hardware; the deterministic in-process seam that forces a dispatch to land inside the read phase, plus disk-level duplicate assertions, stand in for it.
+
+### What's Changed
+* Upstream the Fallow persistence and sync hazards by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/56
+* Tests: wait for the debounce timer instead of sleeping past it by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/57
+
+**Full Changelog**: https://github.com/heirloomlogic/Swidux/compare/1.7.0...1.8.0
+
 ## [1.7.0](https://github.com/heirloomlogic/Swidux/releases/tag/1.7.0) — 2026-07-07
 
 ### What's Changed
