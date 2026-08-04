@@ -140,7 +140,13 @@ struct PersistencePluginTests {
 
             plugin.afterReduce(state: &state, action: .noOp)
 
-            try? await Task.sleep(for: .milliseconds(500))
+            // Await the flush rather than sleeping past the debounce: this test
+            // is about *every* writer firing, not about timing, and `flush()`
+            // awaits each writer's persist closure. Racing a fixed sleep made
+            // it flaky on loaded CI — the flush task suspends between writers,
+            // so a deschedule there confirmed one of two. Debounce timing is
+            // covered by `changesFlushAfterDebounce` and the rapid-calls test.
+            await plugin.flush()
         }
     }
 
