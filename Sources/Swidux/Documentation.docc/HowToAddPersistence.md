@@ -131,6 +131,21 @@ The only refresh path after launch is `rehydrate(into:)`, which always *merges* 
 
 If you need to *read* rows without touching state, don't re-hydrate into a throwaway `AppState()` — that idiom breaks silently the moment re-hydration starts reading the state it is handed. Use `fetchAll(of:)` / `snapshot(of:)` on the coordinator instead.
 
+### Reading rows without touching state
+
+For exports, migrations, diagnostics, or any other "what's actually on disk?" question, read directly — naming your domain type, not its generated shadow:
+
+```swift
+let notes = try await persistence.fetchAll(of: Note.self)
+let store = try await persistence.snapshot(of: Note.self)   // as an EntityStore
+```
+
+Both flush the debounce window first by default, so they can't return a stale row for something the user just edited; pass `flushPending: false` on a hot path where that doesn't matter. Both report failures to `onFailure` **and** rethrow — there is no state to leave untouched here, so swallowing the error could only present an unreadable database as "no data".
+
+The entity does not have to be registered with the coordinator; reading a model that is in the container's schema but not mirrored into state is fine.
+
+> Important: Don't answer these questions by re-hydrating into a throwaway `AppState()`. That reads like a pure fetch but is really a merge, and it breaks silently the moment re-hydration starts consulting the state it is handed.
+
 ### Surfacing failures
 
 Every save and fetch failure is logged, and the coordinator accepts an optional `onFailure:` handler to additionally surface it to your app (a failed **save** means the in-memory data is *not* on disk; a failed **hydrate fetch** leaves that `EntityStore` untouched rather than presenting an unreadable store as "no data"):

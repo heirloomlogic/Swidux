@@ -84,6 +84,52 @@ public final class PersistenceCoordinator<State, Action> {
     /// before any state is packed — the window that used to lose writes.
     var duringReadPhase: (@MainActor () async -> Void)?
 
+    // MARK: - Reading without mutating
+
+    /// Reads every persisted row of `E` **without touching state**.
+    ///
+    /// Use this for exports, migrations, diagnostics, and any "what's on disk?"
+    /// question. Do *not* answer those by re-hydrating into a throwaway
+    /// `AppState()`: that idiom reads as if it were a pure fetch but is
+    /// actually a merge, so it breaks silently the moment re-hydration starts
+    /// consulting the state it is handed.
+    ///
+    /// - Parameters:
+    ///   - type: The domain entity type, e.g. `Note.self`.
+    ///   - flushPending: Drains the debounce window first (the default), so the
+    ///     read cannot return a stale row for an entity the user just edited.
+    ///     Pass `false` on a hot path where staleness is acceptable. Never pass
+    ///     `true` from inside a persist handler — the flush would await itself.
+    /// - Returns: Every persisted row of `E`, in fetch order.
+    /// - Throws: Whatever the underlying fetch throws. Failures are reported to
+    ///   `onFailure` **and** rethrown: unlike hydration there is no state to
+    ///   leave untouched here, so swallowing the error could only present an
+    ///   unreadable database as "no data".
+    ///
+    /// `E` need not be a registered entity: reading a model that is in the
+    /// container's schema but not mirrored into state is legitimate.
+    public func fetchAll<E: PersistableEntity>(
+        of type: E.Type,
+        flushPending: Bool = true
+    ) async throws -> [E] {
+        if flushPending { await corePlugin.flush() }
+        do {
+            return try await handle.db.fetchAll(of: E.self)
+        } catch {
+            onFailure(PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
+            throw error
+        }
+    }
+
+    /// The same rows as ``fetchAll(of:flushPending:)``, as a change-free
+    /// ``EntityStore`` ready to `merge(from:)` or diff against live state.
+    public func snapshot<E: PersistableEntity>(
+        of type: E.Type,
+        flushPending: Bool = true
+    ) async throws -> EntityStore<E> {
+        EntityStore(try await fetchAll(of: E.self, flushPending: flushPending))
+    }
+
     /// First-load hydration: replaces each `EntityStore` with the on-disk rows.
     ///
     /// Takes `inout State` because it runs *before the store exists* — the

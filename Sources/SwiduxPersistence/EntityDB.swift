@@ -64,6 +64,15 @@ public actor EntityDB {
         return domains
     }
 
+    /// Loads every persisted row of the **domain** type `E`.
+    ///
+    /// The same read as ``fetchAll(_:)``, named by the entity you wrote rather
+    /// than by its generated shadow model — `fetchAll(of: Note.self)` instead
+    /// of `fetchAll(NoteModel.self)`.
+    public func fetchAll<E: PersistableEntity>(of type: E.Type) throws -> [E] {
+        try fetchAll(E.Model.self)
+    }
+
     /// Inserts or updates the row for `domain.id`, then saves.
     ///
     /// Updates **every** row sharing the ID, so duplicates converge to
