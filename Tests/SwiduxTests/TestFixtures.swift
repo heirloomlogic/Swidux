@@ -40,6 +40,13 @@ enum TestAction: Sendable, Equatable {
     case effectAction(String)
 }
 
+// MARK: - Test Errors
+
+/// Stands in for a storage error in tests that drive the failure path.
+struct TestPersistError: Error, Equatable {
+    var label: String = "boom"
+}
+
 // MARK: - Waiting
 
 /// Polls `condition` on the main actor until it holds or `timeout` elapses.

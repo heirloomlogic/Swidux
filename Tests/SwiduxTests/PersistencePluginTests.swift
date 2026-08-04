@@ -187,6 +187,274 @@ struct PersistencePluginTests {
         #expect(completedWrites.value == 1)
     }
 
+    // MARK: - Retry
+
+    /// A retry policy fast enough that a test never waits on real backoff.
+    private static let fastRetry = RetryPolicy(
+        maxAttempts: 3, baseDelay: .milliseconds(10), maxDelay: .milliseconds(40))
+
+    @Test("A failed flush is retried on its own, with no further drain")
+    func failedFlushIsRetried() async throws {
+        let attempts = SendableBox(0)
+        let persisted = SendableBox(false)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            if attempts.value == 1 { throw TestPersistError() }
+            persisted.value = true
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Recovered")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        // The whole point of #58: nothing below touches the entity again.
+        try await poll(until: { persisted.value }, timeout: .seconds(5))
+        #expect(persisted.value, "a transient save failure must reach storage without a new edit")
+        #expect(attempts.value == 2)
+    }
+
+    @Test("RetryPolicy.never makes one attempt and still holds the batch")
+    func retryPolicyNever() async throws {
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            throw TestPersistError()
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: .never
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Once")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= 1 }, timeout: .seconds(5))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(attempts.value == 1)
+        // Opting out of retries is not opting back into losing the write.
+        #expect(writer.pendingIDs == [entity.id])
+    }
+
+    @Test("Retries stop at maxAttempts and the batch stays buffered")
+    func retriesAreBounded() async throws {
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            throw TestPersistError()
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Doomed")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= 3 }, timeout: .seconds(5))
+        // Absence again, so a wait is inherent: a slow runner yields a false
+        // pass here, never a false failure.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(attempts.value == 3, "a permanently-failing write must not retry forever")
+
+        // Giving up must not mean discarding: memory is still the only copy.
+        #expect(writer.pendingIDs == [entity.id])
+    }
+
+    @Test("A permanently-failing writer does not block another writer's flushes")
+    func failingWriterDoesNotWedgeOthers() async throws {
+        let healthyFlushes = SendableBox(0)
+
+        let doomed = StateWriter<TestState>(keyPath: \.items) { _, _ in throw TestPersistError() }
+        let healthy = StateWriter<TestState>(keyPath: \.extras) { _, _ in
+            healthyFlushes.value += 1
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [doomed, healthy],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        state.items[UUID()] = TestEntity(name: "Doomed")
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        // While the doomed writer is burning its retry budget, the healthy one
+        // must still get its writes to disk.
+        for i in 0..<3 {
+            let extra = TestEntity(name: "Extra \(i)")
+            state.extras[extra.id] = extra
+            plugin.afterReduce(state: &state, action: .noOp)
+            await plugin.flush()
+        }
+
+        #expect(healthyFlushes.value == 3)
+    }
+
+    @Test("A success between failures restores the full retry budget")
+    func successResetsTheBudget() async throws {
+        let attempts = SendableBox(0)
+        let failing = SendableBox(true)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            if failing.value { throw TestPersistError() }
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Flaky")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= 3 }, timeout: .seconds(5))
+        failing.value = false
+        await plugin.flush()  // succeeds, clearing the buffer and the count
+        let afterRecovery = attempts.value
+
+        // A fresh failure now gets its own full budget rather than being
+        // treated as attempt 4 of the old one.
+        failing.value = true
+        let second = TestEntity(name: "Flaky again")
+        state.items[second.id] = second
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= afterRecovery + 3 }, timeout: .seconds(5))
+        #expect(attempts.value == afterRecovery + 3)
+    }
+
+    @Test("flush() attempts immediately rather than waiting out a backoff")
+    func explicitFlushDoesNotWaitForBackoff() async throws {
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            throw TestPersistError()
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            // A backoff long enough that a scheduled retry cannot be what runs.
+            retry: RetryPolicy(maxAttempts: 5, baseDelay: .seconds(60), maxDelay: .seconds(60))
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Backgrounded")
+        state.items[entity.id] = entity
+        _ = writer.drain(&state)
+
+        await plugin.flush()
+        #expect(attempts.value == 1, "shutdown must not stall on a retry timer")
+
+        // And the write is still held for a later attempt.
+        #expect(writer.pendingIDs == [entity.id])
+    }
+
+    @Test("An explicit flush after giving up makes one more attempt, not a new burst")
+    func flushAfterExhaustionRetriesOnce() async throws {
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            throw TestPersistError()
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Doomed")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= 3 }, timeout: .seconds(5))
+        try await Task.sleep(for: .milliseconds(200))
+        let afterGivingUp = attempts.value
+
+        // Backgrounding and pre-read flushes must not kick off a fresh
+        // multi-second retry sequence — that budget is earned by a new edit.
+        await plugin.flush()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(attempts.value == afterGivingUp + 1)
+    }
+
+    @Test("A new edit after giving up earns a full retry budget again")
+    func drainAfterExhaustionRestoresBudget() async throws {
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in
+            attempts.value += 1
+            throw TestPersistError()
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Doomed")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= 3 }, timeout: .seconds(5))
+        try await Task.sleep(for: .milliseconds(200))
+        let afterGivingUp = attempts.value
+
+        let another = TestEntity(name: "Still typing")
+        state.items[another.id] = another
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { attempts.value >= afterGivingUp + 3 }, timeout: .seconds(5))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(attempts.value == afterGivingUp + 3)
+    }
+
+    @Test("Exhausting the retry budget notifies the writer exactly once")
+    func exhaustionIsReportedOnce() async throws {
+        let exhaustions = SendableBox(0)
+
+        let writer = StateWriter<TestState>(
+            keyPath: \.items,
+            onExhausted: { _ in exhaustions.value += 1 },
+            persist: { _, _ in throw TestPersistError() }
+        )
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(10),
+            retry: Self.fastRetry
+        )
+
+        var state = TestState()
+        let entity = TestEntity(name: "Doomed")
+        state.items[entity.id] = entity
+        plugin.afterReduce(state: &state, action: .noOp)
+
+        try await poll(until: { exhaustions.value >= 1 }, timeout: .seconds(5))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(exhaustions.value == 1, "giving up is one event, not one per later tick")
+    }
+
     @Test("plugin registers with PluginHost and receives lifecycle calls")
     func pluginHostIntegration() async throws {
         let writesBox = SendableBox<[TestEntity]>([])

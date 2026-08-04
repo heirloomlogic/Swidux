@@ -10,13 +10,16 @@ Configure automatic persistence that drains entity changes and batches database 
 PersistencePlugin<AppState, AppAction>(
     writers: [
         StateWriter(keyPath: \.items) { writes, deletes in
-            for item in writes { try? await db.upsert(item) }
-            for id in deletes  { try? await db.delete(id: id) }
+            for item in writes { try await db.upsert(item) }
+            for id in deletes  { try await db.delete(id: id) }
         },
     ],
-    debounce: .milliseconds(250)  // Default; configurable
+    debounce: .milliseconds(250),  // Default; configurable
+    retry: .default                // Default; configurable
 )
 ```
+
+> Important: Let the persist closure **throw**. The flush clears its buffers before the save runs, so an error you swallow with `try?` takes the write with it — the plugin never learns to put the batch back, and the value reaches storage only if the user happens to touch the same entity again. Throwing is what turns that into a retry. See ``RetryPolicy``.
 
 When using ``Store``, `afterReduce` is called automatically through the plugin lifecycle — no manual invocation needed. Register the ``PersistencePlugin`` with ``PluginHost`` and pass it to ``Store``'s initializer.
 

@@ -15,6 +15,13 @@ import os
 /// into `StateWriter` buffers. Restarts a debounce timer on each drain. When the
 /// timer fires, flushes all pending writes in a single `Task`.
 ///
+/// A flush whose save fails is retried on a doubling backoff, bounded by
+/// ``RetryPolicy``. Without that a failed save is silent data loss: the buffers
+/// are cleared at flush time, so the write would only ever reach storage if the
+/// user happened to touch the same entity again. Running out of attempts is
+/// reported through the writer rather than passing in silence, and the batch
+/// stays pending so a later edit or an explicit ``flush()`` tries once more.
+///
 /// ## Wiring
 ///
 /// ```swift
@@ -35,6 +42,27 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
 
     /// Active debounce task — cancelled and restarted on each change.
     private var debounceTask: Task<Void, Never>?
+
+    /// Pending retry of a failed flush. Kept apart from ``debounceTask`` so
+    /// cancelling one never silently drops the other — a retry cancelled by an
+    /// unrelated edit would be exactly the lost write this exists to prevent.
+    private var retryTask: Task<Void, Never>?
+
+    /// How a failed flush is retried.
+    private let retryPolicy: RetryPolicy
+
+    /// One writer's standing with the retry budget.
+    private struct RetryState {
+        /// Consecutive failed flushes since the last success or new edit.
+        var failures = 0
+        /// Whether the budget is spent. Not derived from `failures`: an
+        /// explicit flush forgives the verdict without forgiving the count, so
+        /// a writer that has given up gets exactly one more attempt.
+        var hasGivenUp = false
+    }
+
+    /// Retry bookkeeping per writer, index-aligned with ``writers``.
+    private var retryStates: [RetryState]
 
     /// Tail of the chain of in-flight flush work. Every flush — debounce-fired
     /// or direct — awaits the previous one, so batches reach the database in
@@ -58,17 +86,23 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// - Parameters:
     ///   - writers: The state writers that drain and flush entity changes.
     ///   - debounce: How long to wait after the last change before flushing.
+    ///   - retry: How a failed flush is retried. The buffers are cleared at
+    ///     flush time, so without retrying a failed save reaches disk only if
+    ///     the user happens to touch the same entity again.
     ///   - loopThreshold: Number of `afterReduce` calls per debounce interval
     ///     that triggers a dispatch loop warning. Default is 100.
     ///   - logger: Logger used for debug output.
     public init(
         writers: [StateWriter<State>],
         debounce: Duration = .milliseconds(250),
+        retry: RetryPolicy = .default,
         loopThreshold: Int = 100,
         logger: Logger = Logger(subsystem: "persistence", category: "plugin")
     ) {
         self.writers = writers
         self.debounceInterval = debounce
+        self.retryPolicy = retry
+        self.retryStates = Array(repeating: RetryState(), count: writers.count)
         self.loopWarningThreshold = loopThreshold
         self.logger = logger
     }
@@ -80,6 +114,15 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     public func flush() async {
         debounceTask?.cancel()
         debounceTask = nil
+        // An explicit flush is a fresh request to get everything to disk, so it
+        // supersedes a scheduled retry and gives a writer that had already
+        // given up **one** more attempt. Deliberately not a full budget reset:
+        // this runs on backgrounding and before reads, and neither wants to
+        // start a multi-second retry sequence. New user intent is what earns a
+        // full budget — see `drainAndScheduleFlush`.
+        retryTask?.cancel()
+        retryTask = nil
+        for index in retryStates.indices { retryStates[index].hasGivenUp = false }
 
         drainCount = 0
         hasLoggedLoopWarning = false
@@ -96,11 +139,19 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     public func drainAndScheduleFlush(_ state: inout State) {
         var hasPending = false
 
-        for writer in writers where writer.drain(&state) {
+        for index in writers.indices where writers[index].drain(&state) {
             hasPending = true
+            // New intent for this entity type: whatever went wrong before, the
+            // user is still editing, so the batch deserves a full budget.
+            retryStates[index] = RetryState()
         }
 
         guard hasPending else { return }
+
+        // The debounce flush about to be scheduled carries the re-buffered
+        // batch too, so a separate retry tick would only duplicate it.
+        retryTask?.cancel()
+        retryTask = nil
 
         drainCount += 1
         if drainCount > loopWarningThreshold && !hasLoggedLoopWarning {
@@ -135,7 +186,9 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// Returns `nil` when there is nothing pending and nothing in flight.
     @discardableResult
     private func runFlushWork() -> Task<Void, Never>? {
-        let work = writers.compactMap { $0.flush() }
+        let work = writers.indices.compactMap { index in
+            writers[index].flush().map { (index, $0) }
+        }
         let previous = flushTail
         guard !work.isEmpty || previous != nil else { return nil }
 
@@ -144,12 +197,66 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         }
         let task = Task {
             await previous?.value
-            for w in work {
-                await w()
+            var outcomes: [(index: Int, outcome: FlushOutcome)] = []
+            outcomes.reserveCapacity(work.count)
+            for (index, w) in work {
+                outcomes.append((index, await w()))
             }
+            self.recordOutcomes(outcomes)
         }
         flushTail = task
         return task
+    }
+
+    /// Folds one flush's outcomes into the retry bookkeeping and, if anything
+    /// is still worth another attempt, schedules it.
+    private func recordOutcomes(_ outcomes: [(index: Int, outcome: FlushOutcome)]) {
+        // The soonest any still-retrying writer wants to be tried again. A
+        // writer that has given up rides along on someone else's tick without
+        // burning budget or scheduling one of its own.
+        var nextDelay: Duration?
+
+        for (index, outcome) in outcomes {
+            guard outcome == .failed else {
+                retryStates[index] = RetryState()
+                continue
+            }
+            guard !retryStates[index].hasGivenUp else { continue }
+
+            retryStates[index].failures += 1
+            let failures = retryStates[index].failures
+            guard failures < retryPolicy.maxAttempts else {
+                retryStates[index].hasGivenUp = true
+                logger.error(
+                    """
+                    [PersistencePlugin] Writer \(index) failed \(failures) consecutive saves — \
+                    giving up. The batch is still held in memory and will be retried on the next \
+                    edit or explicit flush, but it is not on disk.
+                    """
+                )
+                writers[index].retryBudgetExhausted()
+                continue
+            }
+            let delay = retryPolicy.delay(afterFailures: failures)
+            nextDelay = nextDelay.map { min($0, delay) } ?? delay
+        }
+
+        guard let nextDelay else { return }
+        scheduleRetry(after: nextDelay)
+    }
+
+    /// Re-attempts the re-buffered batches after `delay`.
+    ///
+    /// Separate from the debounce timer: a failed write has to reach disk even
+    /// if the user never touches the app again.
+    private func scheduleRetry(after delay: Duration) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.retryTask = nil
+            self.runFlushWork()
+        }
     }
 
     /// Drains ChangeSets after every reducer invocation.

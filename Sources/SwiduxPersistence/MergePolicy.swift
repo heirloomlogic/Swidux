@@ -79,15 +79,21 @@ struct MergeContext {
 
 /// IDs whose most recent flush attempt failed.
 ///
-/// The value in memory is not in storage, and `StateWriter` has already
-/// discarded the buffered write, so without this nothing anywhere records the
-/// discrepancy. Under an additive merge that was harmless; under remote-wins it
-/// would be silent data loss — the next tick would overwrite a never-persisted
-/// local edit with the stale stored row.
+/// The value in memory is not in storage, so without a record of it a
+/// remote-wins merge would be silent data loss — the next tick would overwrite
+/// a never-persisted local edit with the stale stored row.
 ///
-/// > Note: This makes the discrepancy *visible to the merge*. It does not
-/// > retry the write; a failed save still only reaches storage if the entity is
-/// > touched again.
+/// `StateWriter` now puts a failed batch back into its pending buffers, so
+/// `pendingIDs` covers the same IDs for as long as the retry is outstanding.
+/// This ledger is kept alongside it for two reasons: it also covers the window
+/// while a batch is mid-flight, and it is the only record a hand-written
+/// *non-throwing* persist closure — one that swallows its own error, so the
+/// writer never learns to re-buffer — can leave behind.
+///
+/// > Note: The write itself is retried by ``Swidux/PersistencePlugin`` on a
+/// > bounded backoff. When that budget is spent the app is told via a
+/// > ``PersistenceFailure`` with `isFinal` set, and the batch stays pending for
+/// > the next edit or explicit flush.
 @MainActor
 final class UnpersistedIDs {
     private(set) var ids: Set<UUID> = []

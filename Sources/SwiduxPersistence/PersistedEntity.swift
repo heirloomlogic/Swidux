@@ -99,7 +99,19 @@ public struct PersistedEntity<State> {
 
         return PersistedEntity(
             makeWriter: { handle, onFailure in
-                StateWriter(keyPath: keyPath) { writes, deletions in
+                StateWriter(
+                    keyPath: keyPath,
+                    onExhausted: { error in
+                        // The retries are spent. Say so plainly: everything
+                        // before this was "we'll try again", and an app that
+                        // wants to warn the user has been waiting for the
+                        // difference.
+                        onFailure(
+                            PersistenceFailure(
+                                operation: .save, entityType: "\(E.self)", underlying: error,
+                                isFinal: true))
+                    }
+                ) { writes, deletions in
                     let touched = Set(writes.map(\.id)).union(deletions)
                     do {
                         // One transaction per batch: a crash can't persist a
@@ -107,11 +119,18 @@ public struct PersistedEntity<State> {
                         try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
                         await unpersisted.markPersisted(touched)
                     } catch {
-                        // The buffer is already cleared, so without this the
-                        // fact that memory ≠ storage would be recorded nowhere.
+                        // Belt and braces alongside the writer putting the batch
+                        // back: this records memory ≠ storage even for the
+                        // window where the batch is mid-flight, and it is the
+                        // only record a hand-written non-throwing persist
+                        // closure could leave.
                         await unpersisted.markFailed(touched)
                         onFailure(
                             PersistenceFailure(operation: .save, entityType: "\(E.self)", underlying: error))
+                        // Rethrow so the writer puts the batch back and the
+                        // plugin retries it. Swallowing here is what made a
+                        // failed save silent data loss.
+                        throw error
                     }
                 }
             },

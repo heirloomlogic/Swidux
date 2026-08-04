@@ -116,6 +116,41 @@ func makeNotesStore(
     )
 }
 
+/// Thread-safe box for collecting values from `@Sendable` closures.
+///
+/// A sibling of the one in `SwiduxTests`; test targets can't import each
+/// other's helpers, and a shared test-support target would be more machinery
+/// than two small boxes are worth.
+final class SendableBox<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: T
+    var value: T {
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
+    }
+    init(_ value: T) { storage = value }
+
+    /// Mutates in place under the lock — for read-modify-write, where a
+    /// get/set pair would race.
+    func withValue<R>(_ body: (inout T) -> R) -> R {
+        lock.withLock { body(&storage) }
+    }
+}
+
+/// Polls `condition` on the main actor until it holds or `timeout` elapses.
+///
+/// Retry backoff and debounce timers complete on their own schedule, so tests
+/// wait for an observable state rather than sleeping a fixed span — a sleep
+/// that is generous on an idle machine is not generous on a loaded CI runner.
+@MainActor
+func poll(until condition: () -> Bool, timeout: Duration = .seconds(2)) async throws {
+    var waited = Duration.zero
+    while !condition(), waited < timeout {
+        try await Task.sleep(for: .milliseconds(5))
+        waited += .milliseconds(5)
+    }
+}
+
 /// Inserts rows through a second `ModelContext`, bypassing `EntityDB` entirely.
 ///
 /// This is the only way to manufacture the duplicate-ID rows the API under test
