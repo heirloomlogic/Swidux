@@ -72,6 +72,117 @@ struct EntityStoreTests {
         #expect(store[id] == nil)
     }
 
+    // MARK: - Reconcile
+
+    @Test("reconcile replaces a conflicting value that is not preserved")
+    func reconcileReplacesUnownedConflict() {
+        let id = UUID()
+        var store = EntityStore([TestEntity(id: id, name: "local")])
+        store.resetChanges()
+
+        store.reconcile(
+            with: EntityStore([TestEntity(id: id, name: "remote")]),
+            preserving: [], removingMissing: false)
+
+        #expect(store[id]?.name == "remote")
+        #expect(store.changes.isEmpty, "a reconcile must not echo storage back as a local write")
+    }
+
+    @Test("reconcile keeps a conflicting value that is preserved")
+    func reconcileKeepsOwnedConflict() {
+        let id = UUID()
+        var store = EntityStore([TestEntity(id: id, name: "local")])
+        store.resetChanges()
+
+        store.reconcile(
+            with: EntityStore([TestEntity(id: id, name: "remote")]),
+            preserving: [id], removingMissing: true)
+
+        #expect(store[id]?.name == "local")
+    }
+
+    @Test("reconcile inserts remote-only rows but skips preserved IDs")
+    func reconcileInsertsRemoteOnly() {
+        let fresh = TestEntity(name: "fresh")
+        let pendingDelete = TestEntity(name: "pending delete")
+        var store = EntityStore<TestEntity>()
+
+        store.reconcile(
+            with: EntityStore([fresh, pendingDelete]),
+            preserving: [pendingDelete.id], removingMissing: false)
+
+        #expect(store[fresh.id] == fresh)
+        #expect(store[pendingDelete.id] == nil, "storage has no authority over a preserved ID, insert included")
+    }
+
+    @Test("reconcile honours an un-drained local deletion even when preserving is empty")
+    func reconcileHonoursUndrainedDeletion() {
+        let entity = TestEntity(name: "deleted locally")
+        var store = EntityStore([entity])
+        store.resetChanges()
+        store[entity.id] = nil  // un-drained: still in `changes.deletions`
+
+        store.reconcile(
+            with: EntityStore([entity]), preserving: [], removingMissing: false)
+
+        #expect(store[entity.id] == nil, "a pending local deletion must never be resurrected")
+        #expect(store.changes.deletions.contains(entity.id), "and it must still flush")
+    }
+
+    @Test("reconcile removes a missing row and records no deletion for it")
+    func reconcileRemovesMissing() {
+        let gone = TestEntity(name: "deleted remotely")
+        let kept = TestEntity(name: "kept")
+        var store = EntityStore([gone, kept])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore([kept]), preserving: [], removingMissing: true)
+
+        #expect(store[gone.id] == nil)
+        #expect(store.values == [kept])
+        #expect(
+            store.changes.isEmpty,
+            "the row is already gone from storage — recording a deletion would echo it back as a local one"
+        )
+    }
+
+    @Test("reconcile does not remove a preserved row that is missing from storage")
+    func reconcileKeepsPreservedMissing() {
+        let local = TestEntity(name: "created locally, not yet flushed")
+        var store = EntityStore([local])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [local.id], removingMissing: true)
+
+        #expect(store[local.id] == local)
+    }
+
+    @Test("reconcile with removingMissing false leaves memory-only rows alone")
+    func reconcileAdditiveKeepsMissing() {
+        let local = TestEntity(name: "local")
+        var store = EntityStore([local])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: false)
+
+        #expect(store[local.id] == local)
+    }
+
+    @Test("reconcile preserves survivor order and appends remote-only rows at the tail")
+    func reconcilePreservesOrder() {
+        let a = TestEntity(name: "a")
+        let b = TestEntity(name: "b")
+        let c = TestEntity(name: "c")
+        let newcomer = TestEntity(name: "newcomer")
+        var store = EntityStore([a, b, c])
+        store.resetChanges()
+
+        store.reconcile(
+            with: EntityStore([c, a, newcomer]), preserving: [], removingMissing: true)
+
+        #expect(store.values.map(\.name) == ["a", "c", "newcomer"])
+    }
+
     // MARK: - Subscript
 
     @Test("Subscript set inserts and records upsert")

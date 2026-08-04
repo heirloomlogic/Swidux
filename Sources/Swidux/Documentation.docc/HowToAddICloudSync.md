@@ -155,7 +155,18 @@ Capture the store **weakly**: the observer usually outlives the view layer, and 
 >
 > That loses every write dispatched while the flush and fetches are in flight, and it surfaces as intermittently vanishing keystrokes rather than as an obvious failure. `rehydrate(into:)` takes the store precisely so this shape has no reason to exist; for your own async work, use ``Store/mutate(awaiting:merging:)``.
 
-> Important: The same merge rule makes mid-session sync **additive-only**. Rows created on another device appear live; remote *edits* to entities already in memory and remote *deletions* do **not** surface until the next launch (the in-memory value always wins, and a merge never removes). This is the deliberate trade against clobbering unflushed writes and live UI edits — set expectations accordingly in your UI, and don't chase "stale until relaunch" reports as bugs.
+By default (`MergePolicy.preferRemote`) remote creations, edits, **and** deletions all surface mid-session. An ID is exempt whenever the local side still has something to say about it — an un-drained edit, a drained-but-unflushed write, a pending deletion, or a write whose save failed. Those always win, and that guarantee is not configurable.
+
+Two things are worth knowing:
+
+- **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing.
+- **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Bindings made with `store.binding(_:sending:)` dispatch on write and are covered.
+
+For a store backing a live text editor, where a remote edit arriving under the cursor is worse than a stale row, register it additive-only:
+
+```swift
+.entity(\.documents, policy: .preferInMemory)
+```
 
 ## Step 8: Duplicates (optional)
 

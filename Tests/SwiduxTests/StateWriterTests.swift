@@ -201,4 +201,34 @@ struct StateWriterTests {
         #expect(writesBox.value.count == 1)
         #expect(writesBox.value.first?.name == "Second")
     }
+
+    // MARK: - pendingIDs
+
+    @Test("pendingIDs reports drained writes and deletions, and clears on flush")
+    func pendingIDsLifecycle() async {
+        let writer = Self.makeWriter { _, _ in }
+        let written = UUID()
+        let deleted = UUID()
+        var state = TestState()
+
+        #expect(writer.pendingIDs.isEmpty, "a fresh writer holds nothing")
+
+        state.items[written] = TestEntity(id: written, name: "written")
+        state.items[deleted] = TestEntity(id: deleted, name: "doomed")
+        _ = writer.drain(&state)
+        state.items[deleted] = nil
+        _ = writer.drain(&state)
+
+        #expect(writer.pendingIDs == [written, deleted], "drained but not yet on disk")
+
+        if let work = writer.flush() { await work() }
+        #expect(writer.pendingIDs.isEmpty, "flushing hands the batch off, so nothing is pending")
+
+        // The window the merge actually cares about: a write drained *after* a
+        // flush snapshotted the buffers is pending again.
+        let late = UUID()
+        state.items[late] = TestEntity(id: late, name: "late")
+        _ = writer.drain(&state)
+        #expect(writer.pendingIDs == [late])
+    }
 }

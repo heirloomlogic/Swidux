@@ -152,7 +152,11 @@ extension SyncCoordinator where State: SwiduxObservable {
         }
 
         // Absorb anything the rebuilt store has without clobbering live edits.
-        await persistence.rehydrate(into: store)
+        //
+        // Additive: this is a *different* container, so a row's absence from it
+        // says nothing about whether the user deleted it. Without the override,
+        // toggling sync would wipe every entity the new store hasn't got yet.
+        await persistence.rehydrate(into: store, policy: .preferRemoteAdditive)
 
         return status
     }

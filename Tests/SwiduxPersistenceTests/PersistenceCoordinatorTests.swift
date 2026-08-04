@@ -18,13 +18,16 @@ import Testing
 @MainActor
 struct PersistenceCoordinatorTests {
     private func makeCoordinator(
-        debounce: Duration = .milliseconds(10)
+        debounce: Duration = .milliseconds(10),
+        mergePolicy: MergePolicy = .preferRemote,
+        entityPolicy: MergePolicy? = nil
     ) throws -> PersistenceCoordinator<NotesState, NotesAction> {
         let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
         return PersistenceCoordinator<NotesState, NotesAction>(
-            entities: [.entity(\.notes)],
+            entities: [.entity(\.notes, policy: entityPolicy)],
             container: container,
-            debounce: debounce
+            debounce: debounce,
+            mergePolicy: mergePolicy
         )
     }
 
@@ -59,8 +62,8 @@ struct PersistenceCoordinatorTests {
         #expect(state.notes.values == [disk])
     }
 
-    @Test("rehydrate merges: in-memory wins per ID, disk-only rows appear")
-    func rehydrateMergesPreferringMemory() async throws {
+    @Test("an unflushed local edit wins over the stored row, and disk-only rows still appear")
+    func rehydrateKeepsUnflushedLocalEdits() async throws {
         let coordinator = try makeCoordinator()
         let sharedID = UUID()
         let diskShared = Note(id: sharedID, title: "disk edit", pinned: false)
@@ -74,30 +77,203 @@ struct PersistenceCoordinatorTests {
         let memoryOnly = Note(id: UUID(), title: "memory only", pinned: false)
         initial.notes[memoryShared.id] = memoryShared
         initial.notes[memoryOnly.id] = memoryOnly
+        // Deliberately NOT resetChanges(): these are un-drained local edits, so
+        // storage has no authority over them even under `.preferRemote`.
         let store = makeStore(coordinator, initialState: initial)
 
         await coordinator.rehydrate(into: store)
 
-        #expect(store.notes[sharedID] == memoryShared, "the in-memory value is authoritative mid-session")
-        #expect(store.notes[memoryOnly.id] == memoryOnly)
-        #expect(store.notes[diskOnly.id] == diskOnly, "disk-only rows are merged in")
+        #expect(store.notes[sharedID] == memoryShared, "an unflushed local edit is never overwritten")
+        #expect(store.notes[memoryOnly.id] == memoryOnly, "nor removed for being absent from storage")
+        #expect(store.notes[diskOnly.id] == diskOnly, "storage-only rows are merged in")
         #expect(store.notes.count == 3)
     }
 
-    @Test("rehydrate is additive-only: a disk deletion does not remove a live entity")
-    func rehydrateNeverRemoves() async throws {
+    @Test("an empty snapshot never removes anything — it can't be told from an unreadable store")
+    func rehydrateKeepsEverythingWhenSnapshotIsEmpty() async throws {
         let coordinator = try makeCoordinator()
 
         var initial = NotesState()
         let live = Note(id: UUID(), title: "live", pinned: false)
         initial.notes[live.id] = live
-        initial.notes.resetChanges()
+        initial.notes.resetChanges()  // clean: storage would otherwise be authoritative
         let store = makeStore(coordinator, initialState: initial)
 
-        // Disk holds nothing (as if another device deleted the row).
+        // Disk holds nothing. That looks identical to a container that is
+        // rebuilt, mid-import, or unreadable, so absence proves nothing.
         await coordinator.rehydrate(into: store)
 
         #expect(store.notes[live.id] == live)
+    }
+
+    // MARK: - Remote changes surfacing
+
+    @Test("a remote edit to a clean entity surfaces mid-session")
+    func rehydrateSurfacesRemoteEdit() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "original", pinned: false)))
+        await coordinator.corePlugin.flush()  // clean: memory matches storage
+
+        // Another device edits the row.
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [], as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[id]?.title == "edited elsewhere")
+        #expect(store.notes[id]?.pinned == true)
+    }
+
+    @Test("a remote deletion surfaces mid-session, and is not echoed back as a local one")
+    func rehydrateSurfacesRemoteDeletion() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let doomed = UUID()
+        let kept = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: doomed, title: "doomed", pinned: false)))
+        store.send(.add(Note(id: kept, title: "keep", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        // Another device deletes one. The snapshot is non-empty, so absence is
+        // real evidence rather than an unreadable store.
+        try await coordinator.database.apply(writes: [], deletions: [doomed], as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[doomed] == nil)
+        #expect(store.notes[kept] != nil)
+        #expect(
+            store.notes.changes.isEmpty,
+            "the row is already gone from storage — recording a deletion would echo it back to CloudKit"
+        )
+    }
+
+    @Test("a write drained during the fetch is not overwritten by the stored row")
+    func dirtyWriteLandingDuringTheFetchSurvives() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "original", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: false)], deletions: [], as: NoteModel.self)
+
+        // Lands after the flush and after the fetch — so it is in the writer's
+        // pending buffers, and in neither the store's `changes` nor the batch
+        // the flush already handed off. Only `pendingIDs` can see it.
+        coordinator.duringReadPhase = { store.send(.add(Note(id: id, title: "typed just now", pinned: false))) }
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(
+            store.notes[id]?.title == "typed just now",
+            "an unflushed local write outranks storage, however late it landed"
+        )
+    }
+
+    @Test("a delete drained during the fetch is not resurrected")
+    func dirtyDeleteLandingDuringTheFetchIsNotResurrected() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let other = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "doomed", pinned: false)))
+        store.send(.add(Note(id: other, title: "other", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        // The delete is drained into the writer's buffers but not flushed, so
+        // `changes.deletions` is already cleared and the row is still on disk.
+        coordinator.duringReadPhase = { store.send(.remove(id)) }
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[id] == nil, "a drained-but-unflushed delete must not be resurrected by the merge")
+    }
+
+    // MARK: - Policies
+
+    @Test("preferInMemory restores additive-only behaviour")
+    func preferInMemoryKeepsMemoryAuthoritative() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30), mergePolicy: .preferInMemory)
+        let edited = UUID()
+        let doomed = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: edited, title: "original", pinned: false)))
+        store.send(.add(Note(id: doomed, title: "doomed", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        try await coordinator.database.apply(
+            writes: [Note(id: edited, title: "edited elsewhere", pinned: false)],
+            deletions: [doomed],
+            as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[edited]?.title == "original", "in-memory wins for every ID already held")
+        #expect(store.notes[doomed] != nil, "and nothing is ever removed")
+    }
+
+    @Test("a per-entity policy narrows the coordinator default")
+    func perEntityPolicyNarrowsTheDefault() async throws {
+        let coordinator = try makeCoordinator(
+            debounce: .seconds(30), mergePolicy: .preferRemote, entityPolicy: .preferInMemory)
+        let id = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "original", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: false)], deletions: [], as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[id]?.title == "original")
+    }
+
+    @Test("a call-site policy override can only narrow, never widen")
+    func policyOverrideOnlyNarrows() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30), mergePolicy: .preferInMemory)
+        let id = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "original", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: false)], deletions: [], as: NoteModel.self)
+
+        // Asking for more authority than the coordinator was configured with
+        // must not grant it.
+        await coordinator.rehydrate(into: store, policy: .preferRemote)
+
+        #expect(store.notes[id]?.title == "original")
+    }
+
+    @Test("preferRemoteAdditive surfaces remote edits but never removes")
+    func preferRemoteAdditiveKeepsMissingRows() async throws {
+        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let edited = UUID()
+        let absent = UUID()
+        let store = makeStore(coordinator)
+
+        store.send(.add(Note(id: edited, title: "original", pinned: false)))
+        store.send(.add(Note(id: absent, title: "absent from the new store", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await coordinator.database.apply(
+            writes: [Note(id: edited, title: "edited elsewhere", pinned: false)],
+            deletions: [absent],
+            as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store, policy: .preferRemoteAdditive)
+
+        #expect(store.notes[edited]?.title == "edited elsewhere")
+        #expect(store.notes[absent] != nil, "absence carries no information under this policy")
     }
 
     @Test("rehydrate flushes first, so an unflushed local delete is not resurrected")

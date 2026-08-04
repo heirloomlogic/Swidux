@@ -4,9 +4,11 @@
 //
 //  Observes CloudKit-driven store changes and triggers a debounced, merge-based
 //  re-hydration. `.NSPersistentStoreRemoteChange` fires for the app's own local
-//  saves too; because re-hydration always *merges* preferring in-memory state,
-//  feeding the app its own writes is a no-op — the rule-#8 data-loss trap is
-//  neutralized by construction rather than by discipline.
+//  saves too, and feeding the app its own writes is a no-op: an echoed write is
+//  equal to the row already in memory, so reconciling against it changes
+//  nothing. Anything still unflushed is protected separately, by the merge's
+//  dirty set — so the rule-#8 data-loss trap is neutralized by construction
+//  rather than by discipline.
 //
 
 import Foundation
