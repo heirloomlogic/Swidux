@@ -16,22 +16,9 @@ import Testing
 @Suite("PersistenceCoordinator reads")
 @MainActor
 struct CoordinatorReadAPITests {
-    private func makeCoordinator(
-        debounce: Duration = .milliseconds(10),
-        onFailure: PersistenceFailureHandler? = nil
-    ) throws -> PersistenceCoordinator<NotesState, NotesAction> {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
-        return PersistenceCoordinator<NotesState, NotesAction>(
-            entities: [.entity(\.notes)],
-            container: container,
-            debounce: debounce,
-            onFailure: onFailure
-        )
-    }
-
     @Test("fetchAll(of:) returns domain values and leaves state alone")
     func fetchAllReturnsDomainValues() async throws {
-        let coordinator = try makeCoordinator()
+        let coordinator = try makeNotesCoordinator()
         let note = Note(id: UUID(), title: "disk", pinned: true)
         try await coordinator.database.apply(writes: [note], deletions: [], as: NoteModel.self)
 
@@ -43,7 +30,7 @@ struct CoordinatorReadAPITests {
     @Test("fetchAll(of:) flushes pending writes first, so it can't read a stale row")
     func fetchAllFlushesByDefault() async throws {
         // Debounce long enough that nothing flushes on its own.
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         var state = NotesState()
         let note = Note(id: UUID(), title: "just typed", pinned: false)
         state.notes[note.id] = note
@@ -56,7 +43,7 @@ struct CoordinatorReadAPITests {
 
     @Test("fetchAll(of:flushPending: false) sees the pre-flush disk state")
     func fetchAllCanSkipTheFlush() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         var state = NotesState()
         state.notes[UUID()] = Note(id: UUID(), title: "just typed", pinned: false)
         coordinator.corePlugin.drainAndScheduleFlush(&state)
@@ -74,7 +61,7 @@ struct CoordinatorReadAPITests {
 
     @Test("snapshot(of:) yields a change-free EntityStore")
     func snapshotRecordsNoChanges() async throws {
-        let coordinator = try makeCoordinator()
+        let coordinator = try makeNotesCoordinator()
         let note = Note(id: UUID(), title: "disk", pinned: false)
         try await coordinator.database.apply(writes: [note], deletions: [], as: NoteModel.self)
 

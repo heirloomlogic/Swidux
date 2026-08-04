@@ -42,7 +42,6 @@ public struct PersistedEntity<State> {
     /// are computed after the fetch, so a write that landed during it counts.
     typealias MergeApply = @MainActor (inout State, MergeContext) -> Void
 
-    let model: any PersistentModel.Type
     let makeWriter: @MainActor (DatabaseHandle, @escaping PersistenceFailureHandler) -> StateWriter<State>
 
     /// A per-entity narrowing of the coordinator's merge policy, if any.
@@ -85,8 +84,20 @@ public struct PersistedEntity<State> {
         collapse: (@Sendable (_ rows: [E]) -> [E])? = nil
     ) -> PersistedEntity<State> where E.Model: PersistentModel {
         let unpersisted = UnpersistedIDs()
+
+        /// Reads the rows to fold in, running the registered collapse first
+        /// when there is one. Collapse already returns the survivors, so this
+        /// never fetches the same table twice.
+        @MainActor
+        func loadRows(_ handle: DatabaseHandle) async throws -> (rows: [E], removedIDs: Set<UUID>) {
+            guard let collapse else {
+                return (try await handle.db.fetchAll(E.Model.self), [])
+            }
+            let outcome = try await handle.db.collapseDuplicates(as: E.Model.self, using: collapse)
+            return (outcome.survivors, outcome.removedIDs)
+        }
+
         return PersistedEntity(
-            model: E.Model.self,
             makeWriter: { handle, onFailure in
                 StateWriter(keyPath: keyPath) { writes, deletions in
                     let touched = Set(writes.map(\.id)).union(deletions)
@@ -108,8 +119,10 @@ public struct PersistedEntity<State> {
             unpersisted: unpersisted,
             readForHydrate: { handle, onFailure in
                 do {
-                    let fetched = try await handle.db.fetchAll(E.Model.self)
-                    return { state in state[keyPath: keyPath] = EntityStore(fetched) }
+                    // Removals are implicit here: the whole store is replaced
+                    // by the survivors.
+                    let loaded = try await loadRows(handle)
+                    return { state in state[keyPath: keyPath] = EntityStore(loaded.rows) }
                 } catch {
                     // Leave the store untouched — an unreadable database must
                     // not present as "no data" (a later flush would then write
@@ -121,28 +134,29 @@ public struct PersistedEntity<State> {
             },
             readForMerge: { handle, onFailure in
                 do {
-                    let fetched = try await handle.db.fetchAll(E.Model.self)
-                    let incoming = EntityStore(fetched)
+                    let loaded = try await loadRows(handle)
+                    let incoming = EntityStore(loaded.rows)
                     return { state, context in
                         var current = state[keyPath: keyPath]
-                        guard context.policy.remoteWinsOnConflict else {
-                            // Additive-only: keep every current value, absorb
-                            // storage-only rows.
-                            current.merge(from: incoming) { _, _ in false }
-                            state[keyPath: keyPath] = current
-                            return
-                        }
+                        // A collapsed-away loser would otherwise linger as a
+                        // zombie until relaunch. Recorded as a deletion so it
+                        // also propagates to any peer that still holds it.
+                        current.remove(ids: loaded.removedIDs)
+                        // "In-memory wins" is just "preserve everything already
+                        // held", so one primitive serves every policy.
+                        let preserved =
+                            context.policy.remoteWinsOnConflict
+                            ? context.locallyOwnedIDs
+                            : context.locallyOwnedIDs.union(current.values.map(\.id))
                         // An empty snapshot is indistinguishable from a store
                         // that is unreadable or mid-import, so refuse to read
                         // "everything was deleted" out of it — the same stance
                         // hydration takes on a failed fetch.
                         let removes =
                             context.policy.removesMissingEntities
-                            && !(fetched.isEmpty && !current.isEmpty)
+                            && !(incoming.isEmpty && !current.isEmpty)
                         current.reconcile(
-                            with: incoming,
-                            preserving: context.locallyOwnedIDs,
-                            removingMissing: removes)
+                            with: incoming, preserving: preserved, removingMissing: removes)
                         state[keyPath: keyPath] = current
                     }
                 } catch {
@@ -152,18 +166,11 @@ public struct PersistedEntity<State> {
                 }
             },
             collapseOnDisk: { handle, onFailure in
-                guard let collapse else { return { _ in } }
+                guard collapse != nil else { return { _ in } }
                 do {
-                    let outcome = try await handle.db.collapseDuplicates(as: E.Model.self, using: collapse)
-                    guard !outcome.removedIDs.isEmpty else { return { _ in } }
-                    return { state in
-                        // Record the removals. A collapsed-away loser would
-                        // otherwise linger in memory as a zombie until relaunch,
-                        // and the merge that follows would happily keep it. The
-                        // recorded deletions flush later as no-ops against rows
-                        // that are already gone, which is harmless.
-                        state[keyPath: keyPath].remove(ids: outcome.removedIDs)
-                    }
+                    let loaded = try await loadRows(handle)
+                    guard !loaded.removedIDs.isEmpty else { return { _ in } }
+                    return { state in state[keyPath: keyPath].remove(ids: loaded.removedIDs) }
                 } catch {
                     onFailure(
                         PersistenceFailure(operation: .save, entityType: "\(E.self)", underlying: error))

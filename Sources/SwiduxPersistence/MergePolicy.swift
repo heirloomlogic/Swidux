@@ -67,15 +67,6 @@ public struct MergePolicy: Sendable, Equatable {
     }
 }
 
-/// The synchronous folds a re-hydration produces, in the order they apply.
-struct MergeFolds<State> {
-    /// Collapse removals, index-independent.
-    let collapses: [PersistedEntity<State>.Apply]
-
-    /// Per-entity merges, index-aligned with the coordinator's entity list.
-    let merges: [PersistedEntity<State>.MergeApply]
-}
-
 /// Everything the synchronous half of a merge needs beyond the fetched rows.
 struct MergeContext {
     /// The policy in force for this entity, after all narrowing.

@@ -17,37 +17,9 @@ import Testing
 @Suite("PersistenceCoordinator hydration")
 @MainActor
 struct PersistenceCoordinatorTests {
-    private func makeCoordinator(
-        debounce: Duration = .milliseconds(10),
-        mergePolicy: MergePolicy = .preferRemote,
-        entityPolicy: MergePolicy? = nil
-    ) throws -> PersistenceCoordinator<NotesState, NotesAction> {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
-        return PersistenceCoordinator<NotesState, NotesAction>(
-            entities: [.entity(\.notes, policy: entityPolicy)],
-            container: container,
-            debounce: debounce,
-            mergePolicy: mergePolicy
-        )
-    }
-
-    private func makeStore(
-        _ coordinator: PersistenceCoordinator<NotesState, NotesAction>,
-        initialState: NotesState = NotesState()
-    ) -> Store<NotesState, NotesAction> {
-        let plugins = PluginHost<NotesState, NotesAction>()
-        plugins.register(coordinator.corePlugin)
-        return Store(
-            initialState: initialState,
-            reducer: notesReducer,
-            plugins: plugins,
-            persistencePlugin: coordinator.corePlugin
-        )
-    }
-
     @Test("hydrate replaces the EntityStore with the on-disk rows")
     func hydrateReplaces() async throws {
-        let coordinator = try makeCoordinator()
+        let coordinator = try makeNotesCoordinator()
         let disk = Note(id: UUID(), title: "disk", pinned: false)
         try await coordinator.database.apply(writes: [disk], deletions: [], as: NoteModel.self)
 
@@ -64,7 +36,7 @@ struct PersistenceCoordinatorTests {
 
     @Test("an unflushed local edit wins over the stored row, and disk-only rows still appear")
     func rehydrateKeepsUnflushedLocalEdits() async throws {
-        let coordinator = try makeCoordinator()
+        let coordinator = try makeNotesCoordinator()
         let sharedID = UUID()
         let diskShared = Note(id: sharedID, title: "disk edit", pinned: false)
         let diskOnly = Note(id: UUID(), title: "disk only", pinned: false)
@@ -79,7 +51,7 @@ struct PersistenceCoordinatorTests {
         initial.notes[memoryOnly.id] = memoryOnly
         // Deliberately NOT resetChanges(): these are un-drained local edits, so
         // storage has no authority over them even under `.preferRemote`.
-        let store = makeStore(coordinator, initialState: initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
 
         await coordinator.rehydrate(into: store)
 
@@ -91,13 +63,13 @@ struct PersistenceCoordinatorTests {
 
     @Test("an empty snapshot never removes anything — it can't be told from an unreadable store")
     func rehydrateKeepsEverythingWhenSnapshotIsEmpty() async throws {
-        let coordinator = try makeCoordinator()
+        let coordinator = try makeNotesCoordinator()
 
         var initial = NotesState()
         let live = Note(id: UUID(), title: "live", pinned: false)
         initial.notes[live.id] = live
         initial.notes.resetChanges()  // clean: storage would otherwise be authoritative
-        let store = makeStore(coordinator, initialState: initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
 
         // Disk holds nothing. That looks identical to a container that is
         // rebuilt, mid-import, or unreadable, so absence proves nothing.
@@ -110,9 +82,9 @@ struct PersistenceCoordinatorTests {
 
     @Test("a remote edit to a clean entity surfaces mid-session")
     func rehydrateSurfacesRemoteEdit() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let id = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: id, title: "original", pinned: false)))
         await coordinator.corePlugin.flush()  // clean: memory matches storage
@@ -129,10 +101,10 @@ struct PersistenceCoordinatorTests {
 
     @Test("a remote deletion surfaces mid-session, and is not echoed back as a local one")
     func rehydrateSurfacesRemoteDeletion() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let doomed = UUID()
         let kept = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: doomed, title: "doomed", pinned: false)))
         store.send(.add(Note(id: kept, title: "keep", pinned: false)))
@@ -154,9 +126,9 @@ struct PersistenceCoordinatorTests {
 
     @Test("a write drained during the fetch is not overwritten by the stored row")
     func dirtyWriteLandingDuringTheFetchSurvives() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let id = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: id, title: "original", pinned: false)))
         await coordinator.corePlugin.flush()
@@ -178,10 +150,10 @@ struct PersistenceCoordinatorTests {
 
     @Test("a delete drained during the fetch is not resurrected")
     func dirtyDeleteLandingDuringTheFetchIsNotResurrected() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let id = UUID()
         let other = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: id, title: "doomed", pinned: false)))
         store.send(.add(Note(id: other, title: "other", pinned: false)))
@@ -200,10 +172,10 @@ struct PersistenceCoordinatorTests {
 
     @Test("preferInMemory restores additive-only behaviour")
     func preferInMemoryKeepsMemoryAuthoritative() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30), mergePolicy: .preferInMemory)
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), mergePolicy: .preferInMemory)
         let edited = UUID()
         let doomed = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: edited, title: "original", pinned: false)))
         store.send(.add(Note(id: doomed, title: "doomed", pinned: false)))
@@ -222,10 +194,10 @@ struct PersistenceCoordinatorTests {
 
     @Test("a per-entity policy narrows the coordinator default")
     func perEntityPolicyNarrowsTheDefault() async throws {
-        let coordinator = try makeCoordinator(
+        let coordinator = try makeNotesCoordinator(
             debounce: .seconds(30), mergePolicy: .preferRemote, entityPolicy: .preferInMemory)
         let id = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: id, title: "original", pinned: false)))
         await coordinator.corePlugin.flush()
@@ -239,9 +211,9 @@ struct PersistenceCoordinatorTests {
 
     @Test("a call-site policy override can only narrow, never widen")
     func policyOverrideOnlyNarrows() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30), mergePolicy: .preferInMemory)
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), mergePolicy: .preferInMemory)
         let id = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: id, title: "original", pinned: false)))
         await coordinator.corePlugin.flush()
@@ -257,10 +229,10 @@ struct PersistenceCoordinatorTests {
 
     @Test("preferRemoteAdditive surfaces remote edits but never removes")
     func preferRemoteAdditiveKeepsMissingRows() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let edited = UUID()
         let absent = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: edited, title: "original", pinned: false)))
         store.send(.add(Note(id: absent, title: "absent from the new store", pinned: false)))
@@ -280,10 +252,10 @@ struct PersistenceCoordinatorTests {
     func rehydrateDoesNotResurrectUnflushedDelete() async throws {
         // Large debounce so the scheduled flush never fires on its own during the
         // test — the pending delete stays buffered until rehydrate flushes it.
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let keep = UUID()
         let doomed = UUID()
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         // Persist two notes through the plugin pipeline.
         store.send(.add(Note(id: keep, title: "keep", pinned: false)))
@@ -309,10 +281,10 @@ struct PersistenceCoordinatorTests {
 
     @Test("rehydrate keeps a write dispatched while the reads are in flight")
     func rehydrateKeepsWriteLandingDuringReads() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let diskRow = Note(id: UUID(), title: "disk", pinned: false)
         try await coordinator.database.apply(writes: [diskRow], deletions: [], as: NoteModel.self)
-        let store = makeStore(coordinator)
+        let store = makeNotesStore(coordinator)
 
         // A dispatch lands after the flush and after the fetch, in the exact
         // window a caller holding `inout State` across those awaits would lose.
@@ -328,8 +300,8 @@ struct PersistenceCoordinatorTests {
 
     @Test("the hand-rolled pack/await/unpack idiom loses that write — why rehydrate takes the store")
     func handRolledIdiomLosesTheWrite() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
-        let store = makeStore(coordinator)
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let store = makeNotesStore(coordinator)
 
         // The shape this API replaces: snapshot packed BEFORE the awaits.
         var snapshot = NotesState(observer: store.observer)
@@ -349,14 +321,14 @@ struct PersistenceCoordinatorTests {
 
     @Test("hydrate into a store replaces entities but preserves unregistered slices")
     func hydrateIntoStorePreservesOtherSlices() async throws {
-        let coordinator = try makeCoordinator(debounce: .seconds(30))
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let disk = Note(id: UUID(), title: "disk", pinned: false)
         try await coordinator.database.apply(writes: [disk], deletions: [], as: NoteModel.self)
 
         var initial = NotesState()
         initial.notes[UUID()] = Note(id: UUID(), title: "stale", pinned: false)
         initial.notes.resetChanges()
-        let store = makeStore(coordinator, initialState: initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
 
         // `ui` is not a registered entity, and this dispatch lands mid-read.
         coordinator.duringReadPhase = { store.send(.setSearchText("typed")) }

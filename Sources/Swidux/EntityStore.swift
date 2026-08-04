@@ -72,6 +72,7 @@ public nonisolated struct EntityStore<
     /// has to be total rather than trusting its input.
     public init(_ initialEntities: [Entity]) {
         entities.reserveCapacity(initialEntities.count)
+        positions = Dictionary(minimumCapacity: initialEntities.count)
         for entity in initialEntities where positions[entity.id] == nil {
             positions[entity.id] = entities.count
             entities.append(entity)
@@ -201,7 +202,7 @@ public nonisolated struct EntityStore<
         entities.removeAll { removedIDs.contains($0.id) }
 
         // Rebuild index once
-        positions = [:]
+        positions = Dictionary(minimumCapacity: entities.count)
         for (i, entity) in entities.enumerated() {
             positions[entity.id] = i
         }
@@ -301,7 +302,9 @@ public nonisolated struct EntityStore<
         preserving: Set<UUID>,
         removingMissing: Bool
     ) {
-        let owned = preserving.union(changes.upserts).union(changes.deletions)
+        var owned = preserving
+        if !changes.upserts.isEmpty { owned.formUnion(changes.upserts) }
+        if !changes.deletions.isEmpty { owned.formUnion(changes.deletions) }
 
         for entity in remote.values where !owned.contains(entity.id) {
             if let index = positions[entity.id] {
@@ -313,11 +316,13 @@ public nonisolated struct EntityStore<
         }
 
         guard removingMissing else { return }
-        let remoteIDs = Set(remote.values.map(\.id))
-        removeBatch(
-            Set(positions.keys).subtracting(remoteIDs).subtracting(owned),
-            recordingChanges: false
-        )
+        // One pass over the keys we hold, allocating only for what's actually
+        // missing — a sync tick that deleted nothing should allocate nothing.
+        var missing: Set<UUID> = []
+        for id in positions.keys where !remote.contains(id) && !owned.contains(id) {
+            missing.insert(id)
+        }
+        removeBatch(missing, recordingChanges: false)
     }
 
     // MARK: - Restore (Undo/Redo)

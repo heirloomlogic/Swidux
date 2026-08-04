@@ -42,19 +42,6 @@ private func poll(until condition: () -> Bool, timeout: Duration = .seconds(2)) 
     }
 }
 
-private func mutateTestReducer(
-    state: inout TestState,
-    action: TestAction
-) -> Effect<TestAction>? {
-    switch action {
-    case .insert(let entity): state.items[entity.id] = entity
-    case .delete(let id): state.items[id] = nil
-    case .rename(let id, let name): state.items.modify(id) { $0.name = name }
-    case .noOp, .effectAction: break
-    }
-    return nil
-}
-
 @MainActor
 private func makeStore(
     initialState: TestState = TestState(),
@@ -62,7 +49,7 @@ private func makeStore(
 ) -> Store<TestState, TestAction> {
     Store(
         initialState: initialState,
-        reducer: mutateTestReducer,
+        reducer: testReducer,
         persistencePlugin: persistencePlugin
     )
 }
@@ -124,9 +111,9 @@ struct StoreMutateTests {
 
     @Test("entity writes made while merging are drained and scheduled for persistence")
     func mergedWritesAreScheduledForFlush() async throws {
-        let recorded = Recorder()
-        let writer = StateWriter<TestState>(keyPath: \.items) { writes, deletions in
-            await recorded.record(writes: writes.map(\.id), deletions: deletions)
+        let recorded = SendableBox<[UUID]>([])
+        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
+            recorded.value.append(contentsOf: writes.map(\.id))
         }
         let plugin = PersistencePlugin<TestState, TestAction>(
             writers: [writer], debounce: .milliseconds(10))
@@ -142,7 +129,7 @@ struct StoreMutateTests {
 
         // No intervening `send` — without the drain inside `mutate`, this write
         // would sit in the store unflushed until the next dispatch.
-        #expect(await recorded.writes == [entity.id])
+        #expect(recorded.value == [entity.id])
     }
 
     @Test("a send from inside merging is deferred, then runs after the merge commits")
@@ -164,6 +151,24 @@ struct StoreMutateTests {
         #expect(store.items[reentrant.id] == reentrant)
     }
 
+    @Test("the synchronous mutate folds in and schedules persistence without an await")
+    func synchronousMutate() async throws {
+        let recorded = SendableBox<[UUID]>([])
+        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
+            recorded.value.append(contentsOf: writes.map(\.id))
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer], debounce: .milliseconds(10))
+        let store = makeStore(persistencePlugin: plugin)
+        let entity = TestEntity(name: "folded")
+
+        store.mutate { $0.items[entity.id] = entity }
+        await plugin.flush()
+
+        #expect(store.items[entity.id] == entity)
+        #expect(recorded.value == [entity.id])
+    }
+
     @Test("mutate rethrows and leaves state untouched when produce throws")
     func rethrowsLeavingStateUntouched() async throws {
         struct Boom: Error {}
@@ -182,17 +187,5 @@ struct StoreMutateTests {
         }
 
         #expect(store.items.values == [existing])
-    }
-}
-
-// MARK: - Helpers
-
-private actor Recorder {
-    var writes: [UUID] = []
-    var deletions: Set<UUID> = []
-
-    func record(writes: [UUID], deletions: Set<UUID>) {
-        self.writes.append(contentsOf: writes)
-        self.deletions.formUnion(deletions)
     }
 }

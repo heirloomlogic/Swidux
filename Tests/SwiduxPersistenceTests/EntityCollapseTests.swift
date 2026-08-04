@@ -15,18 +15,6 @@ import Testing
 
 // MARK: - Helpers
 
-@MainActor
-private func seed(_ container: ModelContainer, _ notes: [Note]) throws {
-    let context = ModelContext(container)
-    for note in notes { context.insert(NoteModel(from: note)) }
-    try context.save()
-}
-
-@MainActor
-private func rawRows(_ container: ModelContainer) throws -> [NoteModel] {
-    try ModelContext(container).fetch(FetchDescriptor<NoteModel>())
-}
-
 /// Deterministic across devices: prefers the pinned row, then the lexically
 /// smaller title. Never consults `persistentModelID` or ordering.
 private let preferPinned: @Sendable ([Note]) -> [Note] = EntityCollapse.byID { a, b in
@@ -41,10 +29,10 @@ struct EntityDBCollapseTests {
     @MainActor
     @Test("rows sharing a surviving ID converge on the resolver's winner, and are not deleted")
     func rowsSharingASurvivingIDConverge() async throws {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let container = try makeNotesContainer()
         let db = EntityDB(modelContainer: container)
         let id = UUID()
-        try seed(
+        try seedNotes(
             container,
             [
                 Note(id: id, title: "b", pinned: false),
@@ -56,7 +44,7 @@ struct EntityDBCollapseTests {
 
         #expect(outcome.survivors.count == 2, "one value per ID")
         #expect(outcome.removedIDs.isEmpty, "no ID disappeared")
-        let rows = try rawRows(container)
+        let rows = try rawNoteRows(container)
         #expect(
             rows.count == 3,
             """
@@ -73,40 +61,40 @@ struct EntityDBCollapseTests {
     @MainActor
     @Test("collapse writes back a survivor whose value it changed")
     func collapseWritesBackMutatedSurvivor() async throws {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let container = try makeNotesContainer()
         let db = EntityDB(modelContainer: container)
         let id = UUID()
-        try seed(container, [Note(id: id, title: "original", pinned: false)])
+        try seedNotes(container, [Note(id: id, title: "original", pinned: false)])
 
         try await db.collapseDuplicates(as: NoteModel.self) { rows in
             rows.map { Note(id: $0.id, title: $0.title.uppercased(), pinned: $0.pinned) }
         }
 
-        #expect(try rawRows(container).first?.title == "ORIGINAL")
+        #expect(try rawNoteRows(container).first?.title == "ORIGINAL")
     }
 
     @MainActor
     @Test("an identity collapse changes nothing")
     func identityCollapseIsANoOp() async throws {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let container = try makeNotesContainer()
         let db = EntityDB(modelContainer: container)
         let notes = [Note(id: UUID(), title: "a", pinned: false), Note(id: UUID(), title: "b", pinned: true)]
-        try seed(container, notes)
+        try seedNotes(container, notes)
 
         let outcome = try await db.collapseDuplicates(as: NoteModel.self) { $0 }
 
         #expect(outcome.removedIDs.isEmpty)
-        #expect(Set(try rawRows(container).map(\.id)) == Set(notes.map(\.id)))
+        #expect(Set(try rawNoteRows(container).map(\.id)) == Set(notes.map(\.id)))
     }
 
     @MainActor
     @Test("dropping an entire ID reports it as removed and deletes every row for it")
     func droppingAnIDRemovesAllItsRows() async throws {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let container = try makeNotesContainer()
         let db = EntityDB(modelContainer: container)
         let doomed = UUID()
         let kept = UUID()
-        try seed(
+        try seedNotes(
             container,
             [
                 Note(id: doomed, title: "x", pinned: false),
@@ -119,7 +107,7 @@ struct EntityDBCollapseTests {
         }
 
         #expect(outcome.removedIDs == [doomed])
-        #expect(try rawRows(container).map(\.id) == [kept])
+        #expect(try rawNoteRows(container).map(\.id) == [kept])
     }
 
     @MainActor
@@ -127,11 +115,11 @@ struct EntityDBCollapseTests {
     func singletonMerge() async throws {
         // Two fresh installs each minted their own settings row, so the IDs
         // differ and no ID-keyed resolver could ever pair them.
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let container = try makeNotesContainer()
         let db = EntityDB(modelContainer: container)
         let a = Note(id: UUID(), title: "device A", pinned: false)
         let b = Note(id: UUID(), title: "device B", pinned: true)
-        try seed(container, [a, b])
+        try seedNotes(container, [a, b])
 
         let outcome = try await db.collapseDuplicates(as: NoteModel.self) { rows in
             guard rows.count > 1 else { return rows }
@@ -142,7 +130,7 @@ struct EntityDBCollapseTests {
 
         #expect(outcome.survivors.count == 1)
         #expect(outcome.removedIDs.count == 1)
-        let rows = try rawRows(container)
+        let rows = try rawNoteRows(container)
         #expect(rows.count == 1)
         #expect(rows.first?.pinned == true, "the merged value carries both devices' state")
     }
@@ -154,29 +142,9 @@ struct EntityDBCollapseTests {
 @MainActor
 struct CoordinatorCollapseTests {
     private func makeCoordinator(
-        collapse: (@Sendable ([Note]) -> [Note])? = nil,
-        debounce: Duration = .seconds(30)
+        collapse: (@Sendable ([Note]) -> [Note])? = nil
     ) throws -> PersistenceCoordinator<NotesState, NotesAction> {
-        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
-        return PersistenceCoordinator<NotesState, NotesAction>(
-            entities: [.entity(\.notes, collapse: collapse)],
-            container: container,
-            debounce: debounce
-        )
-    }
-
-    private func makeStore(
-        _ coordinator: PersistenceCoordinator<NotesState, NotesAction>,
-        initialState: NotesState = NotesState()
-    ) -> Store<NotesState, NotesAction> {
-        let plugins = PluginHost<NotesState, NotesAction>()
-        plugins.register(coordinator.corePlugin)
-        return Store(
-            initialState: initialState,
-            reducer: notesReducer,
-            plugins: plugins,
-            persistencePlugin: coordinator.corePlugin
-        )
+        try makeNotesCoordinator(debounce: .seconds(30), collapse: collapse)
     }
 
     @Test("with no resolver registered, duplicates survive on disk")
@@ -233,7 +201,7 @@ struct CoordinatorCollapseTests {
         initial.notes[doomed] = Note(id: doomed, title: "doomed", pinned: false)
         initial.notes[kept] = Note(id: kept, title: "keep", pinned: false)
         initial.notes.resetChanges()
-        let store = makeStore(coordinator, initialState: initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
 
         await coordinator.rehydrate(into: store)
 

@@ -80,17 +80,11 @@ public actor EntityDB {
     /// when no row matches.
     ///
     /// Convenience single-row API (used by tests and one-off tooling). The
-    /// plugin's flush path uses ``apply(writes:deletions:as:)``, which batches
-    /// everything into a single transaction — prefer it for multi-row changes,
-    /// since a sequence of single-row saves can be interrupted part-way.
+    /// plugin's flush path calls ``apply(writes:deletions:as:)`` directly with
+    /// the whole batch — prefer it for multi-row changes, since a sequence of
+    /// single-row saves can be interrupted part-way.
     public func upsert<M: PersistableModel>(_ domain: M.Domain, as type: M.Type) throws {
-        let existing = try rows(for: domain.id, as: M.self)
-        if existing.isEmpty {
-            modelContext.insert(M(from: domain))
-        } else {
-            for row in existing { row.update(from: domain) }
-        }
-        try modelContext.save()
+        try apply(writes: [domain], deletions: [], as: M.self)
     }
 
     /// Chunk size for batched ID fetches. Stays comfortably under SQLite's
@@ -153,10 +147,7 @@ public actor EntityDB {
     /// Convenience single-row API — see ``apply(writes:deletions:as:)`` for
     /// the transactional batch path the plugin uses.
     public func delete<M: PersistableModel>(id: UUID, as type: M.Type) throws {
-        let existing = try rows(for: id, as: M.self)
-        guard !existing.isEmpty else { return }
-        for row in existing { modelContext.delete(row) }
-        try modelContext.save()
+        try apply(writes: [], deletions: [id], as: M.self)
     }
 
     /// Collapses the stored rows of `M` using an app-supplied resolver, in a
@@ -186,14 +177,24 @@ public actor EntityDB {
     ) throws -> CollapseOutcome<M.Domain> {
         do {
             let rows = try modelContext.fetch(FetchDescriptor<M>())
-            var byID: [UUID: [M]] = [:]
-            for row in rows { byID[row.id, default: []].append(row) }
+            // Convert once and keep the domain value beside its row: the
+            // write-back below needs it again to skip no-op updates.
+            var byID: [UUID: [(row: M, domain: M.Domain)]] = [:]
+            var domains: [M.Domain] = []
+            domains.reserveCapacity(rows.count)
+            for row in rows {
+                let domain = row.toDomain()
+                domains.append(domain)
+                byID[row.id, default: []].append((row, domain))
+            }
 
-            let survivors = collapse(rows.map { $0.toDomain() })
+            let survivors = collapse(domains)
             let survivingIDs = Set(survivors.map(\.id))
 
+            // Only worth re-running the resolver when it actually changed
+            // something — otherwise every hydration pays for it in debug.
             assert(
-                Set(collapse(survivors).map(\.id)) == survivingIDs,
+                survivors.count == rows.count || Set(collapse(survivors).map(\.id)) == survivingIDs,
                 """
                 collapse must be idempotent: re-running it on its own output changed the surviving IDs. \
                 A collapse that keeps rewriting its own result never converges.
@@ -202,7 +203,7 @@ public actor EntityDB {
 
             let removedIDs = Set(byID.keys).subtracting(survivingIDs)
             for id in removedIDs {
-                for row in byID[id] ?? [] { modelContext.delete(row) }
+                for entry in byID[id] ?? [] { modelContext.delete(entry.row) }
             }
             for survivor in survivors {
                 let existing = byID[survivor.id] ?? []
@@ -211,8 +212,8 @@ public actor EntityDB {
                     // not on disk. Insert it rather than dropping it silently.
                     modelContext.insert(M(from: survivor))
                 } else {
-                    for row in existing where row.toDomain() != survivor {
-                        row.update(from: survivor)
+                    for entry in existing where entry.domain != survivor {
+                        entry.row.update(from: survivor)
                     }
                 }
             }
@@ -223,12 +224,6 @@ public actor EntityDB {
             modelContext.rollback()
             throw error
         }
-    }
-
-    /// Every row matching `id` — plural, because there is no unique constraint.
-    private func rows<M: PersistableModel>(for id: UUID, as type: M.Type) throws -> [M] {
-        // Per-model descriptor, not a generic `#Predicate` — see `swiduxBatchFetchDescriptor`.
-        try modelContext.fetch(M.swiduxBatchFetchDescriptor(ids: [id]))
     }
 
     /// Fetches every existing row whose ID is in `ids`, grouped by ID, in

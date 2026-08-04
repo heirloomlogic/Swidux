@@ -167,11 +167,7 @@ public final class PersistenceCoordinator<State, Action> {
     /// pack its snapshot after the last `await`.
     private func hydratePhase() async -> [PersistedEntity<State>.Apply] {
         var applies: [PersistedEntity<State>.Apply] = []
-        applies.reserveCapacity(entities.count * 2)
-        // Collapse first, so the read that follows sees the reclaimed store.
-        for entity in entities {
-            applies.append(await entity.collapseOnDisk(handle, onFailure))
-        }
+        applies.reserveCapacity(entities.count)
         for entity in entities {
             applies.append(await entity.readForHydrate(handle, onFailure))
         }
@@ -181,69 +177,55 @@ public final class PersistenceCoordinator<State, Action> {
 
     /// The re-hydration equivalent of ``hydratePhase()``.
     ///
-    /// Returns folds that still need a ``MergeContext``. Dirtiness is
-    /// deliberately *not* captured here: it is read in ``applyMerge(_:to:policy:)``
-    /// once every fetch has completed, so a write that landed during the flush
-    /// or during the fetch still counts as locally owned.
-    private func mergePhase() async -> MergeFolds<State> {
-        var collapses: [PersistedEntity<State>.Apply] = []
-        for entity in entities {
-            collapses.append(await entity.collapseOnDisk(handle, onFailure))
-        }
-        var merges: [PersistedEntity<State>.MergeApply] = []
-        for entity in entities {
-            merges.append(await entity.readForMerge(handle, onFailure))
+    /// Each fold arrives with its entity's policy and dirty set already bound,
+    /// resolved lazily inside the closure — so dirtiness is read once every
+    /// fetch has completed, and a write that landed during the flush or during
+    /// the fetch still counts as locally owned.
+    private func mergePhase() async -> [@MainActor (inout State, MergePolicy?) -> Void] {
+        var folds: [@MainActor (inout State, MergePolicy?) -> Void] = []
+        folds.reserveCapacity(entities.count)
+        for (entity, writer) in zip(entities, writers) {
+            let merge = await entity.readForMerge(handle, onFailure)
+            folds.append { [mergePolicy] state, override in
+                // Three sources, because no one of them is complete: the writer
+                // holds drained-but-unflushed IDs, the ledger holds IDs whose
+                // save failed, and the store's own `changes` hold mutations not
+                // yet drained. `reconcile` folds in the third.
+                let owned = writer.pendingIDs.union(entity.unpersisted.ids)
+                var resolved = mergePolicy
+                if let entityPolicy = entity.policy { resolved = resolved.restricted(by: entityPolicy) }
+                if let override { resolved = resolved.restricted(by: override) }
+                merge(&state, MergeContext(policy: resolved, locallyOwnedIDs: owned))
+            }
         }
         await duringReadPhase?()
-        return MergeFolds(collapses: collapses, merges: merges)
+        return folds
     }
 
-    /// Applies merge folds, resolving each entity's policy and dirty set now —
-    /// after the fetches, synchronously, with no suspension point in sight.
-    ///
-    /// Reading dirtiness here rather than before the fetch is the whole point:
-    /// a write dispatched while the fetch was in flight is in the writer's
-    /// buffers by now, and would have been missed if the set had been snapshot
-    /// earlier.
-    private func applyMerge(
-        _ folds: MergeFolds<State>,
-        to state: inout State,
-        policy override: MergePolicy?
-    ) {
-        // Collapse removals first, and they record changes, so the merge that
-        // follows cannot re-absorb a collapsed-away entity.
-        for collapse in folds.collapses { collapse(&state) }
-
-        for (index, merge) in folds.merges.enumerated() {
-            let entity = entities[index]
-            // Three sources, because no one of them is complete: the writer
-            // holds drained-but-unflushed IDs, the ledger holds IDs whose save
-            // failed, and the store's own `changes` hold mutations that have
-            // not been drained yet. `reconcile` folds in the third.
-            let owned = writers[index].pendingIDs.union(entity.unpersisted.ids)
-            var resolved = mergePolicy
-            if let entityPolicy = entity.policy { resolved = resolved.restricted(by: entityPolicy) }
-            if let override { resolved = resolved.restricted(by: override) }
-            merge(&state, MergeContext(policy: resolved, locallyOwnedIDs: owned))
+    /// Runs every registered collapse resolver against storage, in registration
+    /// order, touching no state.
+    private func collapsePhase() async -> [PersistedEntity<State>.Apply] {
+        var applies: [PersistedEntity<State>.Apply] = []
+        applies.reserveCapacity(entities.count)
+        for entity in entities {
+            applies.append(await entity.collapseOnDisk(handle, onFailure))
         }
+        await duringReadPhase?()
+        return applies
     }
 
-    /// Runs every registered collapse resolver against disk.
+    /// Runs every registered collapse resolver against storage.
     ///
-    /// Hydration and re-hydration already do this; call it directly for an
-    /// on-demand "repair my data" action, or from a remote-change observer that
-    /// doesn't want a full merge. A no-op for entities registered without a
-    /// resolver.
+    /// Hydration and re-hydration already do this as part of their read; call
+    /// it directly for an on-demand "repair my data" action, or from a
+    /// remote-change observer that doesn't want a full merge. A no-op for
+    /// entities registered without a resolver.
     ///
     /// Pending writes are flushed first, so a collapse can't run against a
     /// stale row and resurrect an edit the user just made.
     public func collapseDuplicates(into state: inout State) async {
         await corePlugin.flush()
-        var applies: [PersistedEntity<State>.Apply] = []
-        for entity in entities {
-            applies.append(await entity.collapseOnDisk(handle, onFailure))
-        }
-        for apply in applies { apply(&state) }
+        for apply in await collapsePhase() { apply(&state) }
     }
 }
 
@@ -256,9 +238,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// while the reads were in flight.
     public func hydrate(into store: Store<State, Action>) async {
         let applies = await hydratePhase()
-        await store.mutate {
-            applies
-        } merging: { applies, state in
+        store.mutate { state in
             for apply in applies { apply(&state) }
         }
     }
@@ -303,24 +283,17 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
         await corePlugin.flush()
         let folds = await mergePhase()
-        await store.mutate {
-            folds
-        } merging: { folds, state in
-            self.applyMerge(folds, to: &state, policy: policy)
+        store.mutate { state in
+            for fold in folds { fold(&state, policy) }
         }
     }
 
-    /// Runs every registered collapse resolver against disk, applying the
+    /// Runs every registered collapse resolver against storage, applying the
     /// result to a live store. See ``collapseDuplicates(into:)-(inout)``.
     public func collapseDuplicates(into store: Store<State, Action>) async {
         await corePlugin.flush()
-        var applies: [PersistedEntity<State>.Apply] = []
-        for entity in entities {
-            applies.append(await entity.collapseOnDisk(handle, onFailure))
-        }
-        await store.mutate {
-            applies
-        } merging: { applies, state in
+        let applies = await collapsePhase()
+        store.mutate { state in
             for apply in applies { apply(&state) }
         }
     }

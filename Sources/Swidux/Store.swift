@@ -199,12 +199,24 @@ public final class Store<State: SwiduxObservable, Action> {
         merging apply: @MainActor (Value, inout State) -> Void
     ) async rethrows {
         let value = try await produce()
+        mutate { apply(value, &$0) }
+    }
 
-        // Critical section — no suspension point from pack to unpack.
+    /// Folds a synchronous mutation into a freshly packed snapshot.
+    ///
+    /// The whole body runs without a suspension point, so no dispatch can land
+    /// between the pack and the unpack. Use this directly when the `await`ing
+    /// is already done and you just need the result folded in safely;
+    /// ``mutate(awaiting:merging:)`` is the same thing with the await attached.
+    ///
+    /// Entity changes recorded by `apply` are drained and scheduled for
+    /// persistence exactly as after a dispatch, and a `send(_:)` issued from
+    /// inside `apply` is deferred and runs after the merge commits.
+    public func mutate(_ apply: @MainActor (inout State) -> Void) {
         isDispatching = true
         defer { isDispatching = false }
         var state = State(observer: observer)
-        apply(value, &state)
+        apply(&state)
         persistencePlugin?.drainAndScheduleFlush(&state)
         State.apply(state, to: observer)
         drainPending()

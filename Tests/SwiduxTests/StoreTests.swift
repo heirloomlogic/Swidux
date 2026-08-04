@@ -58,7 +58,7 @@ extension TestState: SwiduxObservable {
 
 // MARK: - Test Reducer
 
-private func testReducer(
+func testReducer(
     state: inout TestState,
     action: TestAction
 ) -> Effect<TestAction>? {
