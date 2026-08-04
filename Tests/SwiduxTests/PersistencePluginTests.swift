@@ -35,58 +35,62 @@ struct PersistencePluginTests {
 
     @Test("afterReduce with changes flushes after debounce")
     func changesFlushAfterDebounce() async throws {
-        await confirmation(expectedCount: 1) { confirmed in
-            let writer = StateWriter<TestState>(
-                keyPath: \.items,
-                persist: { _, _ in
-                    confirmed()
-                }
-            )
-            let plugin = PersistencePlugin<TestState, TestAction>(
-                writers: [writer],
-                debounce: .milliseconds(50)
-            )
+        let flushCount = SendableBox(0)
+        let writer = StateWriter<TestState>(
+            keyPath: \.items,
+            persist: { _, _ in flushCount.value += 1 }
+        )
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: .milliseconds(50)
+        )
 
-            var state = TestState()
-            let entity = TestEntity(name: "Test")
-            state.items[entity.id] = entity
+        var state = TestState()
+        let entity = TestEntity(name: "Test")
+        state.items[entity.id] = entity
 
-            plugin.afterReduce(state: &state, action: .noOp)
+        plugin.afterReduce(state: &state, action: .noOp)
 
-            try? await Task.sleep(for: .milliseconds(500))
-        }
+        // Wait for the timer to fire rather than sleeping past it: the subject
+        // is that the debounce flushes on its own, not that it does so inside
+        // any particular span. `await plugin.flush()` would cancel the timer
+        // and test something else.
+        try await poll(until: { flushCount.value == 1 }, timeout: .seconds(5))
+        #expect(flushCount.value == 1)
     }
 
     @Test("Rapid calls restart debounce — only one flush")
     func rapidCallsCoalesce() async throws {
         let flushCount = SendableBox(0)
+        let debounce = Duration.milliseconds(50)
 
-        await confirmation(expectedCount: 1) { confirmed in
-            let writer = StateWriter<TestState>(
-                keyPath: \.items,
-                persist: { _, _ in
-                    flushCount.value += 1
-                    confirmed()
-                }
-            )
-            let plugin = PersistencePlugin<TestState, TestAction>(
-                writers: [writer],
-                debounce: .milliseconds(50)
-            )
+        let writer = StateWriter<TestState>(
+            keyPath: \.items,
+            persist: { _, _ in flushCount.value += 1 }
+        )
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer],
+            debounce: debounce
+        )
 
-            var state = TestState()
+        var state = TestState()
 
-            // Fire 5 rapid changes — each restarts the debounce
-            for i in 0..<5 {
-                let entity = TestEntity(name: "Entity \(i)")
-                state.items[entity.id] = entity
-                plugin.afterReduce(state: &state, action: .noOp)
-            }
-
-            // Wait for the single debounced flush — generous margin for slow CI runners
-            try? await Task.sleep(for: .milliseconds(500))
+        // Fire 5 rapid changes — each restarts the debounce
+        for i in 0..<5 {
+            let entity = TestEntity(name: "Entity \(i)")
+            state.items[entity.id] = entity
+            plugin.afterReduce(state: &state, action: .noOp)
         }
 
+        // Two claims, two waits. That the flush happens at all is timing-free:
+        // poll until it does, however long the runner takes.
+        try await poll(until: { flushCount.value >= 1 }, timeout: .seconds(5))
+
+        // That it happens *once* can only be shown by waiting out further
+        // debounce intervals and finding no second flush. A sleep is inherent
+        // to asserting absence — but here a slow runner produces a false pass,
+        // never the false failure that a sleep-to-observe produces.
+        try await Task.sleep(for: debounce * 3)
         #expect(flushCount.value == 1)
     }
 

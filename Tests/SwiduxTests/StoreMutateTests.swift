@@ -32,16 +32,6 @@ private final class Gate {
     }
 }
 
-/// Polls until `condition` holds or the cap elapses.
-@MainActor
-private func poll(until condition: () -> Bool, timeout: Duration = .seconds(2)) async throws {
-    var waited = Duration.zero
-    while !condition(), waited < timeout {
-        try await Task.sleep(for: .milliseconds(5))
-        waited += .milliseconds(5)
-    }
-}
-
 @MainActor
 private func makeStore(
     initialState: TestState = TestState(),

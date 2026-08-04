@@ -40,6 +40,27 @@ enum TestAction: Sendable, Equatable {
     case effectAction(String)
 }
 
+// MARK: - Waiting
+
+/// Polls `condition` on the main actor until it holds or `timeout` elapses.
+///
+/// Debounce timers, flush tasks and notification delivery all complete on their
+/// own schedule, so tests wait for an observable state rather than sleeping a
+/// fixed span and hoping. A sleep that is generous on an idle machine is not
+/// generous on a loaded CI runner, and the failure it produces looks like a
+/// product bug rather than a scheduling one.
+///
+/// Returns as soon as the condition holds; on timeout it returns too, leaving
+/// the caller's `#expect` to report the failure with a useful message.
+@MainActor
+func poll(until condition: () -> Bool, timeout: Duration = .seconds(2)) async throws {
+    var waited = Duration.zero
+    while !condition(), waited < timeout {
+        try await Task.sleep(for: .milliseconds(5))
+        waited += .milliseconds(5)
+    }
+}
+
 // MARK: - Test Environment
 
 /// Minimal environment for reducer tests.
