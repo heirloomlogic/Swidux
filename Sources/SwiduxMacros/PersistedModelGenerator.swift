@@ -51,12 +51,6 @@ func generatePersistedModelClass(
         \(updateLines)
             }
 
-            \(accessPrefix)static func swiduxFetchDescriptor(id: UUID) -> FetchDescriptor<\(modelName)> {
-                var descriptor = FetchDescriptor<\(modelName)>(predicate: #Predicate { $0.id == id })
-                descriptor.fetchLimit = 1
-                return descriptor
-            }
-
             \(accessPrefix)static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<\(modelName)> {
                 FetchDescriptor<\(modelName)>(predicate: #Predicate { ids.contains($0.id) })
             }

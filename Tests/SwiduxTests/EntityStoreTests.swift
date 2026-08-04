@@ -36,6 +36,42 @@ struct EntityStoreTests {
         #expect(store.values == [a, b])
     }
 
+    @Test("Init collapses entities sharing an ID, keeping the first")
+    func hydrationInitCollapsesDuplicates() {
+        let id = UUID()
+        let first = TestEntity(id: id, name: "first")
+        let second = TestEntity(id: id, name: "second")
+        let other = TestEntity(name: "other")
+
+        let store = EntityStore([first, second, other])
+
+        // A store holds one entity per ID; admitting both would leave `count`
+        // over-reporting and the index out of step with storage.
+        #expect(store.count == 2)
+        #expect(store.values == [first, other])
+        #expect(store[id]?.name == "first")
+        #expect(store.contains(id))
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("Deleting an ID that arrived duplicated leaves no orphaned row")
+    func deleteAfterDuplicateHydration() {
+        let id = UUID()
+        let other = TestEntity(name: "other")
+        var store = EntityStore([TestEntity(id: id, name: "first"), TestEntity(id: id, name: "second"), other])
+
+        store[id] = nil
+
+        // The regression: when both copies were admitted, the delete removed
+        // the last and reindexed from there, orphaning the first with no
+        // `positions` entry — visible in `values`, invisible to `contains`,
+        // undeletable, and re-flushed forever.
+        #expect(store.count == 1)
+        #expect(store.values == [other])
+        #expect(!store.contains(id))
+        #expect(store[id] == nil)
+    }
+
     // MARK: - Subscript
 
     @Test("Subscript set inserts and records upsert")

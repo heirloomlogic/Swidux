@@ -171,7 +171,7 @@ For an entity `Card`, the macro emits:
 1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the relationships and blob columns described below, and the converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`).
 2. **An extension `Card: PersistableEntity`** — providing `typealias Model = CardModel`.
 
-No `@Attribute(.unique)` is generated on `id`: CloudKit forbids unique constraints, so identity is enforced by upsert-by-`id` in the generic `EntityDB` instead.
+No `@Attribute(.unique)` is generated on `id`: CloudKit forbids unique constraints. Identity is therefore a *convention* enforced by `EntityDB`, not a constraint enforced by the store — a fetch by `id` may legitimately return several rows, and mirrored stores do produce that when two devices create the same entity offline. `EntityDB` is written to converge rather than to assume uniqueness: writes update **every** row sharing an `id`, deletions remove **every** row sharing an `id`, and `fetchAll` collapses duplicates to the first row in fetch order. Removing duplicates from disk requires app knowledge of which value wins and is opt-in — see <doc:HowToAddICloudSync>.
 
 The generated model is **CloudKit-safe by construction**, which is what lets the same model back both local and synced containers. SwiftData's CloudKit mirroring requires every non-optional attribute to be optional or carry a default value, and every relationship to be optional — validated at `ModelContainer` creation. `@Persisted` enforces this:
 

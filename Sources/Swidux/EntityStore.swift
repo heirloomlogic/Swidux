@@ -60,10 +60,21 @@ public nonisolated struct EntityStore<
     /// > the gotcha is especially sharp: `.NSPersistentStoreRemoteChange` fires for
     /// > local saves too, so a naïve "refresh on remote change" observer feeds the
     /// > app its own writes.
+    ///
+    /// Entities sharing an ID are collapsed to the first occurrence. A store
+    /// cannot represent duplicates — `positions` holds one index per ID — and
+    /// admitting them corrupts the index: the map would keep only the last
+    /// index while the array kept every copy, so `count` over-reports and a
+    /// later delete orphans the earlier copy with no `positions` entry at all,
+    /// leaving a row that is visible in ``values`` but invisible to
+    /// ``contains(_:)`` and the subscript. Persisted rows can legitimately
+    /// share an ID (CloudKit forbids unique constraints), so this initializer
+    /// has to be total rather than trusting its input.
     public init(_ initialEntities: [Entity]) {
-        entities = initialEntities
-        for (index, entity) in initialEntities.enumerated() {
-            positions[entity.id] = index
+        entities.reserveCapacity(initialEntities.count)
+        for entity in initialEntities where positions[entity.id] == nil {
+            positions[entity.id] = entities.count
+            entities.append(entity)
         }
     }
 

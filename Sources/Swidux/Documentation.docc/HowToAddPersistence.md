@@ -82,7 +82,7 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 | `@Relation(deleteRule:inverse:)` | A SwiftData relationship to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow. `inverse` is a key path on the generated model, e.g. `\TagModel.card`. `deleteRule` is a `SwiduxDeleteRule` (`.cascade`, `.nullify`, `.noAction`, `.deny`). |
 | `@Ignored` | Exclude a derived/denormalized property. Must be optional so it can be reconstructed as `nil` on load. |
 
-> Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints. Identity is enforced by upsert-by-`id` inside `EntityDB`, so the same generated model works for both local and synced containers.
+> Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints — so the same generated model works for both local and synced containers. The cost is that rows sharing an `id` are possible. `EntityDB` handles them by converging rather than by assuming uniqueness: writes update every matching row, deletions remove every matching row, and `fetchAll` collapses to one value per `id`. Nothing deletes a duplicate as a side effect of a write.
 
 ## Step 3: Put the `EntityStore` on your state
 
