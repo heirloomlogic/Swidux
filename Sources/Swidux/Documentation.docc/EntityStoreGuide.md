@@ -72,3 +72,18 @@ Most apps never call this directly; `PersistenceCoordinator.rehydrate(into:)` do
 - **Deletions** — IDs in self but absent from source
 - **Upserts** — IDs that are new or whose values differ
 - **Unchanged** — identical values produce no change records
+
+### Remote deletions are not undoable
+
+One class of ID is skipped: anything `reconcile` removed because storage no longer held it. Those IDs are kept in `remotelyRemovedIDs`, and `restore` will neither re-add them nor record a change for them.
+
+Without that, undo resurrects rows other devices deleted. An undo snapshot taken before the deletion still contains the entity, so restoring it records an **upsert** — which flushes as a *creation* and re-seeds every peer that had already agreed the row was gone. Undo is scoped to what the local user did; a deletion made on another device isn't that.
+
+An ID leaves the set as soon as it becomes local again — an explicit `store[id] = entity`, or storage handing the row back on a later merge — so a row that another device deletes and then restores is undoable once more. The set survives `resetChanges()`, because a flush ends a pending write's life, not a deletion's.
+
+```swift
+// "3 items were deleted on another device."
+cards.remotelyRemovedIDs.count
+```
+
+Stores that never sync never populate it, and `restore` takes exactly the path it did before.

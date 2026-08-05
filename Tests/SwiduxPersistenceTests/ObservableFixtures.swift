@@ -100,18 +100,22 @@ func makeNotesCoordinator(
     )
 }
 
-/// A live store wired to `coordinator`'s persistence plugin.
+/// A live store wired to `coordinator`'s persistence plugin, and to `undo` when
+/// one is supplied.
 @MainActor
 func makeNotesStore(
     _ coordinator: PersistenceCoordinator<NotesState, NotesAction>,
-    initialState: NotesState = NotesState()
+    initialState: NotesState = NotesState(),
+    undo: UndoPlugin<NotesState, NotesAction>? = nil
 ) -> Store<NotesState, NotesAction> {
     let plugins = PluginHost<NotesState, NotesAction>()
+    if let undo { plugins.register(undo) }
     plugins.register(coordinator.corePlugin)
     return Store(
         initialState: initialState,
         reducer: notesReducer,
         plugins: plugins,
+        undoPlugin: undo,
         persistencePlugin: coordinator.corePlugin
     )
 }

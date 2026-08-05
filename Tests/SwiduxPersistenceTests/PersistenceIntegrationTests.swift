@@ -43,6 +43,39 @@ struct PersistenceWriteThroughTests {
         all = try await coordinator.database.fetchAll(NoteModel.self)
         #expect(all.isEmpty)
     }
+
+    @MainActor
+    @Test("undo after a remote deletion does not write the entity back to the database")
+    func undoDoesNotResurrectRemotelyDeletedRow() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let undo = UndoPlugin<NotesState, NotesAction>()
+        let store = makeNotesStore(coordinator, undo: undo)
+
+        let doomed = UUID()
+        let kept = UUID()
+        store.send(.add(Note(id: doomed, title: "doomed", pinned: false)))
+        store.send(.add(Note(id: kept, title: "keep", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        // An unrelated later edit, so the undo the user reaches for has nothing
+        // to do with `doomed` — its snapshot merely predates the deletion.
+        store.send(.setSearchText("hello"))
+
+        // Another device deletes `doomed`; the merge surfaces it mid-session.
+        try await coordinator.database.apply(writes: [], deletions: [doomed], as: NoteModel.self)
+        await coordinator.rehydrate(into: store)
+        #expect(store.notes[doomed] == nil)
+
+        store.undo()
+        await coordinator.corePlugin.flush()
+
+        #expect(store.notes[doomed] == nil, "undo cannot revive a row another device deleted")
+        let rows = try await coordinator.database.fetchAll(NoteModel.self)
+        #expect(
+            rows.map(\.id) == [kept],
+            "the resurrected row would have synced out as a creation, re-seeding every peer"
+        )
+    }
 }
 
 @Suite("SyncStatus properties")
