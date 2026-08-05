@@ -202,6 +202,128 @@ struct StateWriterTests {
         #expect(writesBox.value.first?.name == "Second")
     }
 
+    // MARK: - Failure re-buffering
+
+    @Test("A failed flush restores its batch, so the next flush carries it again")
+    func failedFlushRestoresBatch() async {
+        let attempts = SendableBox(0)
+        let seen = SendableBox<[TestEntity]>([])
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
+            attempts.value += 1
+            if attempts.value == 1 { throw TestPersistError() }
+            seen.value = writes
+        }
+
+        var state = TestState()
+        let entity = TestEntity(name: "At risk")
+        state.items[entity.id] = entity
+        _ = writer.drain(&state)
+
+        // Attempt 1 fails. Without re-buffering the batch is gone for good and
+        // the row only ever reaches disk if the user touches it again.
+        _ = await writer.flush()?()
+
+        let retry = writer.flush()
+        #expect(retry != nil, "the failed batch must still be pending")
+        _ = await retry?()
+
+        #expect(attempts.value == 2)
+        #expect(seen.value == [entity])
+    }
+
+    @Test("A newer write drained during the failed flush beats the restored one")
+    func newerWriteBeatsRestoredWrite() async {
+        let seen = SendableBox<[TestEntity]>([])
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
+            attempts.value += 1
+            if attempts.value == 1 { throw TestPersistError() }
+            seen.value = writes
+        }
+
+        let id = UUID()
+        var state = TestState()
+        state.items[id] = TestEntity(id: id, name: "First")
+        _ = writer.drain(&state)
+
+        // `flush()` snapshots and clears synchronously, so a drain between here
+        // and the await is the real window: the user edited again while the
+        // save was in flight.
+        let work = writer.flush()
+        state.items[id] = TestEntity(id: id, name: "Second")
+        _ = writer.drain(&state)
+        await work?()
+
+        _ = await writer.flush()?()
+
+        #expect(seen.value.map(\.name) == ["Second"], "restoring must not resurrect a superseded value")
+    }
+
+    @Test("A deletion drained during the failed flush cancels the restored write")
+    func deletionBeatsRestoredWrite() async {
+        let writes = SendableBox<[TestEntity]>([])
+        let deletions = SendableBox<Set<UUID>>([])
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { w, d in
+            attempts.value += 1
+            if attempts.value == 1 { throw TestPersistError() }
+            writes.value = w
+            deletions.value = d
+        }
+
+        let id = UUID()
+        var state = TestState()
+        state.items = EntityStore([TestEntity(id: id, name: "Doomed")])
+        state.items[id] = TestEntity(id: id, name: "Edited")
+        _ = writer.drain(&state)
+
+        let work = writer.flush()
+        state.items[id] = nil
+        _ = writer.drain(&state)
+        await work?()
+
+        _ = await writer.flush()?()
+
+        #expect(writes.value.isEmpty, "the entity was deleted after the failed write")
+        #expect(deletions.value == [id])
+    }
+
+    @Test("A reinsert drained during the failed flush cancels the restored deletion")
+    func reinsertBeatsRestoredDeletion() async {
+        let writes = SendableBox<[TestEntity]>([])
+        let deletions = SendableBox<Set<UUID>>([])
+        let attempts = SendableBox(0)
+
+        let writer = StateWriter<TestState>(keyPath: \.items) { w, d in
+            attempts.value += 1
+            if attempts.value == 1 { throw TestPersistError() }
+            writes.value = w
+            deletions.value = d
+        }
+
+        let id = UUID()
+        let restored = TestEntity(id: id, name: "Undone")
+        var state = TestState()
+        state.items = EntityStore([restored])
+        state.items[id] = nil
+        _ = writer.drain(&state)
+
+        let work = writer.flush()
+        state.items[id] = restored
+        _ = writer.drain(&state)
+        await work?()
+
+        _ = await writer.flush()?()
+
+        // Same rule the drain path already enforces: carrying both means the
+        // delete wins at the database.
+        #expect(writes.value == [restored])
+        #expect(deletions.value.isEmpty)
+    }
+
     // MARK: - pendingIDs
 
     @Test("pendingIDs reports drained writes and deletions, and clears on flush")
@@ -230,5 +352,24 @@ struct StateWriterTests {
         state.items[late] = TestEntity(id: late, name: "late")
         _ = writer.drain(&state)
         #expect(writer.pendingIDs == [late])
+    }
+
+    @Test("pendingIDs covers a batch whose save failed")
+    func pendingIDsCoverFailedBatch() async {
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in throw TestPersistError() }
+
+        let written = UUID()
+        let deleted = UUID()
+        var state = TestState()
+        state.items = EntityStore([TestEntity(id: deleted, name: "doomed")])
+        state.items[written] = TestEntity(id: written, name: "written")
+        state.items[deleted] = nil
+        _ = writer.drain(&state)
+
+        _ = await writer.flush()?()
+
+        // This is what stops a merge overwriting memory with the stale stored
+        // row: storage has no authority over an ID whose write never landed.
+        #expect(writer.pendingIDs == [written, deleted])
     }
 }

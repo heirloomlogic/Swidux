@@ -157,10 +157,34 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
     entities: [.entity(\.cards)],
     container: container,
     onFailure: { failure in
+        guard failure.isFinal else { return }   // earlier attempts may still succeed
         // e.g. dispatch an action that shows a "couldn't save" banner
     }
 )
 ```
+
+### Retrying a failed save
+
+A flush clears its buffers before the save runs, so a save that fails has nothing left to retry it — the write would reach disk only if the user happened to touch the same entity again. That is silent data loss, so the stack retries.
+
+A failed batch goes **back** into the writer's pending buffers, never over anything newer: a later edit to the same entity supersedes the restored value, and a deletion drained while the save was in flight cancels it. `PersistencePlugin` then re-attempts on a doubling backoff, independently of the debounce timer — a write has to land even if the user never touches the app again.
+
+Retrying is bounded, because a write that can *never* succeed (disk full, a model the container can't encode) must not keep the stack busy forever. Tune it with `retry:`:
+
+```swift
+let persistence = PersistenceCoordinator<AppState, AppAction>(
+    entities: [.entity(\.cards)],
+    container: container,
+    retry: RetryPolicy(maxAttempts: 5, baseDelay: .milliseconds(500), maxDelay: .seconds(30)),
+    onFailure: { failure in ... }
+)
+```
+
+`RetryPolicy.default` is that policy — five attempts over roughly seven seconds. `RetryPolicy.never` opts out of retrying without opting back into losing the write.
+
+When the budget runs out you get one final `PersistenceFailure` with `isFinal == true`. That is the one worth telling the user about: everything before it was "we'll try again". The batch is **not** discarded — it stays pending, so the next edit or an explicit `flush()` tries once more, and until then those IDs stay locally owned so a re-hydration can't overwrite them with the stale stored row.
+
+> Note: Every attempt is reported, so a handler that shows UI should gate on `isFinal`. Most `.save` failures are transient and are followed by a success the app never hears about.
 
 ## Step 5: Flush on background
 

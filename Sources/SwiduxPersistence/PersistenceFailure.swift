@@ -29,11 +29,30 @@ public struct PersistenceFailure: Sendable {
     /// The underlying SwiftData / storage error.
     public let underlying: any Error
 
+    /// Whether the stack has stopped retrying this write.
+    ///
+    /// A failed save is retried on a bounded backoff, so most `.save` failures
+    /// arrive with this `false` and are followed by a successful attempt the
+    /// app never hears about. `true` means the retry budget is spent: the value
+    /// is still in memory and still protected from being overwritten by the
+    /// stale stored row, but it is **not** on disk and nothing further will be
+    /// attempted until the entity is edited again or the app flushes
+    /// explicitly. This is the one worth telling the user about.
+    ///
+    /// Always `false` for `.fetch`, which is not retried.
+    public let isFinal: Bool
+
     /// Creates a failure record.
-    public init(operation: Operation, entityType: String, underlying: any Error) {
+    public init(
+        operation: Operation,
+        entityType: String,
+        underlying: any Error,
+        isFinal: Bool = false
+    ) {
         self.operation = operation
         self.entityType = entityType
         self.underlying = underlying
+        self.isFinal = isFinal
     }
 }
 

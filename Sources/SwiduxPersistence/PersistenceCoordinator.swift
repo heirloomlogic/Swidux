@@ -55,6 +55,9 @@ public final class PersistenceCoordinator<State, Action> {
     ///   - entities: The registered entity collections (``PersistedEntity/entity(_:)``).
     ///   - container: The prepared `ModelContainer`.
     ///   - debounce: How long the core plugin waits after the last change before flushing.
+    ///   - retry: How a failed save is retried before the stack gives up and
+    ///     reports a final ``PersistenceFailure``. Defaults to
+    ///     ``RetryPolicy/default``.
     ///   - mergePolicy: How ``rehydrate(into:policy:)`` resolves storage
     ///     against live state. Defaults to ``MergePolicy/preferRemote``, so
     ///     remote edits and deletions surface mid-session. Individual entities
@@ -68,6 +71,7 @@ public final class PersistenceCoordinator<State, Action> {
         entities: [PersistedEntity<State>],
         container: ModelContainer,
         debounce: Duration = .milliseconds(250),
+        retry: RetryPolicy = .default,
         mergePolicy: MergePolicy = .preferRemote,
         onFailure: PersistenceFailureHandler? = nil
     ) {
@@ -91,7 +95,7 @@ public final class PersistenceCoordinator<State, Action> {
 
         let writers = entities.map { $0.makeWriter(handle, handler) }
         self.writers = writers
-        self.corePlugin = PersistencePlugin(writers: writers, debounce: debounce)
+        self.corePlugin = PersistencePlugin(writers: writers, debounce: debounce, retry: retry)
     }
 
     /// Test seam: awaited once inside the read phase, after any flush and
