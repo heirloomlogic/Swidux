@@ -86,6 +86,16 @@ WindowGroup { ... }
 
 The `coalescing` predicate groups consecutive matching actions into a single undo step. The first coalescing action captures a snapshot; subsequent consecutive coalescing actions share that snapshot. A non-coalescing action or undo/redo resets the flag. Typing "hello" produces one undo entry, not five.
 
+## Undo and sync
+
+Undo is scoped to changes the local user made. If another device deletes an entity and the merge surfaces that mid-session, `restore(from:)` will not bring the row back, even though older undo snapshots still contain it.
+
+That has to be the rule, because the alternative is worse than a missing undo step: restoring the row records it as a **creation**, which syncs out and re-seeds every peer that had already agreed it was gone. One person's undo would undo everybody's delete.
+
+``EntityStore`` tracks this in `remotelyRemovedIDs`. An ID leaves the set the moment it becomes local again — the user creates it, or the row reappears on disk because the other device undid *its* delete — so nothing is permanently un-undoable. See <doc:EntityStoreGuide> for the mechanics.
+
+Apps that don't sync never hit this: nothing populates the set, and undo behaves exactly as it always has.
+
 ## Memory
 
 Each snapshot is a value-type copy of your state. Cost is proportional to the number of entities across all stores. Use `maxDepth` to bound memory for large state:

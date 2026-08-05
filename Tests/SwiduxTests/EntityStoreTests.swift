@@ -683,4 +683,160 @@ struct EntityStoreTests {
         #expect(store.changes.upserts.contains(entity.id))
         #expect(!store.changes.deletions.contains(entity.id))
     }
+
+    // MARK: - Remote Deletions vs. Undo
+
+    @Test("restore does not resurrect an entity another device deleted")
+    func restoreSkipsRemotelyRemoved() {
+        let gone = TestEntity(name: "deleted on another device")
+        var store = EntityStore([gone])
+        let snapshot = store  // the undo stack still remembers it
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: true)
+        store.restore(from: snapshot)
+
+        #expect(store[gone.id] == nil, "undo is scoped to local changes — it cannot revive a remote deletion")
+        #expect(
+            !store.changes.upserts.contains(gone.id),
+            "the write is the real damage: it would sync out as a creation and re-seed every peer"
+        )
+    }
+
+    @Test("restore still revives an entity the local user deleted")
+    func restoreRevivesLocallyDeleted() {
+        let entity = TestEntity(name: "deleted locally")
+        var store = EntityStore([entity])
+        let snapshot = store
+        store.resetChanges()
+
+        store[entity.id] = nil
+        store.restore(from: snapshot)
+
+        #expect(store[entity.id] == entity, "undoing your own delete is the whole point of undo")
+        #expect(store.changes.upserts.contains(entity.id))
+    }
+
+    @Test("restore skips only the remotely removed ID and diffs the rest normally")
+    func restoreSkipsOnlyRemotelyRemoved() {
+        let remotelyGone = TestEntity(name: "deleted on another device")
+        let editedID = UUID()
+        let before = TestEntity(id: editedID, name: "before")
+        let locallyGone = TestEntity(name: "deleted locally after the snapshot")
+
+        var store = EntityStore([remotelyGone, before, locallyGone])
+        let snapshot = store
+        store.resetChanges()
+
+        store.reconcile(
+            with: EntityStore([before, locallyGone]), preserving: [], removingMissing: true)
+        store[editedID] = TestEntity(id: editedID, name: "after")
+        let added = TestEntity(name: "added after the snapshot")
+        store[added.id] = added
+        store.resetChanges()
+
+        store.restore(from: snapshot)
+
+        #expect(store[remotelyGone.id] == nil)
+        #expect(store[editedID]?.name == "before", "an ordinary undo of a local edit still applies")
+        #expect(store[added.id] == nil, "and an entity absent from the snapshot is still removed")
+
+        #expect(!store.changes.upserts.contains(remotelyGone.id))
+        #expect(store.changes.upserts.contains(editedID))
+        #expect(store.changes.deletions.contains(added.id))
+        #expect(
+            !store.changes.deletions.contains(remotelyGone.id),
+            "it is already gone from storage — a deletion would echo back as a local write"
+        )
+    }
+
+    @Test("a remote row that comes back is undoable again")
+    func reconcileInsertClearsRemoteRemoval() {
+        let entity = TestEntity(name: "deleted, then restored elsewhere")
+        var store = EntityStore([entity])
+        let snapshot = store
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: true)
+        // The other device undid its own delete; the row is back on disk.
+        store.reconcile(with: EntityStore([entity]), preserving: [], removingMissing: true)
+
+        #expect(store.remotelyRemovedIDs.isEmpty)
+
+        store[entity.id] = nil
+        store.restore(from: snapshot)
+
+        #expect(store[entity.id] == entity, "the ID is local again, so undo owns it again")
+    }
+
+    @Test("an explicit local write takes an ID back from the remote removal")
+    func localWriteClearsRemoteRemoval() {
+        let entity = TestEntity(name: "recreated locally")
+        var store = EntityStore([entity])
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: true)
+
+        store[entity.id] = entity
+        #expect(store.remotelyRemovedIDs.isEmpty)
+
+        let snapshot = store
+        store[entity.id] = nil
+        store.restore(from: snapshot)
+
+        #expect(store[entity.id] == entity)
+    }
+
+    @Test("merge re-adding a row clears its remote removal")
+    func mergeClearsRemoteRemoval() {
+        let entity = TestEntity(name: "back on disk")
+        var store = EntityStore([entity])
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: true)
+
+        store.merge(from: EntityStore([entity])) { _, _ in false }
+
+        #expect(store[entity.id] == entity)
+        #expect(store.remotelyRemovedIDs.isEmpty, "a row present on disk was never deleted")
+    }
+
+    @Test("resetChanges does not forget a remote deletion")
+    func resetChangesKeepsRemoteRemovals() {
+        let gone = TestEntity(name: "gone")
+        var store = EntityStore([gone])
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: true)
+
+        // StateWriter calls this after every drain; the record has to outlive it.
+        store.resetChanges()
+
+        #expect(store.remotelyRemovedIDs.contains(gone.id))
+    }
+
+    @Test("remotely removed IDs are excluded from equality")
+    func remoteRemovalsExcludedFromEquality() {
+        let gone = TestEntity(name: "gone")
+        let kept = TestEntity(name: "kept")
+        var reconciled = EntityStore([gone, kept])
+        reconciled.reconcile(with: EntityStore([kept]), preserving: [], removingMissing: true)
+
+        #expect(reconciled == EntityStore([kept]), "transient metadata is not semantic state")
+    }
+
+    @Test("an additive reconcile records no remote removals")
+    func additiveReconcileRecordsNoRemoteRemovals() {
+        let local = TestEntity(name: "local")
+        var store = EntityStore([local])
+
+        store.reconcile(with: EntityStore<TestEntity>([]), preserving: [], removingMissing: false)
+
+        #expect(store.remotelyRemovedIDs.isEmpty, "nothing was removed, so nothing was removed remotely")
+    }
+
+    @Test("a preserved ID missing from storage is not treated as a remote deletion")
+    func preservedMissingIsNotRemoteRemoval() {
+        let local = TestEntity(name: "created locally, not yet flushed")
+        var store = EntityStore([local])
+
+        store.reconcile(
+            with: EntityStore<TestEntity>([]), preserving: [local.id], removingMissing: true)
+
+        #expect(store.remotelyRemovedIDs.isEmpty, "it survived the reconcile — it was never removed")
+    }
 }

@@ -41,6 +41,24 @@ public nonisolated struct EntityStore<
     /// Accumulated changes since the last `resetChanges()` call.
     public private(set) var changes = ChangeSet()
 
+    /// IDs that ``reconcile(with:preserving:removingMissing:)`` removed because
+    /// storage no longer held them — a deletion made on another device.
+    ///
+    /// ``restore(from:)`` refuses to bring these back, which scopes undo to
+    /// locally-originated changes: a snapshot older than the deletion would
+    /// otherwise re-add the row as a *creation* and re-seed every peer that had
+    /// already agreed it was gone.
+    ///
+    /// An ID leaves this set the moment it becomes local again — an explicit
+    /// write through the subscript, or storage handing the row back on a later
+    /// merge — so a row that another device deletes and then restores is
+    /// undoable again.
+    ///
+    /// Survives ``resetChanges()``: a flush ends the write's life, not the
+    /// deletion's. The set is bounded by remote deletions per session, and a
+    /// first-load hydration replaces the store outright.
+    public private(set) var remotelyRemovedIDs: Set<UUID> = []
+
     // MARK: - Init
 
     /// Creates an empty store.
@@ -108,6 +126,9 @@ public nonisolated struct EntityStore<
                 // Later operation wins: a reinsert cancels a pending deletion,
                 // otherwise the flush would apply the delete after the write.
                 changes.deletions.remove(id)
+                // An explicit local write claims the ID back from a remote
+                // deletion — undo may restore it again.
+                clearRemoteRemoval(of: id)
             } else if let index = positions.removeValue(forKey: id) {
                 // Delete
                 entities.remove(at: index)
@@ -187,16 +208,24 @@ public nonisolated struct EntityStore<
         removeBatch(Set(ids.filter { positions[$0] != nil }))
     }
 
-    /// Shared removal tail: one filtering pass over storage, one index
-    /// rebuild, and a deletion record (cancelling any pending upsert) per
-    /// removed ID.
+    /// Who removed the rows, which decides what the removal is recorded as.
+    private enum RemovalOrigin {
+        /// The local user. Records a deletion to flush, cancelling any pending
+        /// upsert.
+        case local
+
+        /// Another device, inferred from the row's absence in storage. Records
+        /// no deletion — the row is already gone from disk, so flushing one
+        /// would echo it straight back as a local write — and lands in
+        /// ``remotelyRemovedIDs`` instead.
+        case remote
+    }
+
+    /// Shared removal tail: one filtering pass over storage, one index rebuild,
+    /// and a record per removed ID that depends on who removed it.
     ///
     /// `removedIDs` must contain only IDs currently present in the store.
-    ///
-    /// `recordingChanges` is `false` only for hydration-side removals, where
-    /// the row is already gone from disk and recording a deletion would echo it
-    /// straight back as a local write.
-    private mutating func removeBatch(_ removedIDs: Set<UUID>, recordingChanges: Bool = true) {
+    private mutating func removeBatch(_ removedIDs: Set<UUID>, origin: RemovalOrigin = .local) {
         guard !removedIDs.isEmpty else { return }
 
         entities.removeAll { removedIDs.contains($0.id) }
@@ -207,18 +236,39 @@ public nonisolated struct EntityStore<
             positions[entity.id] = i
         }
 
-        guard recordingChanges else { return }
-        for id in removedIDs {
-            changes.deletions.insert(id)
-            changes.upserts.remove(id)
+        switch origin {
+        case .local:
+            for id in removedIDs {
+                changes.deletions.insert(id)
+                changes.upserts.remove(id)
+            }
+        case .remote:
+            remotelyRemovedIDs.formUnion(removedIDs)
         }
+    }
+
+    /// Takes `id` back from ``remotelyRemovedIDs`` — it is local again.
+    ///
+    /// The `contains` check is load-bearing, not a micro-optimisation. Every
+    /// insertion path calls this, including the subscript setter on each entity
+    /// write and `reconcile` on every remote row of every sync tick, while a
+    /// hit is vanishingly rare. `Set.remove` is `mutating` and this buffer is
+    /// shared with the observer and with each undo snapshot, so calling it
+    /// unconditionally would fault in a copy-on-write copy to accomplish
+    /// nothing. A non-mutating lookup does not.
+    private mutating func clearRemoteRemoval(of id: UUID) {
+        guard remotelyRemovedIDs.contains(id) else { return }
+        remotelyRemovedIDs.remove(id)
     }
 
     // MARK: - Change Tracking
 
     /// Clears the changelog.
     ///
-    /// Called by `StateWriter` after draining.
+    /// Called by `StateWriter` after draining. Deliberately leaves
+    /// ``remotelyRemovedIDs`` alone: a drain ends the life of a pending *write*,
+    /// while a remote deletion has to outlive every undo snapshot taken before
+    /// it.
     public mutating func resetChanges() {
         changes = ChangeSet()
     }
@@ -268,6 +318,8 @@ public nonisolated struct EntityStore<
                 // Entity only in other, and not pending local deletion — add it.
                 positions[entity.id] = entities.count
                 entities.append(entity)
+                // Storage still holds the row, so it was never deleted.
+                clearRemoteRemoval(of: entity.id)
             }
             // else: locally deleted but not yet flushed — do not resurrect.
         }
@@ -313,6 +365,9 @@ public nonisolated struct EntityStore<
                 positions[entity.id] = entities.count
                 entities.append(entity)
             }
+            // Storage holds the row, so any earlier remote deletion of this ID
+            // has itself been undone elsewhere. The ID is live again.
+            clearRemoteRemoval(of: entity.id)
         }
 
         guard removingMissing else { return }
@@ -322,7 +377,7 @@ public nonisolated struct EntityStore<
         for id in positions.keys where !remote.contains(id) && !owned.contains(id) {
             missing.insert(id)
         }
-        removeBatch(missing, recordingChanges: false)
+        removeBatch(missing, origin: .remote)
     }
 
     // MARK: - Restore (Undo/Redo)
@@ -336,19 +391,33 @@ public nonisolated struct EntityStore<
     /// Unlike `merge(from:)` (which is a hydration operation that records
     /// no changes), `restore` records every difference so that
     /// `PersistencePlugin` picks them up via normal `afterReduce()` draining.
+    ///
+    /// Entities in ``remotelyRemovedIDs`` are dropped from `source` first — see
+    /// that property for why undo doesn't own them. A store with no remote
+    /// deletions, which is every app that doesn't sync, takes an identical path
+    /// to before.
     public mutating func restore(from source: EntityStore) {
-        let currentIDs = Set(positions.keys)
-        let sourceIDs = Set(source.positions.keys)
+        guard !remotelyRemovedIDs.isEmpty else {
+            return restore(entities: source.entities, positions: source.positions)
+        }
+        // The initializer already pairs an entity array with its index.
+        let kept = EntityStore(source.entities.filter { !remotelyRemovedIDs.contains($0.id) })
+        restore(entities: kept.entities, positions: kept.positions)
+    }
 
-        // Deletions: in current but not in source
-        for id in currentIDs.subtracting(sourceIDs) {
+    /// Records the diff against the snapshot's entities, then adopts them.
+    ///
+    /// `positions` must be the index of `entities`.
+    private mutating func restore(entities snapshot: [Entity], positions snapshotIndex: [UUID: Int]) {
+        // Deletions: in current but not in the snapshot
+        for id in positions.keys where snapshotIndex[id] == nil {
             changes.deletions.insert(id)
             changes.upserts.remove(id)
         }
 
-        // Upserts: new or changed entities in source. Restoring an entity
+        // Upserts: new or changed entities in the snapshot. Restoring an entity
         // cancels any pending deletion for the same ID (later operation wins).
-        for entity in source.entities {
+        for entity in snapshot {
             if let index = positions[entity.id] {
                 if entities[index] != entity {
                     changes.upserts.insert(entity.id)
@@ -361,15 +430,16 @@ public nonisolated struct EntityStore<
         }
 
         // Replace storage
-        entities = source.entities
-        positions = source.positions
+        entities = snapshot
+        positions = snapshotIndex
     }
 
     // MARK: - Equatable
 
     /// Two stores are equal when they contain the same entities in the same order.
     ///
-    /// Changes are excluded — they're transient metadata, not semantic state.
+    /// Changes and remotely removed IDs are excluded — they're transient
+    /// metadata, not semantic state.
     public static func == (lhs: EntityStore, rhs: EntityStore) -> Bool {
         lhs.entities == rhs.entities
     }

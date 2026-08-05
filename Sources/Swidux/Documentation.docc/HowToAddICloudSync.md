@@ -157,10 +157,11 @@ Capture the store **weakly**: the observer usually outlives the view layer, and 
 
 By default (`MergePolicy.preferRemote`) remote creations, edits, **and** deletions all surface mid-session. An ID is exempt whenever the local side still has something to say about it — an un-drained edit, a drained-but-unflushed write, a pending deletion, or a write whose save failed. Those always win, and that guarantee is not configurable.
 
-Two things are worth knowing:
+Three things are worth knowing:
 
 - **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing.
 - **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Bindings made with `store.binding(_:sending:)` dispatch on write and are covered.
+- **Undo can't resurrect a remote deletion.** Once a deletion made elsewhere surfaces, `restore(from:)` skips that ID — otherwise an older undo snapshot would write the row back as a *creation* and re-seed every peer. The ID becomes undoable again if the user recreates it or the row returns to disk. See <doc:UndoRedo>.
 
 For a store backing a live text editor, where a remote edit arriving under the cursor is worse than a stale row, register it additive-only:
 
