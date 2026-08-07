@@ -45,6 +45,19 @@ public actor EntityDB {
     /// corrupts its index. Duplicates are logged, not treated as an error —
     /// they are a legitimate state under CloudKit mirroring.
     public func fetchAll<M: PersistableModel>(_ type: M.Type) throws -> [M.Domain] {
+        try fetchAllCollapsing(M.self).domains
+    }
+
+    /// ``fetchAll(_:)`` plus how many rows it collapsed away.
+    ///
+    /// The count is returned rather than pushed through a handler stored on the
+    /// actor: `EntityDB` is swapped wholesale when a container is rebuilt (see
+    /// ``DatabaseHandle``), and a handler living here would have to be
+    /// reinstalled on every swap. Callers on the main actor already hold the
+    /// app's diagnostic handler, so they emit it.
+    func fetchAllCollapsing<M: PersistableModel>(
+        _ type: M.Type
+    ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
         let rows = try modelContext.fetch(FetchDescriptor<M>())
         var seen = Set<UUID>()
         var domains: [M.Domain] = []
@@ -52,16 +65,17 @@ public actor EntityDB {
         for row in rows where seen.insert(row.id).inserted {
             domains.append(row.toDomain())
         }
-        if domains.count < rows.count {
+        let duplicates = rows.count - domains.count
+        if duplicates > 0 {
             Self.logger.warning(
                 """
                 \(String(describing: M.self), privacy: .public): \
-                \(rows.count - domains.count, privacy: .public) duplicate row(s) collapsed on read. \
+                \(duplicates, privacy: .public) duplicate row(s) collapsed on read. \
                 Register a collapse closure to remove them from disk.
                 """
             )
         }
-        return domains
+        return (domains, duplicates)
     }
 
     /// Loads every persisted row of the **domain** type `E`.
@@ -219,7 +233,11 @@ public actor EntityDB {
             }
 
             try modelContext.save()
-            return CollapseOutcome(survivors: survivors, removedIDs: removedIDs)
+            return CollapseOutcome(
+                survivors: survivors,
+                removedIDs: removedIDs,
+                duplicateRowCount: rows.count - byID.count
+            )
         } catch {
             modelContext.rollback()
             throw error

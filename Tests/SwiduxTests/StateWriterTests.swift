@@ -17,6 +17,12 @@ final class SendableBox<T: Sendable>: @unchecked Sendable {
         set { lock.withLock { storage = newValue } }
     }
     init(_ value: T) { storage = value }
+
+    /// Mutates in place under the lock — for read-modify-write, where a
+    /// get/set pair would race.
+    func withValue<R>(_ body: (inout T) -> R) -> R {
+        lock.withLock { body(&storage) }
+    }
 }
 
 @Suite("StateWriter")

@@ -85,18 +85,23 @@ func makeNotesContainer() throws -> ModelContainer {
 
 @MainActor
 func makeNotesCoordinator(
+    container: ModelContainer? = nil,
     debounce: Duration = .milliseconds(10),
+    retry: RetryPolicy = .default,
     mergePolicy: MergePolicy = .preferRemote,
     entityPolicy: MergePolicy? = nil,
     collapse: (@Sendable ([Note]) -> [Note])? = nil,
-    onFailure: PersistenceFailureHandler? = nil
+    onFailure: PersistenceFailureHandler? = nil,
+    onDiagnostic: PersistenceDiagnosticHandler? = nil
 ) throws -> PersistenceCoordinator<NotesState, NotesAction> {
     PersistenceCoordinator<NotesState, NotesAction>(
         entities: [.entity(\.notes, policy: entityPolicy, collapse: collapse)],
-        container: try makeNotesContainer(),
+        container: try container ?? makeNotesContainer(),
         debounce: debounce,
+        retry: retry,
         mergePolicy: mergePolicy,
-        onFailure: onFailure
+        onFailure: onFailure,
+        onDiagnostic: onDiagnostic
     )
 }
 
@@ -164,6 +169,17 @@ func seedNotes(_ container: ModelContainer, _ notes: [Note]) throws {
     let context = ModelContext(container)
     for note in notes { context.insert(NoteModel(from: note)) }
     try context.save()
+}
+
+/// Inserts `count` rows that all share `id`.
+@MainActor
+func seedDuplicates(
+    _ container: ModelContainer,
+    id: UUID,
+    title: String = "dup",
+    count: Int
+) throws {
+    try seedNotes(container, Array(repeating: Note(id: id, title: title, pinned: false), count: count))
 }
 
 /// Every raw row on disk, duplicates included — `fetchAll` collapses, so it

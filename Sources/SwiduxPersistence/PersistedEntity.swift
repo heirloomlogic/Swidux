@@ -42,7 +42,7 @@ public struct PersistedEntity<State> {
     /// are computed after the fetch, so a write that landed during it counts.
     typealias MergeApply = @MainActor (inout State, MergeContext) -> Void
 
-    let makeWriter: @MainActor (DatabaseHandle, @escaping PersistenceFailureHandler) -> StateWriter<State>
+    let makeWriter: @MainActor (DatabaseHandle, PersistenceObservers) -> StateWriter<State>
 
     /// A per-entity narrowing of the coordinator's merge policy, if any.
     let policy: MergePolicy?
@@ -52,14 +52,14 @@ public struct PersistedEntity<State> {
     let unpersisted: UnpersistedIDs
 
     /// Phase 1 of first-load hydration: reads the database, touches no state.
-    let readForHydrate: @MainActor (DatabaseHandle, PersistenceFailureHandler) async -> Apply
+    let readForHydrate: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
 
     /// Phase 1 of re-hydration: reads the database, touches no state.
-    let readForMerge: @MainActor (DatabaseHandle, PersistenceFailureHandler) async -> MergeApply
+    let readForMerge: @MainActor (DatabaseHandle, PersistenceObservers) async -> MergeApply
 
     /// Runs the registered collapse against disk, if any, and returns the fold
     /// that removes the losers from live state.
-    let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceFailureHandler) async -> Apply
+    let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
 
     /// Registers the `EntityStore<E>` at `keyPath` for persistence.
     ///
@@ -84,21 +84,42 @@ public struct PersistedEntity<State> {
         collapse: (@Sendable (_ rows: [E]) -> [E])? = nil
     ) -> PersistedEntity<State> where E.Model: PersistentModel {
         let unpersisted = UnpersistedIDs()
+        let entityTypeName = "\(E.self)"
 
         /// Reads the rows to fold in, running the registered collapse first
         /// when there is one. Collapse already returns the survivors, so this
         /// never fetches the same table twice.
+        ///
+        /// Reports any duplicates it collapsed on the way past. A registered
+        /// resolver does not make them go away — rows sharing a *surviving* ID
+        /// are converged, not deleted — so both branches have something to say.
         @MainActor
-        func loadRows(_ handle: DatabaseHandle) async throws -> (rows: [E], removedIDs: Set<UUID>) {
-            guard let collapse else {
-                return (try await handle.db.fetchAll(E.Model.self), [])
+        func loadRows(
+            _ handle: DatabaseHandle,
+            _ observers: PersistenceObservers
+        ) async throws -> (rows: [E], removedIDs: Set<UUID>) {
+            let rows: [E]
+            let removedIDs: Set<UUID>
+            let duplicates: Int
+            if let collapse {
+                let outcome = try await handle.db.collapseDuplicates(
+                    as: E.Model.self, using: collapse)
+                (rows, removedIDs, duplicates) = (
+                    outcome.survivors, outcome.removedIDs, outcome.duplicateRowCount
+                )
+            } else {
+                let fetched = try await handle.db.fetchAllCollapsing(E.Model.self)
+                (rows, removedIDs, duplicates) = (fetched.domains, [], fetched.duplicatesCollapsed)
             }
-            let outcome = try await handle.db.collapseDuplicates(as: E.Model.self, using: collapse)
-            return (outcome.survivors, outcome.removedIDs)
+            if duplicates > 0 {
+                observers.onDiagnostic(
+                    .duplicateRowsCollapsed(entityType: entityTypeName, count: duplicates))
+            }
+            return (rows, removedIDs)
         }
 
         return PersistedEntity(
-            makeWriter: { handle, onFailure in
+            makeWriter: { handle, observers in
                 StateWriter(
                     keyPath: keyPath,
                     onExhausted: { error in
@@ -106,27 +127,36 @@ public struct PersistedEntity<State> {
                         // before this was "we'll try again", and an app that
                         // wants to warn the user has been waiting for the
                         // difference.
-                        onFailure(
+                        observers.onFailure(
                             PersistenceFailure(
-                                operation: .save, entityType: "\(E.self)", underlying: error,
+                                operation: .save, entityType: entityTypeName, underlying: error,
                                 isFinal: true))
                     }
                 ) { writes, deletions in
                     let touched = Set(writes.map(\.id)).union(deletions)
+                    /// Reports the ledger's new contents, but only when they
+                    /// actually moved: a repeated failure on the same IDs is not
+                    /// news, and the empty set on recovery is.
+                    @MainActor
+                    func report(_ didChange: Bool) {
+                        guard didChange else { return }
+                        observers.onDiagnostic(
+                            .writesUnpersisted(entityType: entityTypeName, ids: unpersisted.ids))
+                    }
                     do {
                         // One transaction per batch: a crash can't persist a
                         // partial flush, and a failure is reported, not eaten.
                         try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
-                        await unpersisted.markPersisted(touched)
+                        await report(unpersisted.markPersisted(touched))
                     } catch {
                         // Belt and braces alongside the writer putting the batch
                         // back: this records memory ≠ storage even for the
                         // window where the batch is mid-flight, and it is the
                         // only record a hand-written non-throwing persist
                         // closure could leave.
-                        await unpersisted.markFailed(touched)
-                        onFailure(
-                            PersistenceFailure(operation: .save, entityType: "\(E.self)", underlying: error))
+                        await report(unpersisted.markFailed(touched))
+                        observers.onFailure(
+                            PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
                         // Rethrow so the writer puts the batch back and the
                         // plugin retries it. Swallowing here is what made a
                         // failed save silent data loss.
@@ -136,24 +166,24 @@ public struct PersistedEntity<State> {
             },
             policy: policy,
             unpersisted: unpersisted,
-            readForHydrate: { handle, onFailure in
+            readForHydrate: { handle, observers in
                 do {
                     // Removals are implicit here: the whole store is replaced
                     // by the survivors.
-                    let loaded = try await loadRows(handle)
+                    let loaded = try await loadRows(handle, observers)
                     return { state in state[keyPath: keyPath] = EntityStore(loaded.rows) }
                 } catch {
                     // Leave the store untouched — an unreadable database must
                     // not present as "no data" (a later flush would then write
                     // an empty world view over whatever is recoverable).
-                    onFailure(
-                        PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
+                    observers.onFailure(
+                        PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
                     return { _ in }
                 }
             },
-            readForMerge: { handle, onFailure in
+            readForMerge: { handle, observers in
                 do {
-                    let loaded = try await loadRows(handle)
+                    let loaded = try await loadRows(handle, observers)
                     let incoming = EntityStore(loaded.rows)
                     return { state, context in
                         var current = state[keyPath: keyPath]
@@ -179,20 +209,20 @@ public struct PersistedEntity<State> {
                         state[keyPath: keyPath] = current
                     }
                 } catch {
-                    onFailure(
-                        PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
+                    observers.onFailure(
+                        PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
                     return { _, _ in }
                 }
             },
-            collapseOnDisk: { handle, onFailure in
+            collapseOnDisk: { handle, observers in
                 guard collapse != nil else { return { _ in } }
                 do {
-                    let loaded = try await loadRows(handle)
+                    let loaded = try await loadRows(handle, observers)
                     guard !loaded.removedIDs.isEmpty else { return { _ in } }
                     return { state in state[keyPath: keyPath].remove(ids: loaded.removedIDs) }
                 } catch {
-                    onFailure(
-                        PersistenceFailure(operation: .save, entityType: "\(E.self)", underlying: error))
+                    observers.onFailure(
+                        PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
                     return { _ in }
                 }
             }

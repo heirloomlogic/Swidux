@@ -481,4 +481,82 @@ struct PersistencePluginTests {
         #expect(writesBox.value.count == 1)
         #expect(writesBox.value.first?.name == "Via host")
     }
+
+    // MARK: - Dispatch-loop reporting
+
+    /// A plugin whose debounce is long enough that a synchronous burst of
+    /// drains can never be interrupted by the timer resetting the counter.
+    private func makeLoopPlugin(
+        threshold: Int,
+        debounce: Duration = .seconds(30),
+        flushes: SendableBox<Int> = SendableBox(0),
+        report: @escaping @MainActor (Int) -> Void
+    ) -> PersistencePlugin<TestState, TestAction> {
+        PersistencePlugin<TestState, TestAction>(
+            writers: [
+                StateWriter<TestState>(keyPath: \.items, persist: { _, _ in flushes.withValue { $0 += 1 } })
+            ],
+            debounce: debounce,
+            loopThreshold: threshold,
+            onLoopSuspected: report
+        )
+    }
+
+    /// Drains `count` distinct changes through `plugin`, one per call.
+    private func burst(_ plugin: PersistencePlugin<TestState, TestAction>, count: Int) {
+        var state = TestState()
+        for index in 0..<count {
+            let entity = TestEntity(name: "Entity \(index)")
+            state.items[entity.id] = entity
+            plugin.drainAndScheduleFlush(&state)
+        }
+    }
+
+    @Test("Crossing the loop threshold reports once, not once per drain")
+    func loopReportedOncePerBurst() {
+        let reports = SendableBox<[Int]>([])
+        let plugin = makeLoopPlugin(threshold: 3) { count in
+            reports.withValue { $0.append(count) }
+        }
+
+        burst(plugin, count: 10)
+
+        #expect(
+            reports.value == [4],
+            "a runaway loop must not hand the app one callback per dispatch"
+        )
+    }
+
+    @Test("Staying under the loop threshold reports nothing")
+    func loopSilentBelowThreshold() {
+        let reports = SendableBox<[Int]>([])
+        let plugin = makeLoopPlugin(threshold: 10) { count in
+            reports.withValue { $0.append(count) }
+        }
+
+        burst(plugin, count: 10)
+
+        #expect(reports.value.isEmpty, "the threshold is exclusive — 10 drains is not > 10")
+    }
+
+    @Test("A later burst reports again once the debounce has reset the counter")
+    func loopReportedAgainAfterReset() async throws {
+        let reports = SendableBox<[Int]>([])
+        let flushes = SendableBox(0)
+        let plugin = makeLoopPlugin(threshold: 2, debounce: .milliseconds(10), flushes: flushes) {
+            count in reports.withValue { $0.append(count) }
+        }
+
+        burst(plugin, count: 4)
+        #expect(reports.value == [3])
+
+        // Wait for the debounce to actually fire rather than sleeping past it:
+        // firing is what clears both the counter and the already-reported flag,
+        // so a fresh burst is genuinely fresh news.
+        try await poll(until: { flushes.value == 1 }, timeout: .seconds(5))
+        #expect(flushes.value == 1, "the reset under test is the one the debounce flush performs")
+        burst(plugin, count: 4)
+
+        #expect(reports.value == [3, 3])
+    }
 }
