@@ -1004,7 +1004,7 @@ final class SwiduxMacroTests: XCTestCase {
         assertMacroExpansion(
             """
             @Swidux
-            struct CollectionPhaseState: Equatable, Sendable {
+            struct CollectionState: Equatable, Sendable {
                 enum HydrationPhase: Sendable, Equatable {
                     case loading, ready
                 }
@@ -1013,7 +1013,7 @@ final class SwiduxMacroTests: XCTestCase {
             }
             """,
             expandedSource: """
-                struct CollectionPhaseState: Equatable, Sendable {
+                struct CollectionState: Equatable, Sendable {
                     enum HydrationPhase: Sendable, Equatable {
                         case loading, ready
                     }
@@ -1023,7 +1023,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                 @Observable
                 @MainActor
-                final class CollectionPhaseStateObserver: @unchecked Sendable {
+                final class CollectionStateObserver: @unchecked Sendable {
                     var phases: [HydrationPhase]
                     var map: [HydrationPhase: HydrationPhase]
 
@@ -1033,31 +1033,31 @@ final class SwiduxMacroTests: XCTestCase {
                     }
                 }
 
-                extension CollectionPhaseState: SwiduxObservable {
-                    typealias Observer = CollectionPhaseStateObserver
+                extension CollectionState: SwiduxObservable {
+                    typealias Observer = CollectionStateObserver
 
                     @MainActor
-                    init(observer: CollectionPhaseStateObserver) {
+                    init(observer: CollectionStateObserver) {
                         self.phases = observer.phases
                         self.map = observer.map
                     }
 
                     @MainActor
-                    static func makeObserver(from state: CollectionPhaseState) -> CollectionPhaseStateObserver {
-                        CollectionPhaseStateObserver(
+                    static func makeObserver(from state: CollectionState) -> CollectionStateObserver {
+                        CollectionStateObserver(
                             phases: state.phases,
                             map: state.map
                         )
                     }
 
                     @MainActor
-                    static func apply(_ snapshot: CollectionPhaseState, to observer: CollectionPhaseStateObserver) {
+                    static func apply(_ snapshot: CollectionState, to observer: CollectionStateObserver) {
                         observer.phases = snapshot.phases
                         observer.map = snapshot.map
                     }
 
                     @MainActor
-                    static func applyRestore(from snapshot: CollectionPhaseState, to current: inout CollectionPhaseState) {
+                    static func applyRestore(from snapshot: CollectionState, to current: inout CollectionState) {
                         current.phases = snapshot.phases
                         current.map = snapshot.map
                     }
@@ -1066,19 +1066,19 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
                     line: 6,
                     column: 18
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
                     line: 7,
                     column: 15
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
                     line: 7,
                     column: 31
                 ),
