@@ -46,10 +46,29 @@ declarations.
 
 An unsigned local or CI build is using ``KeychainKeyValueStore`` without a
 provisioning profile. This is a signing condition, not a prompt or a bug — the
-data-protection keychain never prompts. Ship provisioning-profile-signed builds
-with `accessGroup: nil`; for unsigned local/CI builds add a single
-team-prefixed `keychain-access-groups` entitlement. Details in
-<doc:KeyValueStoreGuide>.
+data-protection keychain never prompts.
+
+Nothing is persisted, but nothing crashes either: the write logs, returns
+`false`, and the app continues. Ship provisioning-profile-signed builds with
+`accessGroup: nil` to get real persistence.
+
+Adding a team-prefixed `keychain-access-groups` entitlement also works, and is
+the right call when you want the access group — but weigh it first, because it
+makes the app require a provisioning profile for every signed build. It is
+**not** a fix for a test host: `CODE_SIGNING_ALLOWED=NO` embeds no entitlements
+at all, so there is nothing for the entitlement to attach to. Let the write
+degrade there. Details in <doc:KeyValueStoreGuide>.
+
+## `Test crashed with signal trap before establishing connection`
+
+`xcodebuild test` dies before any test runs, naming nothing useful. If the app
+mints a device identity or writes a token at launch, suspect the Keychain: the
+test host is unsigned, the write fails, and a trap takes the process down before
+the test bundle can attach.
+
+Current versions degrade instead of trapping here, so upgrading Swidux is the
+fix. To confirm the diagnosis on an older one, run the same scheme with
+`CODE_SIGNING_ALLOWED=YES` — if it gets past launch, the Keychain was the cause.
 
 ## Edits disappear after a sync tick or an async load
 

@@ -44,7 +44,10 @@ extension KeyValueStore {
     public func deviceIdentity(key: KVKey<String> = .deviceID) -> String {
         if let existing = value(key) { return existing }
         let minted = UUID().uuidString
-        setValue(minted, for: key)
+        // A store that couldn't persist won't have anything to read back, so
+        // skip the round trip and use the minted value for this session. An
+        // unsigned or unentitled build takes this path — see `KeychainKeyValueStore`.
+        guard setValue(minted, for: key) else { return minted }
         return value(key) ?? minted
     }
 }

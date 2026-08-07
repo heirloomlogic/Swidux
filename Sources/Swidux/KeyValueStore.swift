@@ -83,6 +83,12 @@ public struct KVKey<Value: Codable>: Sendable, Hashable {
 ///   `assertionFailure` in DEBUG. Production builds log and continue. The API
 ///   does not throw — encoder errors are programmer mistakes (e.g. `Float.nan`),
 ///   and there is no useful runtime recovery from inside an effect.
+/// - **Backing store unavailable**: `setValue(_:for:)` and `removeValue(for:)`
+///   return `false`. The result is `@discardableResult`, so writes that cannot
+///   fail meaningfully stay a single line. This matters for
+///   ``KeychainKeyValueStore``, where an unsigned or unentitled build cannot
+///   reach the keychain at all. No caller can fix that, so it logs and returns
+///   instead of trapping.
 ///
 /// ## Schema migration
 ///
@@ -96,10 +102,19 @@ public protocol KeyValueStore: Sendable {
 
     /// Stores `value`. Passing `nil` removes the key. Encode failures are
     /// logged and trigger `assertionFailure` in DEBUG.
-    func setValue<Value>(_ value: Value?, for key: KVKey<Value>)
+    ///
+    /// - Returns: `true` if the store now holds the intended state. Discardable —
+    ///   most callers write and move on; check it only where a backing store can
+    ///   fail for environmental reasons, as ``KeychainKeyValueStore`` can.
+    @discardableResult
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool
 
     /// Removes the value for `key`. No-op if absent.
-    func removeValue<Value>(for key: KVKey<Value>)
+    ///
+    /// - Returns: `true` if the key is now absent, which includes the case where
+    ///   it was never present.
+    @discardableResult
+    func removeValue<Value>(for key: KVKey<Value>) -> Bool
 
     /// Returns `true` if the key has any stored value, regardless of decodability.
     func contains<Value>(_ key: KVKey<Value>) -> Bool
@@ -150,25 +165,31 @@ public final class InMemoryKeyValueStore: KeyValueStore {
     }
 
     /// Stores `value`. Passing `nil` removes the key.
-    public func setValue<Value>(_ value: Value?, for key: KVKey<Value>) {
-        guard let value else {
-            removeValue(for: key)
-            return
-        }
+    ///
+    /// - Returns: `true` unless encoding failed.
+    @discardableResult
+    public func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool {
+        guard let value else { return removeValue(for: key) }
         do {
             let data = try encoder.encode(value)
             storage.withLock { $0[key.name] = data }
+            return true
         } catch {
             logger.error(
                 "Encode failed for key '\(key.name, privacy: .public)': \(error.localizedDescription, privacy: .public)"
             )
             assertionFailure("Encode failed for key '\(key.name)': \(error)")
+            return false
         }
     }
 
     /// Removes the value for `key`. No-op if absent.
-    public func removeValue<Value>(for key: KVKey<Value>) {
+    ///
+    /// - Returns: `true` — an in-memory dictionary removal cannot fail.
+    @discardableResult
+    public func removeValue<Value>(for key: KVKey<Value>) -> Bool {
         storage.withLock { _ = $0.removeValue(forKey: key.name) }
+        return true
     }
 
     /// Returns `true` if the key has any stored payload.

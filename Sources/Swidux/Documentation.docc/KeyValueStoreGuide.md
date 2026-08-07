@@ -17,8 +17,10 @@ effects. Reducers stay pure.
 ```swift
 public protocol KeyValueStore: Sendable {
     func value<Value>(_ key: KVKey<Value>) -> Value?
-    func setValue<Value>(_ value: Value?, for key: KVKey<Value>)
-    func removeValue<Value>(for key: KVKey<Value>)
+    @discardableResult
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool
+    @discardableResult
+    func removeValue<Value>(for key: KVKey<Value>) -> Bool
     func contains<Value>(_ key: KVKey<Value>) -> Bool
 }
 ```
@@ -80,6 +82,30 @@ Touch ID / Face ID challenge.
 > Without it, the first `setValue` fails with `errSecMissingEntitlement`
 > (`OSStatus` −34018). This is a build/signing condition, not a runtime
 > prompt. iOS / iPadOS / tvOS / watchOS need no extra entitlement.
+
+### Unsigned builds and test hosts
+
+A build made with `CODE_SIGNING_ALLOWED=NO` embeds no entitlements at all, so
+`keychain-access-groups` never reaches the binary and every write returns
+−34018. Test hosts and most CI invocations are built that way, which puts the
+entitlement advice above out of reach: there is nothing to attach it to.
+
+`KeychainKeyValueStore` treats that as an environment condition rather than a
+bug: it logs, returns `false`, and carries on. Reach for the returned value
+where the app has something to fall back to.
+
+```swift
+let identity = keychain.deviceIdentity()   // usable even if nothing persisted
+```
+
+``KeyValueStore/deviceIdentity(key:)`` already works this way — a failed write
+yields a session-local identity instead of a crash. Adopters do not need to
+detect XCTest and swap in a different store.
+
+Adding a `keychain-access-groups` entry has a cost worth weighing: it makes the
+app require a provisioning profile for any signed build, which breaks ad-hoc and
+local unsigned builds that otherwise run fine. Add it because you want the access
+group, not to silence −34018.
 
 Encryption, accessibility, iCloud-sync exclusion, and backup exclusion are
 identical whichever entitlement you use — the access group only controls
@@ -277,6 +303,16 @@ effects — that's the discipline.
   Production builds log and continue; the in-memory state is unchanged. The
   API does not throw — there is no useful runtime recovery from inside an
   effect, and `try?` would just hide the problem.
+- **Keychain unreachable** — an unsigned build, a locked device, or a missing
+  entitlement makes ``KeychainKeyValueStore`` writes fail for reasons no caller
+  can fix. These log and return `false`; they do **not** trap, because a test
+  host built without code signing would otherwise crash on its first write.
+  Malformed queries still assert in DEBUG.
+
+`setValue` and `removeValue` return `@discardableResult Bool` — `true` when the
+store holds the intended state. Ignore it for `UserDefaults`, which has no
+reachability failure to report; check it for the Keychain wherever a fallback
+exists.
 
 ## @AppStorage Interop
 
