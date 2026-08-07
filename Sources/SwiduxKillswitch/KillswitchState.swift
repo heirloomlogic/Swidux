@@ -6,15 +6,19 @@
 //
 
 import Foundation
+import Swidux
 
 /// The killswitch feature's state slice.
-public struct KillswitchState: Sendable, Equatable {
+///
+/// Hosted in the app's root state via `@Slice var killswitch: KillswitchState`.
+@Swidux
+public nonisolated struct KillswitchState: Sendable, Equatable {
     /// Latest evaluated verdict; defaults to `.unknown`.
-    public var verdict: KillswitchVerdict
+    public var verdict: KillswitchVerdict = .unknown
     /// Timestamp of the last successful fetch, or `nil`.
-    public var lastFetch: Date?
+    public var lastFetch: Date? = nil
     /// Human-readable description of the last fetch failure, or `nil`.
-    public var fetchError: String?
+    public var fetchError: String? = nil
 
     /// `true` when the verdict is `.blocked`.
     public var isBlocked: Bool { verdict.isBlocked }

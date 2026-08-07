@@ -3,9 +3,11 @@
 //  SwiduxPersistenceTests
 //
 //  Shared fixtures for the persistence tests: a hand-written `SwiduxObservable`
-//  conformance for `NotesState` (the `@Swidux` macro isn't available here —
-//  SwiduxPersistence's test target doesn't depend on it), plus the store,
-//  container, and seeding helpers every suite in this target needs.
+//  conformance for `NotesState`, kept hand-rolled on purpose so the tests exercise
+//  the path an app takes when it writes the conformance itself. (`@Swidux` is
+//  available here — this target depends on `Swidux`; `SliceWiringTests.swift` uses
+//  it.) Plus the store, container, and seeding helpers every suite in this target
+//  needs.
 //
 
 import Foundation
