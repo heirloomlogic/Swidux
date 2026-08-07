@@ -50,6 +50,50 @@ The macro classifies each stored property into one of three kinds and generates 
 
 Static properties, computed properties, and `let` constants are skipped entirely.
 
+### Requirements the generated code imposes
+
+The first two rules below are compile errors if you break them. The third is a quirk of
+how the observer mirrors access control.
+
+**Give every stored property an inline default if the struct is used as a `@Slice`.**
+The parent's generated initializer defaults a nested slice to `ChildObserver()`, so the
+child's observer must be constructible with no arguments, which means every one of its
+init parameters needs a default. Those defaults are read off the *property declaration*.
+A value supplied by a hand-written `init` doesn't count:
+
+```swift
+@Swidux
+nonisolated struct UIState: Equatable, Sendable {
+    var selectedID: UUID? = nil    // ✅ inline
+    var zoom: Double               // ❌ "missing argument for parameter 'zoom' in call"
+    init(zoom: Double = 1.0) { … } //    …even with this
+}
+```
+
+Keep the hand-written `init` if you have one — inline defaults are additive, not a
+replacement.
+
+**Spell nested types with their qualified name.** The observer is emitted as a *peer* at
+file scope, not nested inside your struct, so a bare inner name won't resolve there:
+
+```swift
+@Swidux
+nonisolated struct PersistenceState: Equatable, Sendable {
+    enum HydrationPhase: Sendable, Equatable { case loading, ready }
+
+    var phase: PersistenceState.HydrationPhase = .loading  // ✅
+    var other: HydrationPhase = .loading                   // ❌ "cannot find type in scope"
+}
+```
+
+**`private(set)` and `internal(set)` are not preserved on the observer.** Every stored
+property is mirrored as a plain settable `var`, because ``SwiduxObservable/init(observer:)``
+packs a snapshot by reading all of them back — a property missing from the observer would
+reset to its default on every dispatch. The narrowed setter still guards the reducer
+path, and ``Store``'s `@dynamicMemberLookup` exposes read-only key paths, so
+`store.someSlice.field = …` doesn't compile. That leaves `store.observer` as the only
+way in. A write through it is overwritten by the next dispatch's `apply`.
+
 ### Example expansion
 
 Given:

@@ -3,25 +3,31 @@
 //  SwiduxPaywall
 //
 
+import Foundation
+import Swidux
+
 /// Current paywall state — entitlement status, sheet presentation, and async progress.
-public struct PaywallState: Sendable, Equatable {
+///
+/// Hosted in the app's root state via `@Slice var paywall: PaywallState`.
+@Swidux
+public nonisolated struct PaywallState: Sendable, Equatable {
     /// `true` when the active entitlement grants pro access.
-    public var isPro: Bool
+    public var isPro: Bool = false
     /// `true` when the user owns a permanent license.
-    public var hasPermanentLicense: Bool
+    public var hasPermanentLicense: Bool = false
     /// `true` while the paywall sheet is presented.
-    public var isPresented: Bool
+    public var isPresented: Bool = false
     /// Reason supplied when the paywall was requested.
-    public var requestedReason: String?
+    public var requestedReason: String? = nil
     /// `true` while an async purchase/restore is in flight.
-    public var isLoading: Bool
+    public var isLoading: Bool = false
     /// Human-readable error description, or `nil`.
-    public var error: String?
+    public var error: String? = nil
     /// `true` while the customer-center sheet is presented.
-    public var isCustomerCenterPresented: Bool
+    public var isCustomerCenterPresented: Bool = false
     /// `true` once `.observeCustomerInfo` has started its long-lived stream.
     /// Guards against double-subscription; maintained by ``PaywallPlugin``.
-    public var isObservingCustomerInfo: Bool
+    public var isObservingCustomerInfo: Bool = false
 
     /// Creates a paywall state; defaults represent a free, non-presented state.
     public init(
