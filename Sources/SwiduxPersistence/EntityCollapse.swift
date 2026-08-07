@@ -16,10 +16,20 @@ public struct CollapseOutcome<Entity: Sendable>: Sendable {
     /// IDs that were on disk before the pass and are gone after it.
     public let removedIDs: Set<UUID>
 
+    /// How many rows shared an `id` with another row before the pass, i.e.
+    /// `rows - distinct IDs`.
+    ///
+    /// Not the same thing as ``removedIDs``, and not derivable from it: rows
+    /// sharing a *surviving* ID are converged rather than deleted, so a collapse
+    /// can leave duplicates on disk by design. Reported so a coordinator can
+    /// tell the app about them.
+    public let duplicateRowCount: Int
+
     /// Creates an outcome from a collapse pass.
-    public init(survivors: [Entity], removedIDs: Set<UUID>) {
+    public init(survivors: [Entity], removedIDs: Set<UUID>, duplicateRowCount: Int = 0) {
         self.survivors = survivors
         self.removedIDs = removedIDs
+        self.duplicateRowCount = duplicateRowCount
     }
 }
 

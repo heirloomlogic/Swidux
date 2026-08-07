@@ -186,6 +186,32 @@ When the budget runs out you get one final `PersistenceFailure` with `isFinal ==
 
 > Note: Every attempt is reported, so a handler that shows UI should gate on `isFinal`. Most `.save` failures are transient and are followed by a success the app never hears about.
 
+### Diagnostics: what isn't a failure
+
+Some conditions are worth acting on but aren't errors, so routing them through `onFailure` would be wrong. Duplicate rows are the clearest case: CloudKit forbids unique constraints, so several rows sharing an `id` are a legitimate on-disk state, not a fault. They go to `onDiagnostic:` instead:
+
+```swift
+let persistence = PersistenceCoordinator<AppState, AppAction>(
+    entities: [.entity(\.cards, collapse: EntityCollapse.byID { $0.updatedAt >= $1.updatedAt ? $0 : $1 })],
+    container: container,
+    onDiagnostic: { diagnostic in
+        guard diagnostic.kind == .duplicateRowsCollapsed,
+              let count = diagnostic.duplicateCount else { return }
+        store.send(.offerDuplicateCleanup(count: count))
+    }
+)
+```
+
+Three kinds ship today:
+
+| Kind | Means | Payload |
+|---|---|---|
+| `.duplicateRowsCollapsed` | A read found rows sharing an `id`. Without a `collapse:` resolver they are harmless but permanent — this is what lets you *offer* the cleanup. | `entityType`, `duplicateCount` |
+| `.possibleDispatchLoop` | `afterReduce` fired far more often in one debounce interval than a user could cause. Usually an effect or plugin dispatching on every state change. Reported once per burst, not once per dispatch. | `drainCount` |
+| `.writesUnpersisted` | The set of IDs whose last flush failed changed. Fires again with an **empty** set once they land, so an indicator can be cleared rather than guessed at. | `entityType`, `unpersistedIDs` |
+
+`PersistenceDiagnostic` is a struct with static constructors rather than an enum, so a future kind can't break an exhaustive `switch` in your code — match on `kind` and read the payload you expect. Duplicate reads and dispatch loops are logged whether or not you supply a handler; the unpersisted set has no log of its own, because the individual `PersistenceFailure`s behind it are already logged.
+
 ## Step 5: Flush on background
 
 Writes are debounced, so drain them when the app is backgrounded or terminates:

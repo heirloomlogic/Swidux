@@ -37,7 +37,9 @@ public final class PersistenceCoordinator<State, Action> {
     public let handle: DatabaseHandle
 
     private let entities: [PersistedEntity<State>]
-    private let onFailure: PersistenceFailureHandler
+
+    /// The failure and diagnostic handlers, threaded into every read and write.
+    private let observers: PersistenceObservers
 
     /// Index-aligned with `entities`. Kept so the merge can ask each writer
     /// what it still holds unflushed.
@@ -67,13 +69,20 @@ public final class PersistenceCoordinator<State, Action> {
     ///     (e.g. dispatch an action that shows a "couldn't save" banner).
     ///     A failed **save** means in-memory data is not on disk; a failed
     ///     **hydrate fetch** leaves that `EntityStore` untouched.
+    ///   - onDiagnostic: Called for conditions that are **not** failures but
+    ///     that an app may want to act on — duplicate rows collapsed on read, a
+    ///     probable dispatch loop, the accumulated set of writes that never
+    ///     reached disk. See ``PersistenceDiagnostic``. Duplicate reads and
+    ///     dispatch loops are logged at their source whether or not a handler is
+    ///     supplied; the unpersisted set is reported here only.
     public init(
         entities: [PersistedEntity<State>],
         container: ModelContainer,
         debounce: Duration = .milliseconds(250),
         retry: RetryPolicy = .default,
         mergePolicy: MergePolicy = .preferRemote,
-        onFailure: PersistenceFailureHandler? = nil
+        onFailure: PersistenceFailureHandler? = nil,
+        onDiagnostic: PersistenceDiagnosticHandler? = nil
     ) {
         self.entities = entities
         self.mergePolicy = mergePolicy
@@ -91,11 +100,28 @@ public final class PersistenceCoordinator<State, Action> {
             )
             onFailure?(failure)
         }
-        self.onFailure = handler
+        // Unlike failures, diagnostics are already logged where they are
+        // detected — the emitter has the detail, and logging again here would
+        // only duplicate it.
+        let observers = PersistenceObservers(
+            onFailure: handler, onDiagnostic: onDiagnostic ?? { _ in })
+        self.observers = observers
 
-        let writers = entities.map { $0.makeWriter(handle, handler) }
+        // Left nil when the app isn't listening, so a runaway loop doesn't also
+        // pay to build a diagnostic nobody reads.
+        var onLoop: (@MainActor (Int) -> Void)?
+        if let emit = onDiagnostic {
+            onLoop = { drains in emit(.possibleDispatchLoop(drainCount: drains)) }
+        }
+
+        let writers = entities.map { $0.makeWriter(handle, observers) }
         self.writers = writers
-        self.corePlugin = PersistencePlugin(writers: writers, debounce: debounce, retry: retry)
+        self.corePlugin = PersistencePlugin(
+            writers: writers,
+            debounce: debounce,
+            retry: retry,
+            onLoopSuspected: onLoop
+        )
     }
 
     /// Test seam: awaited once inside the read phase, after any flush and
@@ -132,9 +158,16 @@ public final class PersistenceCoordinator<State, Action> {
     ) async throws -> [E] {
         if flushPending { await corePlugin.flush() }
         do {
-            return try await handle.db.fetchAll(of: E.self)
+            let fetched = try await handle.db.fetchAllCollapsing(E.Model.self)
+            if fetched.duplicatesCollapsed > 0 {
+                observers.onDiagnostic(
+                    .duplicateRowsCollapsed(
+                        entityType: "\(E.self)", count: fetched.duplicatesCollapsed))
+            }
+            return fetched.domains
         } catch {
-            onFailure(PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
+            observers.onFailure(
+                PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
             throw error
         }
     }
@@ -173,7 +206,7 @@ public final class PersistenceCoordinator<State, Action> {
         var applies: [PersistedEntity<State>.Apply] = []
         applies.reserveCapacity(entities.count)
         for entity in entities {
-            applies.append(await entity.readForHydrate(handle, onFailure))
+            applies.append(await entity.readForHydrate(handle, observers))
         }
         await duringReadPhase?()
         return applies
@@ -189,7 +222,7 @@ public final class PersistenceCoordinator<State, Action> {
         var folds: [@MainActor (inout State, MergePolicy?) -> Void] = []
         folds.reserveCapacity(entities.count)
         for (entity, writer) in zip(entities, writers) {
-            let merge = await entity.readForMerge(handle, onFailure)
+            let merge = await entity.readForMerge(handle, observers)
             folds.append { [mergePolicy] state, override in
                 // Three sources, because no one of them is complete: the writer
                 // holds drained-but-unflushed IDs, the ledger holds IDs whose
@@ -212,7 +245,7 @@ public final class PersistenceCoordinator<State, Action> {
         var applies: [PersistedEntity<State>.Apply] = []
         applies.reserveCapacity(entities.count)
         for entity in entities {
-            applies.append(await entity.collapseOnDisk(handle, onFailure))
+            applies.append(await entity.collapseOnDisk(handle, observers))
         }
         await duringReadPhase?()
         return applies

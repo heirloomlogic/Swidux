@@ -56,6 +56,13 @@ struct EntityDBCollapseTests {
             rows.filter { $0.id == id }.allSatisfy { $0.title == "a" && $0.pinned },
             "instead they converge on the resolver's winner, so any of them is the right answer"
         )
+        #expect(
+            outcome.duplicateRowCount == 1,
+            """
+            A collapse that removes no ID still leaves duplicates on disk, so reporting zero here \
+            would tell an app its data is clean when it isn't.
+            """
+        )
     }
 
     @MainActor

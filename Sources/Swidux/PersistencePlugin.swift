@@ -74,12 +74,20 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// Used to detect probable dispatch loops.
     private var drainCount = 0
 
-    /// Whether we've already logged a loop warning for this burst.
-    private var hasLoggedLoopWarning = false
+    /// Whether we've already reported a loop warning for this burst.
+    private var hasReportedLoopWarning = false
 
     /// Threshold above which `afterReduce` calls per debounce interval
     /// are considered a probable dispatch loop.
     private let loopWarningThreshold: Int
+
+    /// Notified — at most once per burst, alongside the log — when the drain
+    /// count crosses ``loopWarningThreshold``.
+    ///
+    /// A bare `Int` rather than a persistence-layer diagnostic type because
+    /// core Swidux can't depend on `SwiduxPersistence`; the wrapping happens
+    /// there, exactly as `StateWriter.onExhausted` hands out a bare `Error`.
+    private let onLoopSuspected: (@MainActor (Int) -> Void)?
 
     /// Creates a persistence plugin with the given writers and debounce interval.
     ///
@@ -92,12 +100,16 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     ///   - loopThreshold: Number of `afterReduce` calls per debounce interval
     ///     that triggers a dispatch loop warning. Default is 100.
     ///   - logger: Logger used for debug output.
+    ///   - onLoopSuspected: Called with the drain count when that threshold is
+    ///     crossed — at most once per burst, so a runaway loop can't hand the
+    ///     app one callback per dispatch. The warning is logged either way.
     public init(
         writers: [StateWriter<State>],
         debounce: Duration = .milliseconds(250),
         retry: RetryPolicy = .default,
         loopThreshold: Int = 100,
-        logger: Logger = Logger(subsystem: "persistence", category: "plugin")
+        logger: Logger = Logger(subsystem: "persistence", category: "plugin"),
+        onLoopSuspected: (@MainActor (Int) -> Void)? = nil
     ) {
         self.writers = writers
         self.debounceInterval = debounce
@@ -105,6 +117,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         self.retryStates = Array(repeating: RetryState(), count: writers.count)
         self.loopWarningThreshold = loopThreshold
         self.logger = logger
+        self.onLoopSuspected = onLoopSuspected
     }
 
     /// Immediately flushes all pending writes, cancelling any active debounce timer.
@@ -125,7 +138,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         for index in retryStates.indices { retryStates[index].hasGivenUp = false }
 
         drainCount = 0
-        hasLoggedLoopWarning = false
+        hasReportedLoopWarning = false
 
         // Chains behind any in-flight debounce flush, so returning from
         // here guarantees every previously-buffered write has been persisted.
@@ -154,8 +167,8 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         retryTask = nil
 
         drainCount += 1
-        if drainCount > loopWarningThreshold && !hasLoggedLoopWarning {
-            hasLoggedLoopWarning = true
+        if drainCount > loopWarningThreshold && !hasReportedLoopWarning {
+            hasReportedLoopWarning = true
             logger.warning(
                 """
                 [PersistencePlugin] afterReduce called \(self.drainCount) times \
@@ -164,6 +177,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
                 state change, feeding the cycle it reacts to.
                 """
             )
+            onLoopSuspected?(drainCount)
         }
 
         logger.debug("[PersistencePlugin] Changes drained, scheduling flush")
@@ -175,7 +189,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
             guard !Task.isCancelled else { return }
 
             self.drainCount = 0
-            self.hasLoggedLoopWarning = false
+            self.hasReportedLoopWarning = false
             self.runFlushWork()
         }
     }

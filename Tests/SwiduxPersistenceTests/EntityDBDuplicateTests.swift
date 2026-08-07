@@ -15,19 +15,6 @@ import Testing
 
 @testable import SwiduxPersistence
 
-// MARK: - Helpers
-
-/// Inserts `count` rows that all share `id`.
-@MainActor
-private func seedDuplicates(
-    _ container: ModelContainer,
-    id: UUID,
-    title: String,
-    count: Int
-) throws {
-    try seedNotes(container, Array(repeating: Note(id: id, title: title, pinned: false), count: count))
-}
-
 // MARK: - Tests
 
 @Suite("EntityDB duplicate rows")

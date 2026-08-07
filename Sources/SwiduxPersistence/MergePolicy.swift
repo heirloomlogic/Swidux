@@ -98,11 +98,26 @@ struct MergeContext {
 final class UnpersistedIDs {
     private(set) var ids: Set<UUID> = []
 
-    func markFailed(_ failed: Set<UUID>) {
+    /// - Returns: Whether ``ids`` actually changed. A second failure on the same
+    ///   ID is not new information, and re-reporting it would make the
+    ///   diagnostic channel unusable for anything that dedupes by content.
+    @discardableResult
+    func markFailed(_ failed: Set<UUID>) -> Bool {
+        // Both operations are monotonic — union only grows, subtract only
+        // shrinks — so the count is an exact change signal, and mutating in
+        // place avoids the copy a compare-against-a-snapshot would force.
+        let before = ids.count
         ids.formUnion(failed)
+        return ids.count != before
     }
 
-    func markPersisted(_ saved: Set<UUID>) {
+    /// - Returns: Whether ``ids`` actually changed. Draining to empty is a
+    ///   change like any other; it is the edge an app needs to *clear* a "not
+    ///   saved" indicator rather than guess at it.
+    @discardableResult
+    func markPersisted(_ saved: Set<UUID>) -> Bool {
+        let before = ids.count
         ids.subtract(saved)
+        return ids.count != before
     }
 }
