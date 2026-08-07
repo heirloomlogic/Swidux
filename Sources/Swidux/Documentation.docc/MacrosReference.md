@@ -82,9 +82,14 @@ nonisolated struct PersistenceState: Equatable, Sendable {
     enum HydrationPhase: Sendable, Equatable { case loading, ready }
 
     var phase: PersistenceState.HydrationPhase = .loading  // ✅
-    var other: HydrationPhase = .loading                   // ❌ "cannot find type in scope"
+    var other: HydrationPhase = .loading                   // ❌ diagnosed on the property
 }
 ```
+
+The macro reports the bare spelling itself, on the property you wrote, naming the
+qualified form to use. Wrappers are seen through — `HydrationPhase?`, `[HydrationPhase]`,
+`[String: HydrationPhase]` and `Set<HydrationPhase>` are all caught. `@Persisted` applies
+the same rule for the same reason: its `@Model` shadow class is a file-scope peer too.
 
 **`private(set)` and `internal(set)` are not preserved on the observer.** Every stored
 property is mirrored as a plain settable `var`, because ``SwiduxObservable/init(observer:)``

@@ -21,6 +21,16 @@ extension PersistedMacro: PeerMacro {
         diagnoseSkippedStoredProperties(of: structDecl, includesLetBindings: true, in: context)
         let properties = classifyPersistedProperties(of: structDecl)
 
+        // The `@Model` shadow class is a peer at file scope, where a bare nested
+        // type name can't resolve. `@Ignored` is exempt: it emits no column and no
+        // type reference, so its type never reaches that scope.
+        diagnoseUnqualifiedNestedTypes(
+            of: structDecl,
+            in: properties.filter { !isIgnored($0) }.map(\.typeSyntax),
+            generatedDeclaration: "model class",
+            in: context
+        )
+
         // `@Ignored` fields must be reconstructable as `nil` in `toDomain()`.
         for property in properties where isIgnored(property) && !property.isOptional {
             context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.ignoredRequiresOptional))
