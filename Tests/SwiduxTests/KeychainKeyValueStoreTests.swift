@@ -7,7 +7,7 @@
 //  isolated. All queries route through the data-protection keychain
 //  (`kSecUseDataProtectionKeychain: true`).
 //
-//  ## macOS `swift test` skips this suite
+//  ## macOS `swift test` skips the round-trip suite
 //
 //  The data-protection keychain requires the `keychain-access-groups`
 //  entitlement, which `swift test` on macOS does not carry — the test
@@ -16,6 +16,15 @@
 //  simulator runs (the only keychain on iOS) work normally. The
 //  production runtime is unaffected: real shipped apps carry the
 //  required entitlements.
+//
+//  Two further suites cover the unentitled half of that split, so no
+//  environment leaves the write path untested:
+//
+//  - `KeychainFailureClassificationTests` touches no keychain at all and
+//    therefore runs everywhere, including macOS `swift test`.
+//  - `KeychainUnentitledHostTests` is gated on the *inverse* condition, so
+//    it runs exactly where -34018 fires and regression-tests the trap that
+//    used to crash unsigned test hosts (#65).
 //
 
 import Foundation
@@ -243,5 +252,119 @@ struct KeychainKeyValueStoreTests {
             }()
 
         #expect(firstLaunchID == secondLaunchID)
+    }
+
+    @Test("Successful writes and removals report true")
+    func successfulMutationsReportTrue() {
+        let (store, teardown) = makeStore()
+        defer { teardown() }
+
+        #expect(store.setValue("present", for: .deviceID))
+        #expect(store.setValue("updated", for: .deviceID))
+        #expect(store.removeValue(for: .deviceID))
+    }
+
+    @Test("Removing an absent key reports true — the key is absent either way")
+    func removingAbsentKeyReportsTrue() {
+        let (store, teardown) = makeStore()
+        defer { teardown() }
+
+        #expect(store.removeValue(for: .deviceID))
+        #expect(store.setValue(nil, for: .deviceID))
+    }
+}
+
+// MARK: - Failure classification
+
+/// Pure table-driven coverage of ``KeychainKeyValueStore/failureKind(for:)``.
+///
+/// Touches no keychain, so unlike the round-trip suite above this runs in every
+/// environment — including the unsigned macOS `swift test` that CI uses.
+@Suite("KeychainKeyValueStore failure classification")
+struct KeychainFailureClassificationTests {
+    /// Statuses determined by signing, device lock, or keychain availability.
+    /// The caller cannot fix these by writing better code, so they must not trap.
+    @Test(
+        "Environment-determined statuses are not programmer errors",
+        arguments: [
+            errSecMissingEntitlement,
+            errSecInteractionNotAllowed,
+            errSecNotAvailable,
+        ] as [OSStatus]
+    )
+    func environmentStatuses(status: OSStatus) {
+        #expect(KeychainKeyValueStore.failureKind(for: status) == .environment)
+    }
+
+    /// Everything else stays a programmer error, so a malformed query still
+    /// trips `assertionFailure` in DEBUG rather than being silently swallowed.
+    @Test(
+        "Malformed-query and unknown statuses stay programmer errors",
+        arguments: [
+            errSecParam,
+            errSecAllocate,
+            errSecBadReq,
+            errSecDuplicateItem,
+            errSecItemNotFound,
+            errSecDecode,
+            OSStatus(-99_999),
+        ] as [OSStatus]
+    )
+    func programmerErrorStatuses(status: OSStatus) {
+        #expect(KeychainKeyValueStore.failureKind(for: status) == .programmerError)
+    }
+}
+
+// MARK: - Unentitled host
+
+/// Regression coverage for #65, gated on the *inverse* of the round-trip
+/// suite's condition: it runs only where the keychain is unavailable, which is
+/// precisely where the old `assertionFailure` crashed the test host before the
+/// bundle could attach. On this repo's CI that is every macOS `swift test` run.
+@Suite(
+    "KeychainKeyValueStore on an unentitled host",
+    .enabled(
+        if: !isKeychainAvailable(),
+        "Keychain is available here — this suite covers the unentitled path only."
+    )
+)
+struct KeychainUnentitledHostTests {
+    private func makeStore() -> KeychainKeyValueStore {
+        KeychainKeyValueStore(service: "swidux.tests.\(UUID().uuidString)")
+    }
+
+    @Test("setValue degrades instead of trapping, and reports the failure")
+    func setValueDegrades() {
+        #expect(makeStore().setValue("value", for: .deviceID) == false)
+    }
+
+    @Test("A failed write leaves the key absent rather than half-written")
+    func failedWriteLeavesKeyAbsent() {
+        let store = makeStore()
+        _ = store.setValue("value", for: .deviceID)
+
+        #expect(store.value(.deviceID) == nil)
+        #expect(store.contains(.deviceID) == false)
+    }
+
+    @Test("deviceIdentity returns a usable identity instead of crashing")
+    func deviceIdentityDegrades() {
+        // The adopter scenario from #65: an app minting a device identity at
+        // launch used to trap here, taking its own XCTest host down with it.
+        let identity = makeStore().deviceIdentity()
+
+        #expect(UUID(uuidString: identity) != nil)
+    }
+
+    @Test("removeValue on an unentitled host is still a no-op, not a trap")
+    func removeValueDegrades() {
+        // Asserted on the observable contract rather than the returned Bool:
+        // whether the delete reports `errSecItemNotFound` or the entitlement
+        // error is environment detail. Reaching the expectation at all is the
+        // proof that matters — the old code trapped before getting here.
+        let store = makeStore()
+        _ = store.removeValue(for: .deviceID)
+
+        #expect(store.contains(.deviceID) == false)
     }
 }

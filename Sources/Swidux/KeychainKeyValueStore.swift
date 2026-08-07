@@ -57,8 +57,8 @@ import os
 /// A *sandboxed* macOS app must still be entitled to use that keychain. It
 /// needs either an `application-identifier` entitlement (Xcode adds this
 /// automatically for provisioning-profile–signed builds) or an explicit
-/// `keychain-access-groups` entry. Without one, ``setValue(_:for:)`` fails
-/// with `errSecMissingEntitlement` (`OSStatus` −34018). This is a
+/// `keychain-access-groups` entry. Without one, ``setValue(_:for:)`` returns
+/// `false` and logs `errSecMissingEntitlement` (`OSStatus` −34018). This is a
 /// build/signing condition surfaced at runtime, **not** a user prompt:
 ///
 /// ```xml
@@ -97,6 +97,27 @@ import os
 /// Marked `@unchecked Sendable`. The `Security` framework's `SecItem*` calls
 /// are thread-safe; the struct's stored properties are all themselves
 /// `Sendable` or treated so. Matches the pattern of ``UserDefaultsKeyValueStore``.
+///
+/// ## When the keychain isn't reachable
+///
+/// Writes report their outcome instead of trapping. `errSecMissingEntitlement`,
+/// `errSecInteractionNotAllowed`, and `errSecNotAvailable` are properties of the
+/// environment — an unsigned build, a locked device, a keychain that isn't there
+/// — so they are logged, and ``setValue(_:for:)`` returns `false`. Statuses that
+/// indicate a malformed query still trip `assertionFailure` in DEBUG.
+///
+/// This matters most under `CODE_SIGNING_ALLOWED=NO`, where the binary carries
+/// no entitlements at all: the advice above cannot apply, because there is
+/// nothing to attach an entitlement to. Test hosts build that way, so a store
+/// that trapped would take the test process down with it.
+///
+/// Check the result where a fallback exists:
+///
+/// ```swift
+/// if !kv.setValue(token, for: .authToken) {
+///     // Keychain unreachable — hold it in memory for this session only.
+/// }
+/// ```
 public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     /// Controls when stored items are readable. See Apple's
     /// `kSecAttrAccessible` documentation for the full semantics.
@@ -205,20 +226,22 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     /// Tries `SecItemAdd` first; on `errSecDuplicateItem` falls back to
     /// `SecItemUpdate`. This favors the first-write path (1 syscall) over
     /// the rewrite path (2 syscalls), which matches the device-ID use case
-    /// where the value is minted once and rarely changes. Encode failures
-    /// and unexpected Keychain errors are logged and trigger
-    /// `assertionFailure` in DEBUG.
-    public func setValue<Value>(_ value: Value?, for key: KVKey<Value>) {
-        guard let value else {
-            removeValue(for: key)
-            return
-        }
+    /// where the value is minted once and rarely changes.
+    ///
+    /// Failures are always logged. Encode failures and malformed-query statuses
+    /// also trigger `assertionFailure` in DEBUG; environment-determined statuses
+    /// do not — see *When the keychain isn't reachable* in the type overview.
+    ///
+    /// - Returns: `true` if the value is now stored (or removed, for `nil`).
+    @discardableResult
+    public func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool {
+        guard let value else { return removeValue(for: key) }
         let data: Data
         do {
             data = try encoder.encode(value)
         } catch {
             report("Encode failed", key: key.name, error: error)
-            return
+            return false
         }
 
         let query = baseQuery(account: key.name)
@@ -230,27 +253,38 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
         let addStatus = SecItemAdd(query.merging(valueAttributes) { $1 } as CFDictionary, nil)
         switch addStatus {
         case errSecSuccess:
-            return
+            return true
         case errSecDuplicateItem:
             let updateStatus = SecItemUpdate(query as CFDictionary, valueAttributes as CFDictionary)
-            if updateStatus != errSecSuccess {
+            guard updateStatus == errSecSuccess else {
                 report("Keychain update failed", key: key.name, status: updateStatus)
+                return false
             }
+            return true
         default:
             report("Keychain add failed", key: key.name, status: addStatus)
+            return false
         }
     }
 
     /// Removes the value for `key`. `errSecItemNotFound` is a no-op; other
     /// failures are logged.
-    public func removeValue<Value>(for key: KVKey<Value>) {
+    ///
+    /// - Returns: `true` if the key is now absent — which `errSecItemNotFound`
+    ///   satisfies, since the caller asked for absence and got it.
+    ///
+    /// Unlike ``setValue(_:for:)`` this path never traps, on any status. It has
+    /// always been log-only, and a delete that fails leaves the store in the
+    /// state it was already in.
+    @discardableResult
+    public func removeValue<Value>(for key: KVKey<Value>) -> Bool {
         let query = baseQuery(account: key.name)
         let status = SecItemDelete(query as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
-            logger.error(
-                "Keychain delete failed for key '\(key.name, privacy: .public)': OSStatus \(status)"
-            )
-        }
+        if status == errSecSuccess || status == errSecItemNotFound { return true }
+        logger.error(
+            "Keychain delete failed for key '\(key.name, privacy: .public)': OSStatus \(status)"
+        )
+        return false
     }
 
     /// Returns `true` if a Keychain item exists for `key`, regardless of
@@ -260,6 +294,39 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         let status = SecItemCopyMatching(query as CFDictionary, nil)
         return status == errSecSuccess
+    }
+
+    /// Why a Keychain call failed, which decides whether the failure is worth
+    /// trapping on in DEBUG.
+    enum FailureKind: Equatable, Sendable {
+        /// Determined by the environment — signing, device lock, or keychain
+        /// availability. No amount of correct code prevents these, so they are
+        /// logged and reported to the caller rather than trapped on.
+        case environment
+        /// A malformed query or an un-encodable value: a bug in the caller,
+        /// worth surfacing loudly during development.
+        case programmerError
+    }
+
+    /// Classifies a non-success `OSStatus`.
+    ///
+    /// The environment set is deliberately narrow — anything not known to be
+    /// environmental stays a programmer error, so a genuinely malformed query
+    /// is never silently swallowed. Add to the list only with a concrete case.
+    static func failureKind(for status: OSStatus) -> FailureKind {
+        switch status {
+        // -34018: no keychain entitlement. A sandboxed macOS app without a
+        // provisioning profile, and every `CODE_SIGNING_ALLOWED=NO` build —
+        // where no entitlement can be embedded, so there is nothing to fix.
+        case errSecMissingEntitlement,
+            // -25308: keychain locked and non-interactive.
+            errSecInteractionNotAllowed,
+            // -25291: no keychain available at all.
+            errSecNotAvailable:
+            return .environment
+        default:
+            return .programmerError
+        }
     }
 
     private func report(_ message: String, key: String, error: Error) {
@@ -273,7 +340,9 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
         logger.error(
             "\(message, privacy: .public) for key '\(key, privacy: .public)': OSStatus \(status)"
         )
-        assertionFailure("\(message) for key '\(key)': OSStatus \(status)")
+        if Self.failureKind(for: status) == .programmerError {
+            assertionFailure("\(message) for key '\(key)': OSStatus \(status)")
+        }
     }
 
     // `kSecClassGenericPassword`: app-local KV data. (`InternetPassword` carries

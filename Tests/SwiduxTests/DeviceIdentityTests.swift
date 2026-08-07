@@ -61,6 +61,27 @@ struct DeviceIdentityTests {
         let id = store.deviceIdentity()
         #expect(id == "racer-id")
     }
+
+    @Test("a store that cannot persist still yields a usable identity")
+    func unpersistableStoreStillMints() {
+        // The #65 scenario, at the level `deviceIdentity` sees it: an unsigned
+        // or unentitled Keychain accepts no writes, and the caller still needs
+        // an identity for the session rather than a crash.
+        let store = UnpersistableKeyValueStore()
+
+        #expect(UUID(uuidString: store.deviceIdentity()) != nil)
+    }
+
+    @Test("a failed write skips the read-back it can only lose")
+    func failedWriteSkipsReadBack() {
+        let store = UnpersistableKeyValueStore()
+
+        _ = store.deviceIdentity()
+
+        // One read for the initial lookup and no second one: re-reading a store
+        // that just refused the write can only return the same nil.
+        #expect(store.readCount == 1)
+    }
 }
 
 /// A store whose reads return a fixed winner once anything has been written —
@@ -77,15 +98,38 @@ private final class RacingKeyValueStore: KeyValueStore, @unchecked Sendable {
         hasWritten ? winner as? Value : nil
     }
 
-    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) {
+    @discardableResult
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool {
         hasWritten = true
+        return true
     }
 
-    func removeValue<Value>(for key: KVKey<Value>) {
+    @discardableResult
+    func removeValue<Value>(for key: KVKey<Value>) -> Bool {
         hasWritten = false
+        return true
     }
 
     func contains<Value>(_ key: KVKey<Value>) -> Bool {
         hasWritten
     }
+}
+
+/// A store that accepts nothing and reports it — an unentitled Keychain, in
+/// miniature. Counts reads so a test can prove the read-back is skipped.
+private final class UnpersistableKeyValueStore: KeyValueStore, @unchecked Sendable {
+    private(set) var readCount = 0
+
+    func value<Value>(_ key: KVKey<Value>) -> Value? {
+        readCount += 1
+        return nil
+    }
+
+    @discardableResult
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool { false }
+
+    @discardableResult
+    func removeValue<Value>(for key: KVKey<Value>) -> Bool { false }
+
+    func contains<Value>(_ key: KVKey<Value>) -> Bool { false }
 }

@@ -62,25 +62,32 @@ public struct UserDefaultsKeyValueStore: KeyValueStore, @unchecked Sendable {
     }
 
     /// Stores `value`. Passing `nil` removes the key.
-    public func setValue<Value>(_ value: Value?, for key: KVKey<Value>) {
-        guard let value else {
-            removeValue(for: key)
-            return
-        }
+    ///
+    /// - Returns: `true` unless encoding failed. `UserDefaults` itself has no
+    ///   reachability failure mode to report.
+    @discardableResult
+    public func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool {
+        guard let value else { return removeValue(for: key) }
         do {
             let data = try encoder.encode(value)
             defaults.set(data, forKey: key.name)
+            return true
         } catch {
             logger.error(
                 "Encode failed for key '\(key.name, privacy: .public)': \(error.localizedDescription, privacy: .public)"
             )
             assertionFailure("Encode failed for key '\(key.name)': \(error)")
+            return false
         }
     }
 
     /// Removes the value for `key`. No-op if absent.
-    public func removeValue<Value>(for key: KVKey<Value>) {
+    ///
+    /// - Returns: `true` — removing from a `UserDefaults` suite cannot fail.
+    @discardableResult
+    public func removeValue<Value>(for key: KVKey<Value>) -> Bool {
         defaults.removeObject(forKey: key.name)
+        return true
     }
 
     /// Returns `true` if the key has any stored value.
