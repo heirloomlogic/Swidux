@@ -134,12 +134,16 @@ public struct PersistedEntity<State> {
                     }
                 ) { writes, deletions in
                     let touched = Set(writes.map(\.id)).union(deletions)
-                    /// Reports the ledger's new contents, but only when they
-                    /// actually moved: a repeated failure on the same IDs is not
-                    /// news, and the empty set on recovery is.
+                    /// Applies a ledger change and reports the result, but only
+                    /// when it actually moved: a repeated failure on the same
+                    /// IDs is not news, and the empty set on recovery is.
+                    ///
+                    /// Takes the mutation rather than its result so the change
+                    /// and the read of `ids` share one hop — otherwise the set
+                    /// reported is not necessarily the one the change produced.
                     @MainActor
-                    func report(_ didChange: Bool) {
-                        guard didChange else { return }
+                    func record(_ change: @MainActor (UnpersistedIDs) -> Bool) {
+                        guard change(unpersisted) else { return }
                         observers.onDiagnostic(
                             .writesUnpersisted(entityType: entityTypeName, ids: unpersisted.ids))
                     }
@@ -147,14 +151,14 @@ public struct PersistedEntity<State> {
                         // One transaction per batch: a crash can't persist a
                         // partial flush, and a failure is reported, not eaten.
                         try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
-                        await report(unpersisted.markPersisted(touched))
+                        await record { $0.markPersisted(touched) }
                     } catch {
                         // Belt and braces alongside the writer putting the batch
                         // back: this records memory ≠ storage even for the
                         // window where the batch is mid-flight, and it is the
                         // only record a hand-written non-throwing persist
                         // closure could leave.
-                        await report(unpersisted.markFailed(touched))
+                        await record { $0.markFailed(touched) }
                         observers.onFailure(
                             PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
                         // Rethrow so the writer puts the batch back and the
