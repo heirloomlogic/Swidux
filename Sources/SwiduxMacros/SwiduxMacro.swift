@@ -20,6 +20,16 @@ extension SwiduxMacro: PeerMacro {
 
         diagnoseSkippedStoredProperties(of: structDecl, includesLetBindings: false, in: context)
         let properties = classifyProperties(of: structDecl)
+
+        // Driven off the classified properties, not every member, so the
+        // diagnostic covers exactly the types that reach the file-scope peer.
+        diagnoseUnqualifiedNestedTypes(
+            of: structDecl,
+            in: properties.map(\.typeSyntax),
+            generatedDeclaration: "observer class",
+            in: context
+        )
+
         let accessLevel = structDecl.modifiers.first { modifier in
             switch modifier.name.tokenKind {
             case .keyword(.public), .keyword(.package), .keyword(.internal):

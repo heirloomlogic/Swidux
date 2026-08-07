@@ -791,5 +791,349 @@ final class PersistedMacroTests: XCTestCase {
             macros: macros
         )
     }
+
+    // MARK: Nested Type Qualification
+
+    // The `@Model` shadow class is a peer at *file* scope, so a property typed with
+    // one of the domain struct's own nested types by its bare name generates an
+    // unresolvable reference — the same failure mode `@Swidux` has with its observer.
+
+    func testUnqualifiedNestedMirrorTypeIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Entry: Identifiable, Equatable, Sendable {
+                enum Kind: Codable, Sendable, Equatable {
+                    case note
+                }
+                var id: UUID
+                var kind: Kind = .note
+            }
+            """,
+            expandedSource: """
+                struct Entry: Identifiable, Equatable, Sendable {
+                    enum Kind: Codable, Sendable, Equatable {
+                        case note
+                    }
+                    var id: UUID
+                    var kind: Kind = .note
+                }
+
+                @Model
+                final class EntryModel: PersistableModel {
+                    typealias Domain = Entry
+
+                    var id: UUID = UUID()
+                    var kind: Kind = .note
+
+                    init(from domain: Entry) {
+                        self.id = domain.id
+                        self.kind = domain.kind
+                    }
+
+                    func toDomain() -> Entry {
+                        Entry(
+                            id: id,
+                            kind: kind
+                        )
+                    }
+
+                    func update(from domain: Entry) {
+                        self.kind = domain.kind
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<EntryModel> {
+                        FetchDescriptor<EntryModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+                }
+
+                extension Entry: PersistableEntity {
+                    typealias Model = EntryModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Nested type 'Kind' must be written with its qualified name 'Entry.Kind'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                    line: 7,
+                    column: 15
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    func testQualifiedNestedTypeIsNotDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Entry: Identifiable, Equatable, Sendable {
+                enum Kind: Codable, Sendable, Equatable {
+                    case note
+                }
+                var id: UUID
+                var kind: Entry.Kind = .note
+            }
+            """,
+            expandedSource: """
+                struct Entry: Identifiable, Equatable, Sendable {
+                    enum Kind: Codable, Sendable, Equatable {
+                        case note
+                    }
+                    var id: UUID
+                    var kind: Entry.Kind = .note
+                }
+
+                @Model
+                final class EntryModel: PersistableModel {
+                    typealias Domain = Entry
+
+                    var id: UUID = UUID()
+                    var kind: Entry.Kind = .note
+
+                    init(from domain: Entry) {
+                        self.id = domain.id
+                        self.kind = domain.kind
+                    }
+
+                    func toDomain() -> Entry {
+                        Entry(
+                            id: id,
+                            kind: kind
+                        )
+                    }
+
+                    func update(from domain: Entry) {
+                        self.kind = domain.kind
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<EntryModel> {
+                        FetchDescriptor<EntryModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+                }
+
+                extension Entry: PersistableEntity {
+                    typealias Model = EntryModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    func testUnqualifiedNestedInlineTypeIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Profile: Identifiable, Equatable, Sendable {
+                struct Settings: Codable, Sendable, Equatable {
+                    var theme: Int = 0
+                }
+                var id: UUID
+                @Inline var settings: Settings = Settings()
+            }
+            """,
+            expandedSource: """
+                struct Profile: Identifiable, Equatable, Sendable {
+                    struct Settings: Codable, Sendable, Equatable {
+                        var theme: Int = 0
+                    }
+                    var id: UUID
+                    var settings: Settings = Settings()
+                }
+
+                @Model
+                final class ProfileModel: PersistableModel {
+                    typealias Domain = Profile
+
+                    private static let swiduxInlineEncoder = JSONEncoder()
+                    private static let swiduxInlineDecoder = JSONDecoder()
+                    var id: UUID = UUID()
+                    private var settingsData: Data = Data()
+                    var settings: Settings {
+                        get {
+                            SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
+                Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
+                        }
+                        set {
+                            settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
+                        }
+                    }
+
+                    init(from domain: Profile) {
+                        self.id = domain.id
+                        self.settingsData = (try? Self.swiduxInlineEncoder.encode(domain.settings)) ?? Data()
+                    }
+
+                    func toDomain() -> Profile {
+                        Profile(
+                            id: id,
+                            settings: settings
+                        )
+                    }
+
+                    func update(from domain: Profile) {
+                        self.settings = domain.settings
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
+                        FetchDescriptor<ProfileModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+                }
+
+                extension Profile: PersistableEntity {
+                    typealias Model = ProfileModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                    line: 7,
+                    column: 27
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    // A `@Relation` emits `<element>Model`, which is itself a file-scope peer, so a
+    // bare nested element type is unresolvable for exactly the same reason.
+    func testUnqualifiedNestedRelationTypeIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Deck: Identifiable, Equatable, Sendable {
+                struct Card: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                }
+                var id: UUID
+                @Relation var cards: [Card] = []
+            }
+            """,
+            expandedSource: """
+                struct Deck: Identifiable, Equatable, Sendable {
+                    struct Card: Identifiable, Equatable, Sendable {
+                        var id: UUID
+                    }
+                    var id: UUID
+                    var cards: [Card] = []
+                }
+
+                @Model
+                final class DeckModel: PersistableModel {
+                    typealias Domain = Deck
+
+                    var id: UUID = UUID()
+                    @Relationship var cards: [CardModel]? = nil
+
+                    init(from domain: Deck) {
+                        self.id = domain.id
+                        self.cards = domain.cards.map {
+                            CardModel(from: $0)
+                        }
+                    }
+
+                    func toDomain() -> Deck {
+                        Deck(
+                            id: id,
+                            cards: (cards ?? []).map {
+                                $0.toDomain()
+                            }
+                        )
+                    }
+
+                    func update(from domain: Deck) {
+                        self.cards = domain.cards.map {
+                            CardModel(from: $0)
+                        }
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel> {
+                        FetchDescriptor<DeckModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+                }
+
+                extension Deck: PersistableEntity {
+                    typealias Model = DeckModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Nested type 'Card' must be written with its qualified name 'Deck.Card'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                    line: 7,
+                    column: 27
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    // `@Ignored` has no column and no type reference on the model, so its type never
+    // reaches file scope — flagging it would be a false positive.
+    func testUnqualifiedNestedIgnoredTypeIsNotDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Badge: Identifiable, Equatable, Sendable {
+                struct Detail: Sendable, Equatable {
+                    var note: String = ""
+                }
+                var id: UUID
+                @Ignored var detail: Detail? = nil
+            }
+            """,
+            expandedSource: """
+                struct Badge: Identifiable, Equatable, Sendable {
+                    struct Detail: Sendable, Equatable {
+                        var note: String = ""
+                    }
+                    var id: UUID
+                    var detail: Detail? = nil
+                }
+
+                @Model
+                final class BadgeModel: PersistableModel {
+                    typealias Domain = Badge
+
+                    var id: UUID = UUID()
+
+                    init(from domain: Badge) {
+                        self.id = domain.id
+                    }
+
+                    func toDomain() -> Badge {
+                        Badge(
+                            id: id,
+                            detail: nil
+                        )
+                    }
+
+                    func update(from domain: Badge) {
+
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<BadgeModel> {
+                        FetchDescriptor<BadgeModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+                }
+
+                extension Badge: PersistableEntity {
+                    typealias Model = BadgeModel
+                }
+                """,
+            macros: macros
+        )
+    }
 }
 #endif

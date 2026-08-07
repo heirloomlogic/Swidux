@@ -1,6 +1,6 @@
 import SwiftDiagnostics
 
-enum SwiduxDiagnostic: String, DiagnosticMessage {
+enum SwiduxDiagnostic: DiagnosticMessage {
     case requiresStruct
     case persistedRequiresStruct
     case ignoredRequiresOptional
@@ -9,6 +9,7 @@ enum SwiduxDiagnostic: String, DiagnosticMessage {
     case inlineRequiresDefault
     case requiresTypeAnnotation
     case singleBindingPerDeclaration
+    case unqualifiedNestedType(name: String, enclosing: String, generatedDeclaration: String)
 
     var severity: DiagnosticSeverity { .error }
 
@@ -35,10 +36,29 @@ enum SwiduxDiagnostic: String, DiagnosticMessage {
         case .singleBindingPerDeclaration:
             return
                 "Declare each stored property separately (var a: Int; var b: Int); only the first binding of a combined declaration is visible to the macro, so the rest would silently reset instead of being observed/persisted"
+        case .unqualifiedNestedType(let name, let enclosing, let generatedDeclaration):
+            return
+                "Nested type '\(name)' must be written with its qualified name '\(enclosing).\(name)'; the generated \(generatedDeclaration) is emitted as a peer at file scope, where the bare name doesn't resolve"
+        }
+    }
+
+    /// Stable per-case identifier. Spelled out rather than derived from a raw
+    /// value so `unqualifiedNestedType` can carry the names its message needs.
+    private var id: String {
+        switch self {
+        case .requiresStruct: return "requiresStruct"
+        case .persistedRequiresStruct: return "persistedRequiresStruct"
+        case .ignoredRequiresOptional: return "ignoredRequiresOptional"
+        case .mirrorRequiresDefault: return "mirrorRequiresDefault"
+        case .relationRequiresOptional: return "relationRequiresOptional"
+        case .inlineRequiresDefault: return "inlineRequiresDefault"
+        case .requiresTypeAnnotation: return "requiresTypeAnnotation"
+        case .singleBindingPerDeclaration: return "singleBindingPerDeclaration"
+        case .unqualifiedNestedType: return "unqualifiedNestedType"
         }
     }
 
     var diagnosticID: MessageID {
-        MessageID(domain: "SwiduxMacros", id: rawValue)
+        MessageID(domain: "SwiduxMacros", id: id)
     }
 }
