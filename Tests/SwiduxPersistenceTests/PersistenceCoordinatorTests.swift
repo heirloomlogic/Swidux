@@ -168,6 +168,102 @@ struct PersistenceCoordinatorTests {
         #expect(store.notes[id] == nil, "a drained-but-unflushed delete must not be resurrected by the merge")
     }
 
+    // MARK: - Editing holds
+
+    @Test("a held ID keeps its in-memory value when a remote edit lands")
+    func heldEntityIsNotOverwritten() async throws {
+        // The store knows nothing about this entity — the edit under the
+        // cursor was never dispatched. Without the hold this is exactly
+        // `rehydrateSurfacesRemoteEdit`, and the remote title wins.
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeNotesStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "half-typed", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.editing.hold(id)
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [],
+            as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[id]?.title == "half-typed")
+        #expect(store.notes[id]?.pinned == false)
+    }
+
+    @Test("a held ID is not removed by a remote deletion")
+    func heldEntitySurvivesARemoteDeletion() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let held = UUID()
+        let other = UUID()
+        let store = makeNotesStore(coordinator)
+
+        store.send(.add(Note(id: held, title: "being edited", pinned: false)))
+        store.send(.add(Note(id: other, title: "keep", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.editing.hold(held)
+        // The snapshot stays non-empty, so absence really is evidence here.
+        try await coordinator.database.apply(writes: [], deletions: [held], as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[held] != nil, "a row under the cursor is not pulled out from under it")
+        #expect(store.notes[other] != nil)
+    }
+
+    @Test("releasing the hold lets the next merge apply the remote change")
+    func releasingAHoldLetsTheRemoteValueLand() async throws {
+        // A hold defers, it does not veto. This is what keeps a leaked hold to
+        // a stale row rather than a permanently divergent one.
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeNotesStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "half-typed", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.editing.hold(id)
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [],
+            as: NoteModel.self)
+        await coordinator.rehydrate(into: store)
+        #expect(store.notes[id]?.title == "half-typed")
+
+        coordinator.editing.release(id)
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[id]?.title == "edited elsewhere", "the deferred change lands on the next tick")
+    }
+
+    @Test("a hold protects only its own ID")
+    func aHoldDoesNotProtectItsNeighbours() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let held = UUID()
+        let free = UUID()
+        let store = makeNotesStore(coordinator)
+
+        store.send(.add(Note(id: held, title: "original", pinned: false)))
+        store.send(.add(Note(id: free, title: "original", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.editing.hold(held)
+        try await coordinator.database.apply(
+            writes: [
+                Note(id: held, title: "edited elsewhere", pinned: false),
+                Note(id: free, title: "edited elsewhere", pinned: false),
+            ],
+            deletions: [],
+            as: NoteModel.self)
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[held]?.title == "original")
+        #expect(store.notes[free]?.title == "edited elsewhere", "remote-wins stays on everywhere else")
+    }
+
     // MARK: - Policies
 
     @Test("preferInMemory restores additive-only behaviour")

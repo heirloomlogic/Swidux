@@ -48,6 +48,14 @@ public final class PersistenceCoordinator<State, Action> {
     /// The default policy for ``rehydrate(into:policy:)``.
     public let mergePolicy: MergePolicy
 
+    /// Entities the app has declared it is editing, exempt from the merge until
+    /// released.
+    ///
+    /// The other exemptions are inferred from what the store has seen; this is
+    /// the one an app declares, and it covers the value a view is holding in
+    /// local `@State` that was never dispatched. See ``EditingHolds``.
+    public let editing = EditingHolds()
+
     /// The currently active database actor.
     public var database: EntityDB { handle.db }
 
@@ -223,16 +231,22 @@ public final class PersistenceCoordinator<State, Action> {
         folds.reserveCapacity(entities.count)
         for (entity, writer) in zip(entities, writers) {
             let merge = await entity.readForMerge(handle, observers)
-            folds.append { [mergePolicy] state, override in
-                // Three sources, because no one of them is complete: the writer
+            folds.append { [mergePolicy, editing] state, override in
+                // Four sources, because no one of them is complete: the writer
                 // holds drained-but-unflushed IDs, the ledger holds IDs whose
-                // save failed, and the store's own `changes` hold mutations not
-                // yet drained. `reconcile` folds in the third.
-                let owned = writer.pendingIDs.union(entity.unpersisted.ids)
+                // save failed, the app's editing holds cover values that were
+                // never dispatched at all, and the store's own `changes` hold
+                // mutations not yet drained. `reconcile` folds in the last.
+                let written = writer.pendingIDs.union(entity.unpersisted.ids)
+                let owned = written.union(editing.ids)
+                // Only the holds the writer doesn't already cover are worth
+                // reporting: attributing a pending write to the hold would
+                // point a leak hunt at the wrong thing.
+                let held = editing.ids.subtracting(written)
                 var resolved = mergePolicy
                 if let entityPolicy = entity.policy { resolved = resolved.restricted(by: entityPolicy) }
                 if let override { resolved = resolved.restricted(by: override) }
-                merge(&state, MergeContext(policy: resolved, locallyOwnedIDs: owned))
+                merge(&state, MergeContext(policy: resolved, locallyOwnedIDs: owned, heldIDs: held))
             }
         }
         await duringReadPhase?()
@@ -302,11 +316,12 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// it. The flush closes most of the window; the dirty set closes what the
     /// remaining suspension points let through.
     ///
-    /// > Important: One case is beyond reach — an edit that is still in a view's
-    /// > local `@State` and has not been dispatched yet is invisible to the
-    /// > store, so a remote value can land underneath it. Bindings made with
-    /// > `store.binding(_:sending:)` dispatch on write and are therefore
-    /// > covered. For a store backing a live text editor, register it with
+    /// > Important: One case can't be inferred — an edit still sitting in a
+    /// > view's local `@State` has never reached the store, so a remote value
+    /// > can land underneath it. Bindings made with `store.binding(_:sending:)`
+    /// > dispatch on write and are covered already. Otherwise declare the edit
+    /// > with ``editing`` (see ``EditingHolds``), which exempts one ID for as
+    /// > long as it is being edited, or register a whole collection with
     /// > ``MergePolicy/preferInMemory``.
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched

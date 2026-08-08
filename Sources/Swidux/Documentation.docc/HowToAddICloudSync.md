@@ -143,7 +143,7 @@ observer.start()
 
 Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
 
-`.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Because re-hydration always **merges preferring in-memory state**, feeding the app its own writes is a no-op — the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
+`.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Feeding the app its own writes is a no-op: the rows it reads back are the ones it just wrote, and anything still pending is exempt from the merge, so the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
 
 > Warning: Do not hand-roll this by snapshotting state around the `await`:
 >
@@ -160,14 +160,33 @@ By default (`MergePolicy.preferRemote`) remote creations, edits, **and** deletio
 Three things are worth knowing:
 
 - **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing.
-- **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Bindings made with `store.binding(_:sending:)` dispatch on write and are covered.
+- **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Declare it with an editing hold — see below.
 - **Undo can't resurrect a remote deletion.** Once a deletion made elsewhere surfaces, `restore(from:)` skips that ID — otherwise an older undo snapshot would write the row back as a *creation* and re-seed every peer. The ID becomes undoable again if the user recreates it or the row returns to disk. See <doc:UndoRedo>.
 
-For a store backing a live text editor, where a remote edit arriving under the cursor is worse than a stale row, register it additive-only:
+### Protecting an edit in progress
+
+Every exemption above is inferred from something the store has seen. A value a view is holding in local `@State` — a half-typed title, a slider mid-drag — is not one of those, and by default the merge writes over it. Three answers, cheapest first.
+
+**Dispatch on write.** `store.binding(_:sending:)` sends an action on every change, which makes the value a drained-but-unflushed write and covers it already. That is enough for a stepper, a toggle, a picker.
+
+**Hold the entity for the length of the edit.** In a text editor, where a dispatch per keystroke is too much, declare the edit instead:
+
+```swift
+TextEditor(text: $draft)
+    .holdsEntity(note.id, in: persistence.editing)
+```
+
+The hold is taken when the editor appears and given back when it goes away, so there is no release to forget. Pass `nil` to hold nothing, and a `@FocusState`-driven id arms and disarms the hold as focus moves. `persistence.editing.hold(_:)` and `release(_:)` are there for an editing session that isn't a view's lifetime; they refcount, so two views editing one entity compose rather than cancel.
+
+A hold **defers a remote change, it does not veto one.** Release it and the next merge applies whatever storage holds, deletions included, so the worst a leaked hold can do is strand one row at a stale value. It won't do that quietly either: a merge that actually withheld a differing value reports `.mergeWithheld` on the diagnostic channel.
+
+**Turn remote-wins off for the whole collection.** The blunt instrument, for a store where a remote edit arriving under the cursor is always worse than a stale row:
 
 ```swift
 .entity(\.documents, policy: .preferInMemory)
 ```
+
+That one is permanent and collection-wide — no document ever takes a remote edit mid-session. Register it when that is what you want, not as a stand-in for a hold.
 
 ## Step 8: Duplicates (optional)
 

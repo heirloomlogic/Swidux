@@ -78,6 +78,15 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         /// the *accumulated* view, so an app can show and — when the set drains
         /// back to empty — clear a "not saved" indicator.
         public static let writesUnpersisted = Kind(rawValue: "writesUnpersisted")
+
+        /// A merge left a stored value unapplied because an ``EditingHolds``
+        /// hold was in force for that ID.
+        ///
+        /// Expected while the user is actually editing. Reported because a hold
+        /// is the one exemption an app takes by hand, and therefore the one it
+        /// can leak — and a leaked hold otherwise presents as a row that quietly
+        /// stopped syncing.
+        public static let mergeWithheld = Kind(rawValue: "mergeWithheld")
     }
 
     /// Which condition was observed.
@@ -101,6 +110,10 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
     /// all been persisted. Set only for ``Kind/writesUnpersisted``.
     public let unpersistedIDs: Set<UUID>?
 
+    /// Every held ID whose stored value the merge declined to apply — never
+    /// empty. Set only for ``Kind/mergeWithheld``.
+    public let withheldIDs: Set<UUID>?
+
     /// Creates a diagnostic. Prefer the static constructors, which fill in the
     /// payload each kind actually carries.
     public init(
@@ -108,13 +121,15 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         entityType: String? = nil,
         duplicateCount: Int? = nil,
         drainCount: Int? = nil,
-        unpersistedIDs: Set<UUID>? = nil
+        unpersistedIDs: Set<UUID>? = nil,
+        withheldIDs: Set<UUID>? = nil
     ) {
         self.kind = kind
         self.entityType = entityType
         self.duplicateCount = duplicateCount
         self.drainCount = drainCount
         self.unpersistedIDs = unpersistedIDs
+        self.withheldIDs = withheldIDs
     }
 
     /// `count` rows of `entityType` were collapsed away on read.
@@ -132,6 +147,12 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         Self(kind: .writesUnpersisted, entityType: entityType, unpersistedIDs: ids)
     }
 
+    /// A merge declined to apply storage's value for `ids` because each one was
+    /// held for editing.
+    public static func mergeWithheld(entityType: String, ids: Set<UUID>) -> Self {
+        Self(kind: .mergeWithheld, entityType: entityType, withheldIDs: ids)
+    }
+
     /// A one-line summary, suitable for a log line or a `default:` branch that
     /// meets a kind it doesn't recognise.
     public var description: String {
@@ -146,6 +167,8 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
             return ids.isEmpty
                 ? "\(entity): all writes are now persisted"
                 : "\(entity): \(ids.count) write(s) not on disk"
+        case .mergeWithheld:
+            return "\(entity): \((withheldIDs ?? []).count) remote change(s) withheld by an editing hold"
         default:
             // A kind from a newer version. Still worth printing.
             return kind.rawValue
