@@ -202,13 +202,14 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
 )
 ```
 
-Three kinds ship today:
+Four kinds ship today:
 
 | Kind | Means | Payload |
 |---|---|---|
 | `.duplicateRowsCollapsed` | A read found rows sharing an `id`. Without a `collapse:` resolver they are harmless but permanent — this is what lets you *offer* the cleanup. | `entityType`, `duplicateCount` |
 | `.possibleDispatchLoop` | `afterReduce` fired far more often in one debounce interval than a user could cause. Usually an effect or plugin dispatching on every state change. Reported once per burst, not once per dispatch. | `drainCount` |
 | `.writesUnpersisted` | The set of IDs whose last flush failed changed. Fires again with an **empty** set once they land, so an indicator can be cleared rather than guessed at. | `entityType`, `unpersistedIDs` |
+| `.mergeWithheld` | A re-hydration left a stored value unapplied because an editing hold was in force. Expected while the user is editing; a hold that outlives the edit shows up here. See <doc:HowToAddICloudSync>. | `entityType`, `withheldIDs` |
 
 `PersistenceDiagnostic` is a struct with static constructors rather than an enum, so a future kind can't break an exhaustive `switch` in your code — match on `kind` and read the payload you expect. Duplicate reads and dispatch loops are logged whether or not you supply a handler; the unpersisted set has no log of its own, because the individual `PersistenceFailure`s behind it are already logged.
 

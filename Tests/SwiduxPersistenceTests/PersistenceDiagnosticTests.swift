@@ -121,6 +121,90 @@ struct PersistenceDiagnosticTests {
         #expect(log.value == [.writesUnpersisted(entityType: "Note", ids: [id])])
     }
 
+    // MARK: - Remote changes withheld by an editing hold
+
+    /// A store holding one flushed note, plus the coordinator's diagnostic log.
+    /// Flushed on purpose: nothing the *store* knows about protects the row, so
+    /// a hold is the only thing that can withhold anything.
+    private func makeHeldNote() async throws -> (
+        PersistenceCoordinator<NotesState, NotesAction>, Store<NotesState, NotesAction>, UUID,
+        DiagnosticLog
+    ) {
+        let (coordinator, log) = try makeRecording(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeNotesStore(coordinator)
+        store.send(.add(Note(id: id, title: "half-typed", pinned: false)))
+        await coordinator.corePlugin.flush()
+        coordinator.editing.hold(id)
+        return (coordinator, store, id, log)
+    }
+
+    @Test("a remote edit withheld by an editing hold is reported")
+    func withheldRemoteEditIsReported() async throws {
+        // A hold is the one exemption an app can leak, so it is the one that
+        // has to be visible. Otherwise it presents as a row that mysteriously
+        // stopped syncing.
+        let (coordinator, store, id, log) = try await makeHeldNote()
+
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [],
+            as: NoteModel.self)
+        await coordinator.rehydrate(into: store)
+
+        #expect(log.value == [.mergeWithheld(entityType: "Note", ids: [id])])
+    }
+
+    @Test("a remote deletion withheld by an editing hold is reported")
+    func withheldRemoteDeletionIsReported() async throws {
+        let (coordinator, store, id, log) = try await makeHeldNote()
+        // A second row keeps the snapshot non-empty, so absence is evidence.
+        store.send(.add(Note(id: UUID(), title: "keep", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        try await coordinator.database.apply(writes: [], deletions: [id], as: NoteModel.self)
+        await coordinator.rehydrate(into: store)
+
+        #expect(log.value == [.mergeWithheld(entityType: "Note", ids: [id])])
+    }
+
+    @Test("a hold over a row nobody changed remotely reports nothing")
+    func heldButUnchangedRowIsSilent() async throws {
+        // The hold is in force on every tick an editor is open. Reporting one
+        // per tick would drown the channel and tell an app nothing.
+        let (coordinator, store, _, log) = try await makeHeldNote()
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(log.value.isEmpty)
+    }
+
+    @Test("an ID the store already protects is not reported as withheld by a hold")
+    func dirtyIDIsNotAttributedToTheHold() async throws {
+        // An un-flushed write is exempt with or without a hold. Attributing it
+        // to the hold would point a leak hunt at the wrong thing.
+        let (coordinator, log) = try makeRecording(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeNotesStore(coordinator)
+
+        store.send(.add(Note(id: id, title: "original", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await coordinator.database.apply(
+            writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [],
+            as: NoteModel.self)
+
+        coordinator.editing.hold(id)
+        // Drained into the writer's buffers after the flush, so `pendingIDs`
+        // covers this ID on its own — the hold is redundant here.
+        coordinator.duringReadPhase = {
+            store.send(.add(Note(id: id, title: "local edit", pinned: false)))
+        }
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(store.notes[id]?.title == "local edit")
+        #expect(log.value.isEmpty)
+    }
+
     // MARK: - Dispatch loop
 
     @Test("The core plugin's loop signal arrives as a diagnostic")

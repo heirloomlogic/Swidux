@@ -208,6 +208,19 @@ public struct PersistedEntity<State> {
                         let removes =
                             context.policy.removesMissingEntities
                             && !(incoming.isEmpty && !current.isEmpty)
+                        // Report only holds that actually cost something. The
+                        // hold is in force on every tick an open editor
+                        // produces, so reporting one per tick would drown the
+                        // channel and say nothing about a leak.
+                        let withheld = context.heldIDs.filter { id in
+                            guard let held = current[id] else { return false }
+                            guard let stored = incoming[id] else { return removes }
+                            return stored != held
+                        }
+                        if !withheld.isEmpty {
+                            observers.onDiagnostic(
+                                .mergeWithheld(entityType: entityTypeName, ids: withheld))
+                        }
                         current.reconcile(
                             with: incoming, preserving: preserved, removingMissing: removes)
                         state[keyPath: keyPath] = current

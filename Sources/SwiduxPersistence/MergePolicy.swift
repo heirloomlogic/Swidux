@@ -73,8 +73,18 @@ struct MergeContext {
     let policy: MergePolicy
 
     /// IDs storage has no authority over: a drained-but-unflushed write, a
-    /// write whose save failed, or a pending deletion.
+    /// write whose save failed, a pending deletion, or an entity the app
+    /// declared it is editing.
     let locallyOwnedIDs: Set<UUID>
+
+    /// The subset of ``locallyOwnedIDs`` exempt *only* because an
+    /// ``EditingHolds`` hold is in force.
+    ///
+    /// A hold is the one exemption an app takes by hand, so it is the one that
+    /// can be leaked — hence the only one worth reporting. IDs the writer
+    /// already covers are excluded, because attributing those to the hold would
+    /// point a leak hunt at the wrong thing.
+    let heldIDs: Set<UUID>
 }
 
 /// IDs whose most recent flush attempt failed.
