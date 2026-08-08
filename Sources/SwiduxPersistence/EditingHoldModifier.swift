@@ -39,6 +39,7 @@ extension View {
     ///   - id: The entity being edited, or `nil` to hold nothing.
     ///   - holds: The ledger the merge consults — normally
     ///     ``PersistenceCoordinator/editing``.
+    /// - Returns: This view, holding `id` for as long as it is on screen.
     public func holdsEntity(_ id: UUID?, in holds: EditingHolds) -> some View {
         task(id: id) {
             guard let id else { return }
