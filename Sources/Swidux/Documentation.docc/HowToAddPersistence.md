@@ -83,6 +83,8 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 | `@Ignored` | Exclude a derived/denormalized property. Must be optional so it can be reconstructed as `nil` on load. |
 
 > Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints — so the same generated model works for both local and synced containers. The cost is that rows sharing an `id` are possible. `EntityDB` handles them by converging rather than by assuming uniqueness: writes update every matching row, deletions remove every matching row, and `fetchAll` collapses to one value per `id`. Nothing deletes a duplicate as a side effect of a write.
+>
+> The one attribute it *does* generate is `@Attribute(.preserveValueOnDeletion)`, on `id` and nothing else, so that a deleted row's identity survives into persistent history where a peer device can read it. It needs no migration: the option leaves the entity's version hash alone, so stores written before it existed reopen unchanged.
 
 ## Step 3: Put the `EntityStore` on your state
 

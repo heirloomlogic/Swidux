@@ -40,7 +40,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class CounterModel: PersistableModel {
                     typealias Domain = Counter
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var name: String = ""
                     var count: Int = 0
 
@@ -103,7 +103,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
-                    public var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) public var id: UUID = UUID()
                     private var settingsData: Data = Data()
                     public var settings: Settings {
                         get {
@@ -172,7 +172,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class DeckModel: PersistableModel {
                     typealias Domain = Deck
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var title: String = ""
                     @Relationship(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [CardModel]? = nil
 
@@ -238,7 +238,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class PetModel: PersistableModel {
                     typealias Domain = Pet
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
 
                     init(from domain: Pet) {
@@ -299,7 +299,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class PetModel: PersistableModel {
                     typealias Domain = Pet
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
 
                     init(from domain: Pet) {
@@ -360,7 +360,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     private var metaData: Data = Data()
                     var meta: Meta? {
                         get {
@@ -442,7 +442,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class NoteModel: PersistableModel {
                     typealias Domain = Note
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
                     init(from domain: Note) {
                         self.id = domain.id
@@ -500,7 +500,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class FooModel: PersistableModel {
                     typealias Domain = Foo
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
                     init(from domain: Foo) {
                         self.id = domain.id
@@ -563,7 +563,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class CounterModel: PersistableModel {
                     typealias Domain = Counter
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var count: Int = 5
 
                     init(from domain: Counter) {
@@ -617,7 +617,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class PersonModel: PersistableModel {
                     typealias Domain = Person
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var nickname: String?
 
                     init(from domain: Person) {
@@ -672,7 +672,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class TaskModel: PersistableModel {
                     typealias Domain = Task
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var status: Status
 
                     init(from domain: Task) {
@@ -737,7 +737,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     private var settingsData: Data = Data()
                     var settings: Settings {
                         get {
@@ -792,6 +792,67 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 
+    // MARK: - Identity column
+
+    // Only `id` is preserved on deletion, and only `id`. A tombstone outlives the
+    // row, so every column listed here is data that deletion doesn't delete —
+    // meanwhile, without the identity there is nothing to tell a peer device
+    // *which* entity went away. Declaration order is the author's, so the
+    // attribute has to follow the property rather than a fixed position.
+
+    func testIdCarriesPreserveValueOnDeletionWhereverItIsDeclared() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Tag: Identifiable, Equatable, Sendable {
+                var label: String
+                var id: UUID
+            }
+            """,
+            expandedSource: """
+                struct Tag: Identifiable, Equatable, Sendable {
+                    var label: String
+                    var id: UUID
+                }
+
+                @Model
+                final class TagModel: PersistableModel {
+                    typealias Domain = Tag
+
+                    var label: String = ""
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+
+                    init(from domain: Tag) {
+                        self.label = domain.label
+                        self.id = domain.id
+                    }
+
+                    func toDomain() -> Tag {
+                        Tag(
+                            label: label,
+                            id: id
+                        )
+                    }
+
+                    func update(from domain: Tag) {
+                        self.label = domain.label
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<TagModel> {
+                        FetchDescriptor<TagModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+                }
+
+                extension Tag: PersistableEntity {
+                    typealias Model = TagModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
     // MARK: Nested Type Qualification
 
     // The `@Model` shadow class is a peer at *file* scope, so a property typed with
@@ -823,7 +884,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class EntryModel: PersistableModel {
                     typealias Domain = Entry
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var kind: Kind = .note
 
                     init(from domain: Entry) {
@@ -890,7 +951,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class EntryModel: PersistableModel {
                     typealias Domain = Entry
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var kind: Entry.Kind = .note
 
                     init(from domain: Entry) {
@@ -951,7 +1012,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     private var settingsData: Data = Data()
                     var settings: Settings {
                         get {
@@ -1029,7 +1090,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class DeckModel: PersistableModel {
                     typealias Domain = Deck
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     @Relationship var cards: [CardModel]? = nil
 
                     init(from domain: Deck) {
@@ -1104,7 +1165,7 @@ final class PersistedMacroTests: XCTestCase {
                 final class BadgeModel: PersistableModel {
                     typealias Domain = Badge
 
-                    var id: UUID = UUID()
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
                     init(from domain: Badge) {
                         self.id = domain.id
