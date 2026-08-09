@@ -32,6 +32,16 @@ struct PersistedProperty {
     /// (`var x: T = <expr>`), if any. Propagated onto the generated model so
     /// non-optional attributes are CloudKit-safe.
     let defaultExpr: String?
+
+    /// Whether this is the entity's identity column.
+    ///
+    /// Matching on the name is matching on the protocol: `PersistableEntity`
+    /// refines `Identifiable` with `ID == UUID`, and `PersistableModel` requires
+    /// `var id: UUID`, so Swift itself forces the identity property to be spelled
+    /// `id`. The generator treats it specially in two places — it is preserved on
+    /// deletion, and `update(from:)` never reassigns it — and both should mean the
+    /// same thing.
+    var isIdentity: Bool { name == "id" }
 }
 
 /// Classifies the stored properties of an `@Persisted` domain struct, reading

@@ -127,6 +127,17 @@ private func relationModelType(cardinality: RelationCardinality, element: String
     }
 }
 
+/// The attribute prefix for a mirrored identity column, empty for anything else.
+///
+/// SwiftData drops a deleted row's values from persistent history unless they are
+/// marked `.preserveValueOnDeletion`, leaving a delete transaction that records
+/// *something* went away without recording what — which is all a peer device has
+/// to go on. Only the identity is preserved: a tombstone outlives the row, so
+/// anything added here is data that deletion does not actually delete.
+private func identityAttribute(for prop: PersistedProperty) -> String {
+    prop.isIdentity ? "@Attribute(.preserveValueOnDeletion) " : ""
+}
+
 private func relationshipAttribute(deleteRule: String?, inverse: String?) -> String {
     var parts: [String] = []
     if let deleteRule { parts.append("deleteRule: \(deleteRule)") }
@@ -147,7 +158,7 @@ private func modelMemberLines(
         case .explicit(let value): suffix = " = \(value)"
         case .notNeeded, .missing: suffix = ""
         }
-        return "    \(accessPrefix)var \(prop.name): \(type)\(suffix)"
+        return "    \(identityAttribute(for: prop))\(accessPrefix)var \(prop.name): \(type)\(suffix)"
     case .inlineBlob:
         // The backing column defaults to `Data()` (CloudKit-safe), which is
         // never decodable — a row materialized with defaults (e.g. created by
@@ -228,8 +239,8 @@ private func toDomainArgument(for prop: PersistedProperty) -> String {
 }
 
 private func updateLine(for prop: PersistedProperty) -> String? {
-    // Identity is stable; never reassign `id` on update.
-    if prop.name == "id" { return nil }
+    // Identity is stable; never reassign it on update.
+    if prop.isIdentity { return nil }
     switch prop.kind {
     case .mirror, .inlineBlob:
         return "        self.\(prop.name) = domain.\(prop.name)"
