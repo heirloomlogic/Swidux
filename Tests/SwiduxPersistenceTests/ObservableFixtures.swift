@@ -210,11 +210,17 @@ func remoteWrite(
 ///
 /// This is the only way to manufacture the duplicate-ID rows the API under test
 /// is designed to survive — every `EntityDB` write path refuses to create them.
+///
+/// - Returns: The seeded rows' persistent identifiers, in the order given —
+///   what a caller needs to stand in for the ones persistent history hands back.
 @MainActor
-func seedNotes(_ container: ModelContainer, _ notes: [Note]) throws {
+@discardableResult
+func seedNotes(_ container: ModelContainer, _ notes: [Note]) throws -> [PersistentIdentifier] {
     let context = ModelContext(container)
-    for note in notes { context.insert(NoteModel(from: note)) }
+    let rows = notes.map { NoteModel(from: $0) }
+    for row in rows { context.insert(row) }
     try context.save()
+    return rows.map(\.persistentModelID)
 }
 
 /// Inserts `count` rows that all share `id`.

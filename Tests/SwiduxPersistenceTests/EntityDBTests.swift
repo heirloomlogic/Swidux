@@ -293,3 +293,46 @@ struct EntityDBTests {
         #expect(store.notes[id]?.title == "live edit")
     }
 }
+
+// MARK: - The by-identifier read
+
+/// Drives `EntityDB.identities(of:asConcrete:)`, the package's only generic
+/// context that builds a by-identifier fetch — and so the only one that can
+/// reproduce the `-O` miscompile the generated descriptor exists to dodge. A
+/// concrete call site never specializes a witness key path, so it would prove
+/// nothing; these run under `swift test -c release` for the same reason.
+@Suite("Resolving persistent identifiers to identities")
+struct PersistentIDDescriptorTests {
+    @MainActor
+    @Test("identifiers resolve to identities, and only the ones asked for")
+    func resolvesTheIdentifiersItIsGiven() async throws {
+        let container = try makeNotesContainer()
+        let wanted = Note(id: UUID(), title: "wanted", pinned: false)
+        let identifiers = try seedNotes(container, [wanted, Note(id: UUID(), title: "noise", pinned: true)])
+        let db = EntityDB(modelContainer: container)
+
+        let resolved = try await db.identities(of: [identifiers[0]], asConcrete: NoteModel.self)
+
+        #expect(resolved == [identifiers[0]: wanted.id], "no unasked-for row may ride along")
+    }
+
+    @MainActor
+    @Test("an identifier whose row is gone is absent, not fatal")
+    func aDeletedIdentifierIsAbsent() async throws {
+        let container = try makeNotesContainer()
+        let surviving = Note(id: UUID(), title: "kept", pinned: false)
+        let doomed = Note(id: UUID(), title: "doomed", pinned: false)
+        let identifiers = try seedNotes(container, [surviving, doomed])
+        let db = EntityDB(modelContainer: container)
+        try await db.apply(writes: [], deletions: [doomed.id], as: NoteModel.self)
+
+        // Both are asked for. The read answers with what it finds; deciding
+        // whether an absence is explicable belongs to the history scan, which
+        // only gets the chance if this declines to trap on the way.
+        let resolved = try await db.identities(of: identifiers, asConcrete: NoteModel.self)
+
+        #expect(
+            resolved == [identifiers[0]: surviving.id],
+            "a deleted row must be absent, not resolved to something stale")
+    }
+}

@@ -120,6 +120,7 @@ the manifest. See the repository's `CONTRIBUTING.md`.
 
 If the crash is in fetching, make sure you're on ≥ 1.3.0: generic
 `#Predicate` over a protocol-required keypath traps under `-O`, which is why
-the macro generates a per-model `swiduxBatchFetchDescriptor`. Run
-`swift test -c release` in CI to catch this class of issue — Debug builds and
-default `swift test` pass.
+the macro generates a per-model `swiduxBatchFetchDescriptor` — one for `id`,
+one for `persistentModelID` — and why every by-identifier read goes through
+one instead of building a predicate inline. Run `swift test -c release` in CI
+to catch this class of issue — Debug builds and default `swift test` pass.
