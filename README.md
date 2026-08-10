@@ -139,7 +139,7 @@ store.register(plugin: FeatureFlagsPlugin(state: \.featureFlags, action: AppActi
 
 ### Persistence (SwiftData)
 
-`SwiduxPersistence` makes SwiftData persistence a declare-and-register concern. Annotate a domain entity with `@Persisted` and the macro generates its `@Model` shadow class, the `init(from:)`/`toDomain()`/`update(from:)` converters, and the `PersistableEntity` conformance — no hand-written model, DB actor, or `StateWriter`. A generic `EntityDB` actor and a `PersistenceCoordinator` (which reuses the core `PersistencePlugin`) handle the container, writers, and a merge-only re-hydration path.
+`SwiduxPersistence` makes SwiftData persistence a declare-and-register concern. Annotate a domain entity with `@Persisted` and the macro generates its `@Model` shadow class, the `init(from:)`/`toDomain()`/`update(from:)` converters, and the `PersistableEntity` conformance — no hand-written model, DB actor, or `StateWriter`. A generic `EntityDB` actor and a `PersistenceCoordinator` (which reuses the core `PersistencePlugin`) handle the container, the writers, and a family of re-hydration paths that merge rather than replace, so a "refresh from disk" can't clobber unflushed writes or live edits.
 
 ```swift
 @Persisted struct Card: Identifiable, Equatable, Sendable { var id: UUID; var quote: String }
@@ -152,7 +152,7 @@ await persistence.hydrate(into: &initialState)
 
 ### iCloud sync
 
-`SwiduxCloudKitSync` adds opt-in iCloud sync with a runtime opt-out toggle (`SyncCoordinator`), launch-time entitlement/account detection (`SyncPreflightService` → `SyncStatus`), and a merge-based remote-change observer. Linking this product is the single signal that an app needs the iCloud/CloudKit/Push entitlement family; a local-only app links only `SwiduxPersistence`.
+`SwiduxCloudKitSync` adds opt-in iCloud sync with a runtime opt-out toggle (`SyncCoordinator`), launch-time entitlement/account detection (`SyncPreflightService` → `SyncStatus`), and a merge-based remote-change observer that only merges notifications from the stores it owns. A tick reads the store's persistent-history log to find out which rows changed and merges only those, so an N-row table with k changed rows costs O(k) — and only the entities history actually named are read at all. Any window history can't fully account for falls back to a full re-read rather than guessing. Linking this product is the single signal that an app needs the iCloud/CloudKit/Push entitlement family; a local-only app links only `SwiduxPersistence`.
 
 ### Companion packages
 

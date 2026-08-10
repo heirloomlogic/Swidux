@@ -41,13 +41,13 @@ public struct PersistedEntity<State> {
     /// resolved policy and the set of IDs storage has no authority over. Both
     /// are computed after the fetch, so a write that landed during it counts.
     ///
-    /// Returns the IDs it declined to act on, which is not the same as the IDs
-    /// it left alone: these are rows storage had something to say about and the
-    /// merge chose not to hear. A whole-table caller can ignore that, because the
-    /// next tick re-reads everything and offers the change again. A caller
-    /// driving off a history watermark cannot — for it, evidence is consumed
-    /// once, so a deferral it doesn't notice becomes a permanent loss.
-    typealias MergeApply = @MainActor (inout State, MergeContext) -> Set<UUID>
+    /// Returns what it declined to act on, which is not the same as what it left
+    /// alone: these are rows storage had something to say about and the merge
+    /// chose not to hear. A whole-table caller can ignore that, because the next
+    /// tick re-reads everything and offers the change again. A caller driving off
+    /// a history watermark cannot — for it, evidence is consumed once, so a
+    /// deferral it doesn't carry forward becomes a permanent loss.
+    typealias MergeApply = @MainActor (inout State, MergeContext) -> Withheld
 
     /// A fetched merge, plus whether the fetch actually happened.
     ///
@@ -195,7 +195,7 @@ public struct PersistedEntity<State> {
             context: MergeContext,
             observers: PersistenceObservers,
             absenceRemoves: (UUID) -> Bool
-        ) -> (preserved: Set<UUID>, withheld: Set<UUID>) {
+        ) -> (preserved: Set<UUID>, withheld: Withheld) {
             // "In-memory wins" is just "preserve everything already held", so
             // one primitive serves every policy. Candidates the store doesn't
             // hold are dropped: preserving one would block the insert that
@@ -208,21 +208,29 @@ public struct PersistedEntity<State> {
             // force on every tick an open editor produces, so reporting one per
             // tick would drown the channel and say nothing about a leak.
             //
-            // That same filter is what makes this set the right one to return.
-            // It is exactly "storage had something to say about this row and the
+            // That same filter is what makes this the right thing to return. It
+            // is exactly "storage had something to say about this row and the
             // merge declined to hear it" — and an editing hold is the one
             // exemption that leaves *no other trace*. A pending or failed write
             // will reach disk and overwrite the remote value, so nothing is owed
             // once it lands; a hold protects a value that was never dispatched at
             // all, so when it lifts, disk still holds the change and only another
             // merge can deliver it.
-            let withheld = context.heldIDs.filter { id in
-                guard let held = current[id] else { return false }
-                guard let stored = incoming[id] else { return absenceRemoves(id) }
-                return stored != held
+            //
+            // Which way it was withheld is recorded, not just that it was: a
+            // deferred deletion has no row left to re-read, so re-offering it
+            // means declaring it again.
+            var withheld = Withheld()
+            for id in context.heldIDs {
+                guard let held = current[id] else { continue }
+                guard let stored = incoming[id] else {
+                    if absenceRemoves(id) { withheld.deleted.insert(id) }
+                    continue
+                }
+                if stored != held { withheld.changed.insert(id) }
             }
             if !withheld.isEmpty {
-                observers.onDiagnostic(.mergeWithheld(entityType: entityTypeName, ids: withheld))
+                observers.onDiagnostic(.mergeWithheld(entityType: entityTypeName, ids: withheld.ids))
             }
             return (preserved, withheld)
         }
@@ -325,7 +333,7 @@ public struct PersistedEntity<State> {
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return MergeRead(succeeded: false) { _, _ in [] }
+                    return MergeRead(succeeded: false) { _, _ in Withheld() }
                 }
             },
             readForPartialMerge: { handle, observers, ids in
@@ -361,7 +369,7 @@ public struct PersistedEntity<State> {
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return MergeRead(succeeded: false) { _, _ in [] }
+                    return MergeRead(succeeded: false) { _, _ in Withheld() }
                 }
             },
             collapseOnDisk: { handle, observers in

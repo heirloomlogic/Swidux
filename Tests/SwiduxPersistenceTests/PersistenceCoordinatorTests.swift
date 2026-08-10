@@ -3,7 +3,9 @@
 //  SwiduxPersistenceTests
 //
 //  Covers the coordinator's two hydration paths: first-load hydrate (replace)
-//  and post-launch rehydrate (merge, in-memory wins, additive-only).
+//  and post-launch rehydrate (merge). Remote wins by default, and an ID with
+//  unflushed local intent is exempt; `.preferInMemory` is what restores the
+//  additive-only, in-memory-wins contract this used to have unconditionally.
 //
 
 import Foundation
