@@ -134,7 +134,7 @@ The Keychain `−34018` condition (from `KeychainKeyValueStore`, used for analyt
 Start a `RemoteChangeObserver` while in cloud mode to pull in changes from other devices:
 
 ```swift
-let observer = RemoteChangeObserver(debounce: .seconds(2)) { [weak store] in
+let observer = RemoteChangeObserver(debounce: .seconds(2), owning: persistence.handle) { [weak store] _ in
     guard let store else { return }
     await persistence.mergeChanges(into: store)   // merge, never replace
 }
@@ -142,6 +142,14 @@ observer.start()
 ```
 
 Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
+
+`owning:` is optional but worth passing. `.NSPersistentStoreRemoteChange` is posted for every store in the process, so without it the observer merges on notifications from stores the app has nothing to do with. Given the handle it drops those. It re-reads the handle per notification, so a sync toggle that rebuilds the container needs no new observer.
+
+It only ever drops a store it can positively identify as someone else's. A notification that names no store is merged anyway, and `includesUnidentifiedStore` records that it happened. An unrecognised store costs one wasted scan; ignoring it would cost a remote change that silently never arrives.
+
+The callback's parameter is a `RemoteChange` — the stores that burst named. Because the debounce coalesces an unbounded number of notifications into one callback, the payload is the **union** over the whole burst, not whatever the last notification carried. Most apps ignore it and call `mergeChanges(into:)`, which works out what changed from the history log itself.
+
+The notification also carries a CoreData history token, which `RemoteChange` deliberately doesn't surface. There is no supported conversion from it to the SwiftData token the watermark is built on, and `mergeChanges(into:)` doesn't need one: it anchors on the highest token in the window it just scanned.
 
 `mergeChanges(into:)` reads the store's persistent-history log to find out *which* rows changed since the last tick and merges only those, so a tick on an N-row table where k rows changed costs O(k) rather than re-reading every table. History names the entity each changed row belongs to, so a tick reads only the entities it actually has news for — editing one note in a five-entity app is one query, not five. A tick with nothing behind it costs one history fetch and stops there.
 
