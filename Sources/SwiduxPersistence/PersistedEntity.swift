@@ -40,7 +40,27 @@ public struct PersistedEntity<State> {
     /// The synchronous second half of a *merge*, which additionally needs the
     /// resolved policy and the set of IDs storage has no authority over. Both
     /// are computed after the fetch, so a write that landed during it counts.
-    typealias MergeApply = @MainActor (inout State, MergeContext) -> Void
+    ///
+    /// Returns the IDs it declined to act on, which is not the same as the IDs
+    /// it left alone: these are rows storage had something to say about and the
+    /// merge chose not to hear. A whole-table caller can ignore that, because the
+    /// next tick re-reads everything and offers the change again. A caller
+    /// driving off a history watermark cannot — for it, evidence is consumed
+    /// once, so a deferral it doesn't notice becomes a permanent loss.
+    typealias MergeApply = @MainActor (inout State, MergeContext) -> Set<UUID>
+
+    /// A fetched merge, plus whether the fetch actually happened.
+    ///
+    /// `succeeded == false` means the read threw and `apply` is a no-op. A
+    /// whole-table re-hydration is indifferent to the difference; a
+    /// watermark-driven caller must never advance past a window it did not read.
+    struct MergeRead {
+        /// Whether every fetch behind `apply` completed.
+        let succeeded: Bool
+
+        /// The fold to apply. A no-op when `succeeded` is `false`.
+        let apply: MergeApply
+    }
 
     let makeWriter: @MainActor (DatabaseHandle, PersistenceObservers) -> StateWriter<State>
 
@@ -55,17 +75,23 @@ public struct PersistedEntity<State> {
     let readForHydrate: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
 
     /// Phase 1 of re-hydration: reads the database, touches no state.
-    let readForMerge: @MainActor (DatabaseHandle, PersistenceObservers) async -> MergeApply
+    let readForMerge: @MainActor (DatabaseHandle, PersistenceObservers) async -> MergeRead
 
     /// Phase 1 of a *partial* re-hydration: reads only the named rows, touches
     /// no state. The IDs are everything the caller wants looked at — the ones it
     /// believes changed plus the ones it believes were deleted, since a row
     /// still on disk is what refutes a stale tombstone.
-    let readForPartialMerge: @MainActor (DatabaseHandle, PersistenceObservers, Set<UUID>) async -> MergeApply
+    let readForPartialMerge: @MainActor (DatabaseHandle, PersistenceObservers, Set<UUID>) async -> MergeRead
 
     /// Runs the registered collapse against disk, if any, and returns the fold
     /// that removes the losers from live state.
     let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
+
+    /// This entity's contribution to a persistent-history scan.
+    ///
+    /// Built here rather than in the scan because reading a tombstone needs
+    /// `E.Model` bound concretely, and this factory is the only place it is.
+    let historyReader: EntityHistoryReader
 
     /// Registers the `EntityStore<E>` at `keyPath` for persistence.
     ///
@@ -148,7 +174,8 @@ public struct PersistedEntity<State> {
         /// precisely what the by-ID path is for. The full path passes every held
         /// ID because it really can act on any of them.
         ///
-        /// - Returns: The IDs to preserve through the reconcile.
+        /// - Returns: The IDs to preserve through the reconcile, and the ones an
+        ///   editing hold actually cost this merge.
         @MainActor
         func resolvePreserved(
             current: EntityStore<E>,
@@ -157,7 +184,7 @@ public struct PersistedEntity<State> {
             context: MergeContext,
             observers: PersistenceObservers,
             absenceRemoves: (UUID) -> Bool
-        ) -> Set<UUID> {
+        ) -> (preserved: Set<UUID>, withheld: Set<UUID>) {
             // "In-memory wins" is just "preserve everything already held", so
             // one primitive serves every policy. Candidates the store doesn't
             // hold are dropped: preserving one would block the insert that
@@ -169,6 +196,15 @@ public struct PersistedEntity<State> {
             // Report only holds that actually cost something. The hold is in
             // force on every tick an open editor produces, so reporting one per
             // tick would drown the channel and say nothing about a leak.
+            //
+            // That same filter is what makes this set the right one to return.
+            // It is exactly "storage had something to say about this row and the
+            // merge declined to hear it" — and an editing hold is the one
+            // exemption that leaves *no other trace*. A pending or failed write
+            // will reach disk and overwrite the remote value, so nothing is owed
+            // once it lands; a hold protects a value that was never dispatched at
+            // all, so when it lifts, disk still holds the change and only another
+            // merge can deliver it.
             let withheld = context.heldIDs.filter { id in
                 guard let held = current[id] else { return false }
                 guard let stored = incoming[id] else { return absenceRemoves(id) }
@@ -177,7 +213,7 @@ public struct PersistedEntity<State> {
             if !withheld.isEmpty {
                 observers.onDiagnostic(.mergeWithheld(entityType: entityTypeName, ids: withheld))
             }
-            return preserved
+            return (preserved, withheld)
         }
 
         return PersistedEntity(
@@ -251,7 +287,7 @@ public struct PersistedEntity<State> {
                 do {
                     let loaded = try await loadRows(handle, observers)
                     let incoming = EntityStore(loaded.rows)
-                    return { state, context in
+                    return MergeRead(succeeded: true) { state, context in
                         var current = state[keyPath: keyPath]
                         // A collapsed-away loser would otherwise linger as a
                         // zombie until relaunch. Recorded as a deletion so it
@@ -266,18 +302,19 @@ public struct PersistedEntity<State> {
                             && !(incoming.isEmpty && !current.isEmpty)
                         // Every held ID is a candidate: a full merge can write or
                         // remove any row in the table.
-                        let preserved = resolvePreserved(
+                        let resolved = resolvePreserved(
                             current: current, incoming: incoming,
                             candidates: current.values.lazy.map(\.id), context: context,
                             observers: observers, absenceRemoves: { _ in removes })
                         current.reconcile(
-                            with: incoming, preserving: preserved, removingMissing: removes)
+                            with: incoming, preserving: resolved.preserved, removingMissing: removes)
                         state[keyPath: keyPath] = current
+                        return resolved.withheld
                     }
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return { _, _ in }
+                    return MergeRead(succeeded: false) { _, _ in [] }
                 }
             },
             readForPartialMerge: { handle, observers, ids in
@@ -290,7 +327,7 @@ public struct PersistedEntity<State> {
                     let fetched = try await handle.db.fetchCollapsing(ids: ids, as: E.Model.self)
                     reportDuplicates(fetched.duplicatesCollapsed, to: observers)
                     let incoming = EntityStore(fetched.domains)
-                    return { state, context in
+                    return MergeRead(succeeded: true) { state, context in
                         var current = state[keyPath: keyPath]
                         // No empty-snapshot guard, and none needed: this path
                         // never infers a deletion, so an empty read removes
@@ -301,18 +338,19 @@ public struct PersistedEntity<State> {
                         // Only the rows this merge can reach: `reconcile` writes
                         // what the snapshot holds and removes what was declared,
                         // and consults the preserved set for nothing else.
-                        let preserved = resolvePreserved(
+                        let resolved = resolvePreserved(
                             current: current, incoming: incoming,
                             candidates: incoming.values.map(\.id) + deleting, context: context,
                             observers: observers, absenceRemoves: { deleting.contains($0) })
                         current.reconcile(
-                            with: incoming, deleting: deleting, preserving: preserved)
+                            with: incoming, deleting: deleting, preserving: resolved.preserved)
                         state[keyPath: keyPath] = current
+                        return resolved.withheld
                     }
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return { _, _ in }
+                    return MergeRead(succeeded: false) { _, _ in [] }
                 }
             },
             collapseOnDisk: { handle, observers in
@@ -326,7 +364,33 @@ public struct PersistedEntity<State> {
                         PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
                     return { _ in }
                 }
-            }
+            },
+            historyReader: EntityHistoryReader(
+                entityName: Schema.entityName(for: E.Model.self),
+                modelType: E.Model.self,
+                tombstoneID: { change in
+                    guard case .delete(let deletion) = change else { return nil }
+                    // Pattern-match *then* bind: `HistoryChange` is an enum, and
+                    // casting one straight to `any HistoryDelete` compiles and
+                    // always misses.
+                    guard let tombstone = (deletion as? any HistoryDelete<E.Model>)?.tombstone else {
+                        return nil
+                    }
+                    // Iterated, not `tombstone[\.id]`. The subscript looks a value
+                    // up by key-path identity, and `\E.Model.id` written here —
+                    // in a generic context — is the protocol witness rather than
+                    // the stored attribute the tombstone is keyed by, so it
+                    // silently finds nothing. In Debug as well as Release.
+                    //
+                    // Requiring *exactly* one identity is the safety: `@Persisted`
+                    // preserves only `id`, so a tombstone carrying several
+                    // candidates came from a model this can't read, and guessing
+                    // between them would delete the wrong row. Nil escalates the
+                    // tick to a full re-hydration, which needs no tombstone.
+                    let candidates = tombstone.compactMap { $0 as? UUID }
+                    return candidates.count == 1 ? candidates.first : nil
+                }
+            )
         )
     }
 }

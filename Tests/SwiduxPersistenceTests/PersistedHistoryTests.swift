@@ -25,10 +25,12 @@ private func temporaryStoreURL(_ prefix: String) -> URL {
 
 /// An on-disk container, built the way the library builds one.
 ///
-/// History is only recorded for a real store file, so the in-memory container the
-/// other suites use can't exercise any of this. It goes through `ContainerFactory`
-/// rather than assembling a `ModelConfiguration` by hand — otherwise these tests
-/// would vouch for a container the library doesn't ship.
+/// On-disk because the migration test below has to close a store and reopen it
+/// under a second schema, which needs a real file. History itself does *not*
+/// need one — an in-memory container records transactions and tombstones just as
+/// well, which is what `HistoryWatermarkTests` runs against. It goes through
+/// `ContainerFactory` rather than assembling a `ModelConfiguration` by hand —
+/// otherwise these tests would vouch for a container the library doesn't ship.
 private func makeOnDiskContainer<M: PersistentModel>(
     _ model: M.Type,
     at url: URL = temporaryStoreURL("history")

@@ -48,6 +48,10 @@ public final class PersistenceCoordinator<State, Action> {
     /// The default policy for ``rehydrate(into:policy:)``.
     public let mergePolicy: MergePolicy
 
+    /// How long persistent-history transactions are kept, or `nil` to keep them
+    /// forever. See ``pruneHistory(before:)``.
+    public let historyRetention: Duration?
+
     /// Entities the app has declared it is editing, exempt from the merge until
     /// released.
     ///
@@ -72,6 +76,11 @@ public final class PersistenceCoordinator<State, Action> {
     ///     against live state. Defaults to ``MergePolicy/preferRemote``, so
     ///     remote edits and deletions surface mid-session. Individual entities
     ///     can narrow it via ``PersistedEntity/entity(_:policy:collapse:)``.
+    ///   - historyRetention: How long SwiftData persistent-history transactions
+    ///     are kept before ``hydrate(into:)-(Store)`` prunes them, once per
+    ///     launch. Defaults to seven days. Pass `nil` to never prune.
+    ///     Ignored for a CloudKit-mirrored store — see
+    ///     ``pruneHistory(before:)``.
     ///   - onFailure: Called when a save or fetch fails. Every failure is
     ///     logged regardless; supply a handler to additionally surface it
     ///     (e.g. dispatch an action that shows a "couldn't save" banner).
@@ -89,11 +98,14 @@ public final class PersistenceCoordinator<State, Action> {
         debounce: Duration = .milliseconds(250),
         retry: RetryPolicy = .default,
         mergePolicy: MergePolicy = .preferRemote,
+        historyRetention: Duration? = .seconds(7 * 24 * 60 * 60),
         onFailure: PersistenceFailureHandler? = nil,
         onDiagnostic: PersistenceDiagnosticHandler? = nil
     ) {
         self.entities = entities
         self.mergePolicy = mergePolicy
+        self.historyRetention = historyRetention
+        self.reportsDiagnostics = onDiagnostic != nil
         let handle = DatabaseHandle(EntityDB(modelContainer: container))
         self.handle = handle
 
@@ -135,6 +147,53 @@ public final class PersistenceCoordinator<State, Action> {
     /// Test seam: awaited once inside the read phase, after any flush and
     /// before any state is packed — the window that used to lose writes.
     var duringReadPhase: (@MainActor () async -> Void)?
+
+    /// Test seam: thrown by the next history scan instead of running it, so each
+    /// fallback trigger can be exercised without manufacturing a real one.
+    var failNextHistoryScan: (any Error)?
+
+    /// Whether this handle's history has already been pruned this session.
+    private var hasPrunedHistory = false
+
+    /// Whether the app supplied a diagnostic handler. Counting what a prune
+    /// deletes costs a second full evaluation of the predicate, so it is only
+    /// paid for when someone is listening — the same bargain `onLoopSuspected`
+    /// strikes above.
+    private let reportsDiagnostics: Bool
+
+    /// Deletes persistent-history transactions recorded before `cutoff`.
+    ///
+    /// Runs automatically once per launch from ``hydrate(into:)-(Store)``, using
+    /// ``historyRetention``. History is on by default for any file-backed
+    /// SwiftData store and nothing else trims it, so left alone it grows for the
+    /// life of the app — deciding that policy is the library's job, not each
+    /// app's.
+    ///
+    /// > Important: A **CloudKit-mirrored store is never pruned**, by this or by
+    /// > ``historyRetention``, and calling this on one returns 0. Mirroring reads
+    /// > the same transaction log to decide what to export, there is no API to
+    /// > ask how far it has got, and deleting a transaction it has not yet
+    /// > exported resets the sync state and forces a full re-upload. Apple's own
+    /// > samples don't prune mirrored stores either. Unpruned history is the
+    /// > status quo; a broken export is not.
+    ///
+    /// Pruning is best-effort housekeeping: nothing here is load-bearing for
+    /// correctness, because the watermark lasts one session and any expiry falls
+    /// back to a full read. A failure is therefore not reported as one.
+    ///
+    /// - Returns: How many transactions were deleted.
+    @discardableResult
+    public func pruneHistory(before cutoff: Date) async -> Int {
+        let counting = reportsDiagnostics
+        guard let removed = try? await handle.db.pruneHistory(before: cutoff, counting: counting),
+            removed > 0
+        else { return 0 }
+        observers.onDiagnostic(.historyPruned(count: removed))
+        return removed
+    }
+
+    /// Every registered entity's history reader, in registration order.
+    private lazy var historyReaders: [EntityHistoryReader] = entities.map(\.historyReader)
 
     // MARK: - Reading without mutating
 
@@ -272,7 +331,7 @@ public final class PersistenceCoordinator<State, Action> {
     /// whole-table read may infer a deletion from a row's absence; a partial one
     /// may not — an ID that isn't in the result was not asked for. So the scope
     /// travels with the read and decides where deletions come from.
-    private enum MergeScope {
+    fileprivate enum MergeScope {
         case wholeTable
 
         /// Read only these IDs, and treat `deleted` as the only evidence of
@@ -306,23 +365,40 @@ public final class PersistenceCoordinator<State, Action> {
     /// to one entity simply matches no row in the others. The cost is one small
     /// round trip per unrelated entity, which is the trade for a caller that
     /// knows *which* rows changed but not necessarily *what* they are.
-    private func mergePhase(
-        _ scope: MergeScope = .wholeTable
-    ) async -> [@MainActor (inout State, MergePolicy?) -> Void] {
-        var folds: [@MainActor (inout State, MergePolicy?) -> Void] = []
+    private func mergePhase(_ scope: MergeScope = .wholeTable) async -> MergePhase {
+        var folds: [MergeFold] = []
         folds.reserveCapacity(entities.count)
+        var allReadsSucceeded = true
         let reading = scope.reading
         let deleted = scope.declaredDeletions
         for (entity, writer) in zip(entities, writers) {
-            let merge =
+            let read =
                 switch scope {
                 case .wholeTable: await entity.readForMerge(handle, observers)
                 case .ids: await entity.readForPartialMerge(handle, observers, reading)
                 }
-            folds.append(fold(merge, entity, writer, deleted: deleted))
+            allReadsSucceeded = allReadsSucceeded && read.succeeded
+            folds.append(fold(read.apply, entity, writer, deleted: deleted))
         }
         await duringReadPhase?()
-        return folds
+        return MergePhase(folds: folds, allReadsSucceeded: allReadsSucceeded)
+    }
+
+    /// One entity's bound merge. Returns the IDs it declined to act on.
+    fileprivate typealias MergeFold = @MainActor (inout State, MergePolicy?) -> Set<UUID>
+
+    /// A merge phase's folds, plus what the phase can promise about them.
+    ///
+    /// Whole-table re-hydration ignores both flags — it re-reads everything next
+    /// tick, so an unread entity or a deferred row costs one stale tick and
+    /// nothing more. They exist for callers that consume evidence once.
+    fileprivate struct MergePhase {
+        let folds: [MergeFold]
+
+        /// Whether every registered entity's read completed. A read that threw
+        /// contributes a no-op fold, which is indistinguishable from "nothing
+        /// changed" unless the phase says so.
+        let allReadsSucceeded: Bool
     }
 
     /// Binds one entity's already-fetched merge to the dirty sets and the
@@ -336,7 +412,7 @@ public final class PersistenceCoordinator<State, Action> {
         _ entity: PersistedEntity<State>,
         _ writer: StateWriter<State>,
         deleted: Set<UUID>
-    ) -> @MainActor (inout State, MergePolicy?) -> Void {
+    ) -> MergeFold {
         // Lifted out field-by-field so the fold doesn't capture `entity` itself:
         // it outlives this call, and holding the whole registration would keep
         // all five of its closures — and whatever they captured — alive to read
@@ -359,7 +435,7 @@ public final class PersistenceCoordinator<State, Action> {
             var resolved = mergePolicy
             if let entityPolicy { resolved = resolved.restricted(by: entityPolicy) }
             if let override { resolved = resolved.restricted(by: override) }
-            merge(
+            return merge(
                 &state,
                 MergeContext(
                     policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held))
@@ -401,10 +477,129 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// that hold no registered entity are preserved, including changes made
     /// while the reads were in flight.
     public func hydrate(into store: Store<State, Action>) async {
+        // Anchored before the read, not after: a write that lands while the
+        // fetches are in flight gets a token above this one, so the first tick
+        // still sees it. Anchoring afterwards would step over it silently.
+        let anchor = handle.watermark
+        let token = try? await handle.db.currentHistoryToken()
         let applies = await hydratePhase()
         store.mutate { state in
             for apply in applies { apply(&state) }
         }
+        if let token { handle.installWatermark(token, ifGeneration: anchor.generation) }
+        await pruneHistoryIfNeeded()
+    }
+
+    /// Merges only the rows persistent history says changed, falling back to a
+    /// full ``rehydrate(into:policy:)`` whenever history can't answer.
+    ///
+    /// This is what a remote-change observer should call. Where
+    /// ``rehydrate(into:policy:)`` re-reads every row of every registered entity
+    /// on every tick, this reads the store's transaction log since the last
+    /// merge and spends the result through ``mergeRemote(into:ids:deleted:policy:)``
+    /// — so a tick on an N-row table where k rows changed costs O(k). A tick with
+    /// no transactions behind it costs one history fetch and nothing else.
+    ///
+    /// Every guarantee the other two make holds here. Deletions come from history
+    /// tombstones, which are positive evidence, so unlike a full re-hydration this
+    /// *can* remove the last surviving row. Pending local writes and ``editing``
+    /// holds still win, and that is not configurable.
+    ///
+    /// ## When it re-reads everything instead
+    ///
+    /// The narrow path is an optimisation, never a weakening: anything that
+    /// leaves a window unaccounted for falls back to the full read, and the
+    /// fallback keeps its empty-snapshot guard. It happens on the first tick
+    /// after launch or a container rebuild, when the watermark has expired or the
+    /// history fetch fails, when a deletion's tombstone carries no identity
+    /// (every row deleted before `@Attribute(.preserveValueOnDeletion)` shipped),
+    /// when a changed row can't be resolved, and when more than one store sits
+    /// behind the container.
+    ///
+    /// The watermark only advances when a tick both read every registered entity
+    /// successfully *and* applied everything it read. That is what makes evidence
+    /// safe to consume once. A full re-hydration re-offers a withheld change on
+    /// the next tick because it re-reads everything; a watermark would step past
+    /// it forever, so a tick that withheld anything — an editing hold on a row a
+    /// peer deleted, say — leaves the anchor where it is and re-reads the same
+    /// window next time.
+    ///
+    /// Both outcomes are reported: ``PersistenceDiagnostic/Kind/remoteChangesMerged``
+    /// for a narrowed tick, ``PersistenceDiagnostic/Kind/historyUnavailable``
+    /// with a reason for a fallback.
+    ///
+    /// - Parameters:
+    ///   - store: The live store to reconcile.
+    ///   - policy: Narrows the configured policy for this call only.
+    public func mergeChanges(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
+        // Read once, up front: the generation pins every later decision to the
+        // database this tick started against.
+        let anchor = handle.watermark
+        let scan: HistoryScan
+        do {
+            guard let watermark = anchor.token else { throw HistoryScanFailure.noWatermark }
+            scan = try await scanHistory(since: watermark)
+        } catch {
+            await rehydrateAnchoring(into: store, policy: policy, generation: anchor.generation, reason: error)
+            return
+        }
+
+        // Nothing happened at all. Not even a flush is owed.
+        guard let newWatermark = scan.newWatermark else { return }
+        guard !scan.isEmpty else {
+            // Transactions, but none against a mirrored model — consumed all the
+            // same, or the same window is rescanned on every future tick.
+            handle.installWatermark(newWatermark, ifGeneration: anchor.generation)
+            return
+        }
+
+        // The scan runs *before* the flush that `merge` performs: the by-ID read
+        // has to see local intent already on disk, or a delete the user just undid
+        // has nothing there to refute its own tombstone with.
+        let complete = await merge(
+            .ids(scan.changed, deleted: scan.deleted), into: store, policy: policy)
+        observers.onDiagnostic(
+            .remoteChangesMerged(count: scan.changed.count + scan.deleted.count))
+        if complete {
+            handle.installWatermark(newWatermark, ifGeneration: anchor.generation)
+        }
+    }
+
+    /// A full re-hydration that also re-establishes the watermark.
+    private func rehydrateAnchoring(
+        into store: Store<State, Action>,
+        policy: MergePolicy?,
+        generation: Int,
+        reason: any Error
+    ) async {
+        observers.onDiagnostic(.historyUnavailable(reason: "\(reason)"))
+        // Anchored before the read, not after: a write landing while the fetches
+        // are in flight gets a token above this one and is picked up next tick.
+        let token = try? await handle.db.currentHistoryToken()
+        let complete = await merge(.wholeTable, into: store, policy: policy)
+        if complete, let token {
+            handle.installWatermark(token, ifGeneration: generation)
+        }
+    }
+
+    /// Resolves the window since `watermark`, honouring the test seam.
+    private func scanHistory(since watermark: DefaultHistoryToken) async throws -> HistoryScan {
+        if let injected = failNextHistoryScan {
+            failNextHistoryScan = nil
+            throw injected
+        }
+        return try await handle.db.changes(since: watermark, readers: historyReaders)
+    }
+
+    /// Prunes history once per session, if the app hasn't opted out.
+    private func pruneHistoryIfNeeded() async {
+        guard !hasPrunedHistory, let retention = historyRetention else { return }
+        hasPrunedHistory = true
+        // Detached: nothing here is load-bearing — the watermark lasts one
+        // session and any expiry falls back to a full read — and apps gate their
+        // UI on hydration returning.
+        let cutoff = Date(timeIntervalSinceNow: -TimeInterval(retention.components.seconds))
+        Task { await self.pruneHistory(before: cutoff) }
     }
 
     /// Re-hydration that reconciles stored rows into the live `EntityStore`s
@@ -446,11 +641,36 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     ///     ``MergePolicy/preferRemoteAdditive`` after a container rebuild,
     ///     where a row's absence says nothing about whether it was deleted.
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
+        await merge(.wholeTable, into: store, policy: policy)
+    }
+
+    /// Flushes, reads `scope`, and folds the result into `store`.
+    ///
+    /// The one place the pre-merge protocol lives. Pending writes are flushed
+    /// *before* the read so a tick firing inside the debounce window can't read a
+    /// stale row for something the user just edited or deleted and resurrect it —
+    /// an ordering that used to be restated at every entry point, where the one
+    /// that forgot would fail as silent data loss rather than as a test.
+    ///
+    /// The folds run inside a single `mutate`, so the merge still lands in one
+    /// suspension-free step.
+    ///
+    /// - Returns: Whether the merge applied everything it read. `false` means a
+    ///   read threw, or an editing hold withheld a stored value — either way the
+    ///   window is not safe to treat as consumed.
+    @discardableResult
+    fileprivate func merge(
+        _ scope: MergeScope,
+        into store: Store<State, Action>,
+        policy: MergePolicy?
+    ) async -> Bool {
         await corePlugin.flush()
-        let folds = await mergePhase()
+        let phase = await mergePhase(scope)
+        var withheld: Set<UUID> = []
         store.mutate { state in
-            for fold in folds { fold(&state, policy) }
+            for fold in phase.folds { withheld.formUnion(fold(&state, policy)) }
         }
+        return phase.allReadsSucceeded && withheld.isEmpty
     }
 
     /// Re-hydration restricted to the rows a caller already knows changed.
@@ -497,11 +717,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         deleted: Set<UUID> = [],
         policy: MergePolicy? = nil
     ) async {
-        await corePlugin.flush()
-        let folds = await mergePhase(.ids(ids, deleted: deleted))
-        store.mutate { state in
-            for fold in folds { fold(&state, policy) }
-        }
+        await merge(.ids(ids, deleted: deleted), into: store, policy: policy)
     }
 
     /// Runs every registered collapse resolver against storage, applying the

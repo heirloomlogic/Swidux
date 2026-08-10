@@ -149,6 +149,16 @@ The one difference is deletions. A partial read can't tell a deleted row from on
 
 Two things it deliberately doesn't do: a registered `collapse:` resolver doesn't run (it judges the whole table, and a subset would have it judge a world it can't see — duplicates are still collapsed on read and still reported), and the ID set isn't keyed by entity type, so each registered entity pays one small round trip for IDs that turn out not to be its own.
 
+When *nothing* told you which identities changed — the usual case for a CloudKit remote-change notification — `mergeChanges(into:)` works it out for itself from the store's persistent-history log and spends the result through the same path, falling back to a full `rehydrate(into:)` for any window it can't fully account for. See <doc:HowToAddICloudSync>.
+
+### Persistent history
+
+SwiftData records a transaction log for every file-backed store, whether or not you read it. `mergeChanges(into:)` is what reads it; nothing else trims it, so left alone it grows for the life of the app.
+
+So the coordinator prunes it — transactions older than `historyRetention` (seven days by default) are deleted once per launch, from `hydrate(into:)`. Pass `historyRetention: nil` to turn that off, or call `pruneHistory(before:)` yourself.
+
+A **CloudKit-mirrored store is never pruned**, whatever you pass. Mirroring reads the same log to decide what to export, there is no API to ask how far it has got, and deleting a transaction it hasn't exported yet resets the sync state and forces a full re-upload. Unpruned history is the status quo; a broken export isn't.
+
 ### Reading rows without touching state
 
 For exports, migrations, diagnostics, or any other "what's actually on disk?" question, read directly — naming your domain type, not its generated shadow:
@@ -219,7 +229,7 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
 )
 ```
 
-Four kinds ship today:
+Seven kinds ship today:
 
 | Kind | Means | Payload |
 |---|---|---|
@@ -227,6 +237,9 @@ Four kinds ship today:
 | `.possibleDispatchLoop` | `afterReduce` fired far more often in one debounce interval than a user could cause. Usually an effect or plugin dispatching on every state change. Reported once per burst, not once per dispatch. | `drainCount` |
 | `.writesUnpersisted` | The set of IDs whose last flush failed changed. Fires again with an **empty** set once they land, so an indicator can be cleared rather than guessed at. | `entityType`, `unpersistedIDs` |
 | `.mergeWithheld` | A re-hydration left a stored value unapplied because an editing hold was in force. Expected while the user is editing; a hold that outlives the edit shows up here. See <doc:HowToAddICloudSync>. | `entityType`, `withheldIDs` |
+| `.remoteChangesMerged` | A `mergeChanges(into:)` tick narrowed its work from persistent history and merged only the rows that changed. The healthy case — if it stops appearing, ticks have quietly gone back to reading every table. | `mergedCount` |
+| `.historyUnavailable` | A tick couldn't narrow its work and re-read every registered entity. Expected once per launch and after a container rebuild; repeatedly, something is stopping the watermark advancing, and `fallbackReason` says what. | `fallbackReason` |
+| `.historyPruned` | Transactions older than `historyRetention` were deleted. Once per launch, never for a CloudKit-mirrored store. | `prunedCount` |
 
 `PersistenceDiagnostic` is a struct with static constructors rather than an enum, so a future kind can't break an exhaustive `switch` in your code — match on `kind` and read the payload you expect. Duplicate reads and dispatch loops are logged whether or not you supply a handler; the unpersisted set has no log of its own, because the individual `PersistenceFailure`s behind it are already logged.
 
