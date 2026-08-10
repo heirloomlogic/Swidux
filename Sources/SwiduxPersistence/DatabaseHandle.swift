@@ -55,6 +55,17 @@ public final class DatabaseHandle: @unchecked Sendable {
         }
     }
 
+    /// The on-disk stores behind the active database.
+    ///
+    /// Standardized, so they compare equal to a `NSPersistentStoreURLKey` value
+    /// standardized the same way — which is what lets a remote-change observer
+    /// tell a notification from *this* store apart from one belonging to some
+    /// other store in the process. Read it per notification rather than once:
+    /// swapping `db` can change the answer.
+    public var storeURLs: Set<URL> {
+        Set(db.modelContainer.configurations.lazy.map(\.url.standardizedFileURL))
+    }
+
     /// The current watermark, and the generation it belongs to.
     ///
     /// Callers read both together and quote the generation back to
