@@ -176,6 +176,90 @@ struct EntityDBTests {
         #expect(all.allSatisfy { $0.title == "v2" })
     }
 
+    // MARK: - Fetching by ID
+
+    @MainActor
+    @Test("fetch(ids:) returns only the rows asked for, whatever else the table holds")
+    func fetchByIDsMaterializesOnlyTheRequested() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let db = EntityDB(modelContainer: container)
+        let wanted = (0..<3).map { Note(id: UUID(), title: "wanted \($0)", pinned: false) }
+        let noise = (0..<200).map { Note(id: UUID(), title: "noise \($0)", pinned: false) }
+        try await db.apply(writes: wanted + noise, deletions: [], as: NoteModel.self)
+
+        let rows = try await db.fetch(ids: wanted.map(\.id), of: Note.self)
+
+        #expect(
+            rows.sorted { $0.title < $1.title } == wanted,
+            "a by-ID read must not materialize the rest of the table"
+        )
+    }
+
+    @MainActor
+    @Test("fetch(ids:) skips IDs with no row instead of failing")
+    func fetchByIDsToleratesMisses() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let db = EntityDB(modelContainer: container)
+        let present = Note(id: UUID(), title: "here", pinned: false)
+        try await db.apply(writes: [present], deletions: [], as: NoteModel.self)
+
+        let rows = try await db.fetch(ids: [present.id, UUID()], of: Note.self)
+
+        #expect(rows == [present])
+    }
+
+    @MainActor
+    @Test("fetch(ids:) of nothing touches the database not at all")
+    func fetchByIDsOfEmptyIsEmpty() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let db = EntityDB(modelContainer: container)
+        try await db.apply(
+            writes: [Note(id: UUID(), title: "ignored", pinned: false)], deletions: [], as: NoteModel.self)
+
+        #expect(try await db.fetch(ids: [], of: Note.self).isEmpty)
+    }
+
+    @MainActor
+    @Test("fetch(ids:) spans the chunk boundary without dropping a row")
+    func fetchByIDsLargerThanChunk() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [NoteModel.self])
+        let db = EntityDB(modelContainer: container)
+        // One past the boundary in *both* directions: the request spans two
+        // chunks, and the table holds rows the request must not pick up.
+        let wanted = (0..<(EntityDB.batchFetchChunkSize + 1)).map {
+            Note(id: UUID(), title: "wanted \($0)", pinned: false)
+        }
+        let noise = (0..<10).map { Note(id: UUID(), title: "noise \($0)", pinned: false) }
+        try await db.apply(writes: wanted + noise, deletions: [], as: NoteModel.self)
+
+        let rows = try await db.fetch(ids: wanted.map(\.id), of: Note.self)
+
+        #expect(rows.count == wanted.count, "a request wider than one chunk must not lose its tail")
+        #expect(Set(rows.map(\.id)) == Set(wanted.map(\.id)))
+        #expect(rows.allSatisfy { $0.title.hasPrefix("wanted") }, "no noise row may ride along")
+    }
+
+    @Test(
+        "IDs are chunked to stay under the bound-variable limit",
+        arguments: [
+            (0, 0), (1, 1), (499, 1), (500, 1), (501, 2), (1000, 2), (1001, 3),
+        ]
+    )
+    func idsChunkToTheFetchLimit(count: Int, expectedChunks: Int) {
+        // The batching claim is arithmetic, and asserting it here is honest
+        // about that: there is no seam to count `ModelContext.fetch` calls, and
+        // a timing test would be flaky. What the round trips *cost* rests on
+        // `swiduxBatchFetchDescriptor` being an `IN (…)` predicate, which the
+        // write path already stands on.
+        let ids = (0..<count).map { _ in UUID() }
+
+        let chunks = EntityDB.idChunks(ids)
+
+        #expect(chunks.count == expectedChunks)
+        #expect(chunks.allSatisfy { $0.count <= EntityDB.batchFetchChunkSize })
+        #expect(chunks.flatMap { $0 }.count == count, "chunking must partition, not sample")
+    }
+
     @MainActor
     @Test("rehydrate merges without clobbering live in-memory edits (rule #8)")
     func rehydratePreservesLiveEdits() async throws {

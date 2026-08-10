@@ -183,6 +183,126 @@ struct EntityStoreTests {
         #expect(store.values.map(\.name) == ["a", "c", "newcomer"])
     }
 
+    // MARK: - Reconcile over a partial snapshot
+
+    @Test("a partial reconcile leaves rows outside the snapshot alone")
+    func partialReconcileTouchesNothingElse() {
+        let refreshed = TestEntity(name: "refreshed")
+        let untouched = TestEntity(name: "untouched")
+        var store = EntityStore([TestEntity(id: refreshed.id, name: "stale"), untouched])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore([refreshed]), deleting: [], preserving: [])
+
+        #expect(store[refreshed.id] == refreshed)
+        #expect(
+            store[untouched.id] == untouched,
+            "an ID absent from a partial snapshot was not asked about — it is not missing"
+        )
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("a partial reconcile removes only the IDs named as deleted, recording no deletion")
+    func partialReconcileRemovesNamedIDs() {
+        let doomed = TestEntity(name: "deleted remotely")
+        let kept = TestEntity(name: "kept")
+        var store = EntityStore([doomed, kept])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), deleting: [doomed.id], preserving: [])
+
+        #expect(store[doomed.id] == nil)
+        #expect(store.values == [kept])
+        #expect(
+            store.changes.isEmpty,
+            "the row is already gone from storage — recording a deletion would echo it back as a local one"
+        )
+        #expect(
+            store.remotelyRemovedIDs.contains(doomed.id),
+            "a remote deletion has to outlive the undo snapshots taken before it"
+        )
+    }
+
+    @Test("a preserved ID is not removed even when named as deleted")
+    func partialReconcileKeepsPreservedDeletion() {
+        let local = TestEntity(name: "edited locally, not yet flushed")
+        var store = EntityStore([local])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), deleting: [local.id], preserving: [local.id])
+
+        #expect(store[local.id] == local, "unflushed local intent outranks a remote deletion")
+        #expect(store.remotelyRemovedIDs.isEmpty)
+    }
+
+    @Test("an un-drained local deletion is not resurrected by a partial reconcile")
+    func partialReconcileHonoursUndrainedDeletion() {
+        let entity = TestEntity(name: "deleted locally")
+        var store = EntityStore([entity])
+        store.resetChanges()
+        store[entity.id] = nil  // un-drained: still in `changes.deletions`
+
+        store.reconcile(with: EntityStore([entity]), deleting: [], preserving: [])
+
+        #expect(store[entity.id] == nil)
+        #expect(store.changes.deletions.contains(entity.id), "and it must still flush")
+    }
+
+    @Test("a row storage still holds is not removed, however it was named")
+    func partialReconcileResurrectionOutranksDeletion() {
+        let contested = TestEntity(name: "restored elsewhere")
+        var store = EntityStore([contested])
+        store.resetChanges()
+
+        // Named as deleted *and* present in the snapshot: the row on disk is
+        // positive evidence, a stale tombstone is not.
+        store.reconcile(with: EntityStore([contested]), deleting: [contested.id], preserving: [])
+
+        #expect(store[contested.id] == contested)
+        #expect(store.remotelyRemovedIDs.isEmpty)
+    }
+
+    @Test("a partial reconcile clears an earlier remote removal when storage hands the row back")
+    func partialReconcileClearsRemoteRemoval() {
+        let revived = TestEntity(name: "revived")
+        var store = EntityStore([revived])
+        store.resetChanges()
+        store.reconcile(with: EntityStore<TestEntity>([]), deleting: [revived.id], preserving: [])
+        #expect(store.remotelyRemovedIDs.contains(revived.id))
+
+        store.reconcile(with: EntityStore([revived]), deleting: [], preserving: [])
+
+        #expect(store[revived.id] == revived)
+        #expect(store.remotelyRemovedIDs.isEmpty, "storage holds the row, so the deletion was itself undone")
+    }
+
+    @Test("a partial reconcile does not insert or overwrite a preserved ID")
+    func partialReconcileSkipsPreserved() {
+        let held = TestEntity(name: "held")
+        let pendingCreate = TestEntity(name: "created locally, not yet flushed")
+        var store = EntityStore([TestEntity(id: held.id, name: "local")])
+        store.resetChanges()
+
+        store.reconcile(
+            with: EntityStore([held, pendingCreate]),
+            deleting: [], preserving: [held.id, pendingCreate.id])
+
+        #expect(store[held.id]?.name == "local")
+        #expect(store[pendingCreate.id] == nil, "storage has no authority over a preserved ID, insert included")
+    }
+
+    @Test("naming an ID the store never held removes nothing and records nothing")
+    func partialReconcileIgnoresUnknownDeletion() {
+        let kept = TestEntity(name: "kept")
+        var store = EntityStore([kept])
+        store.resetChanges()
+
+        store.reconcile(with: EntityStore<TestEntity>([]), deleting: [UUID()], preserving: [])
+
+        #expect(store.values == [kept])
+        #expect(store.remotelyRemovedIDs.isEmpty, "an ID that was never held was not remotely removed")
+    }
+
     // MARK: - Subscript
 
     @Test("Subscript set inserts and records upsert")

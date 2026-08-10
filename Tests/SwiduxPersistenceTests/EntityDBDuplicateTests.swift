@@ -155,4 +155,45 @@ struct EntityDBDuplicateTests {
         #expect(all.filter { $0.id == duplicated }.count == 1)
         #expect(try rawNoteRows(container).count == 4, "collapsing on read must not delete anything on disk")
     }
+
+    @MainActor
+    @Test("fetch(ids:) reports the duplicates it collapsed")
+    func fetchByIDsCountsCollapsedRows() async throws {
+        let container = try makeNotesContainer()
+        let db = EntityDB(modelContainer: container)
+        let duplicated = UUID()
+        let solo = UUID()
+        try seedDuplicates(container, id: duplicated, title: "dup", count: 3)
+        try await db.upsert(Note(id: solo, title: "solo", pinned: false), as: NoteModel.self)
+
+        let fetched = try await db.fetchCollapsing(ids: [duplicated, solo], as: NoteModel.self)
+
+        #expect(fetched.domains.count == 2, "a by-ID read hands its result to an EntityStore too, so it collapses")
+        #expect(fetched.duplicatesCollapsed == 2, "three rows for one ID collapse two away")
+        #expect(try rawNoteRows(container).count == 4, "collapsing on read must not delete anything on disk")
+    }
+
+    @MainActor
+    @Test("fetch(ids:) collapses to the same survivor fetchAll picks")
+    func fetchByIDsAgreesWithFetchAll() async throws {
+        let container = try makeNotesContainer()
+        let db = EntityDB(modelContainer: container)
+        let id = UUID()
+        // Distinguishable rows, so "first in fetch order" is observable rather
+        // than hidden behind identical content.
+        try seedNotes(
+            container,
+            [
+                Note(id: id, title: "first", pinned: false),
+                Note(id: id, title: "second", pinned: true),
+            ])
+
+        let viaAll = try await db.fetchAll(NoteModel.self)
+        let viaIDs = try await db.fetch(ids: [id], of: Note.self)
+
+        #expect(
+            viaAll == viaIDs,
+            "two reads of the same row disagreeing on the survivor would make a partial merge flap"
+        )
+    }
 }

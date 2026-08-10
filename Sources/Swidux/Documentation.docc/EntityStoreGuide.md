@@ -65,6 +65,18 @@ Like `merge`, it records no changes — every value it writes or removes already
 
 Most apps never call this directly; `PersistenceCoordinator.rehydrate(into:)` does, and computes `preserving` for you.
 
+### Reconciling against a partial snapshot
+
+`reconcile(with:deleting:preserving:)` is the same operation over a snapshot that covers only *some* of the store's IDs — a refresh of the rows a sync tick reported as changed, rather than of the whole table.
+
+Absorbing rows works identically. What changes is where deletions come from: a partial snapshot **cannot** infer them. An ID missing from it wasn't deleted, it wasn't asked for, and treating the two alike would empty the store on the first partial merge. So removal is driven entirely by `deleting`, which the caller must have positive evidence for — a history tombstone, not an empty result.
+
+```swift
+cards.reconcile(with: EntityStore(changedRows), deleting: tombstonedIDs, preserving: dirtyIDs)
+```
+
+An ID named in `deleting` that the snapshot *still holds* is not removed: a live row is evidence the deletion was itself undone elsewhere, and a tombstone can be stale. As with the full reconcile, `PersistenceCoordinator.mergeRemote(into:ids:deleted:)` is what most apps use, and it computes `preserving` for you.
+
 ## restore(from:)
 
 `restore(from:)` replaces all entities with those from the source store while recording the diff as changes for persistence. Used by undo/redo (see <doc:UndoRedo>).

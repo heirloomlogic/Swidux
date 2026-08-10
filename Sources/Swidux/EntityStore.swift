@@ -41,8 +41,10 @@ public nonisolated struct EntityStore<
     /// Accumulated changes since the last `resetChanges()` call.
     public private(set) var changes = ChangeSet()
 
-    /// IDs that ``reconcile(with:preserving:removingMissing:)`` removed because
-    /// storage no longer held them — a deletion made on another device.
+    /// IDs a reconcile removed on storage's authority — a deletion made on
+    /// another device, inferred from absence by
+    /// ``reconcile(with:preserving:removingMissing:)`` or named outright by
+    /// ``reconcile(with:deleting:preserving:)``.
     ///
     /// ``restore(from:)`` refuses to bring these back, which scopes undo to
     /// locally-originated changes: a snapshot older than the deletion would
@@ -354,6 +356,72 @@ public nonisolated struct EntityStore<
         preserving: Set<UUID>,
         removingMissing: Bool
     ) {
+        let owned = absorb(remote, preserving: preserving)
+
+        guard removingMissing else { return }
+        // One pass over the keys we hold, allocating only for what's actually
+        // missing — a sync tick that deleted nothing should allocate nothing.
+        var missing: Set<UUID> = []
+        for id in positions.keys where !remote.contains(id) && !owned.contains(id) {
+            missing.insert(id)
+        }
+        removeBatch(missing, origin: .remote)
+    }
+
+    /// Reconciles this store against a snapshot covering only *some* of its IDs.
+    ///
+    /// The counterpart to ``reconcile(with:preserving:removingMissing:)`` for a
+    /// partial read — a refresh of the rows a sync tick reported as changed,
+    /// rather than of the whole table. Absorbing rows works identically; what
+    /// changes is where deletions come from.
+    ///
+    /// A partial snapshot **cannot** infer deletion from absence. An ID missing
+    /// from it was not deleted, it was not asked for, and treating the two alike
+    /// would empty the store on the first partial merge. So removal is driven
+    /// entirely by `deletedIDs`, which the caller must have positive evidence
+    /// for — a history tombstone, not an empty result.
+    ///
+    /// - Parameters:
+    ///   - remote: The rows read from storage for the IDs in question. Rows for
+    ///     IDs the caller didn't ask about are simply not here, and their
+    ///     absence means nothing.
+    ///   - deletedIDs: IDs storage reports as deleted elsewhere. Removed with
+    ///     the same origin a full reconcile uses, so no deletion is recorded and
+    ///     none is echoed back to the store it came from. An ID that `remote`
+    ///     still holds is **not** removed however it is named here: a live row
+    ///     is positive evidence, and a tombstone can be stale.
+    ///   - preserving: IDs the caller knows carry unflushed local intent, exactly
+    ///     as in the full reconcile. `remote` has no authority over them, and
+    ///     neither does `deletedIDs`. This store's own un-drained ``changes`` are
+    ///     folded in automatically.
+    ///
+    /// Does **not** record changes — this is a hydration operation, for the same
+    /// reason the full reconcile isn't one.
+    public mutating func reconcile(
+        with remote: EntityStore,
+        deleting deletedIDs: Set<UUID>,
+        preserving: Set<UUID>
+    ) {
+        let owned = absorb(remote, preserving: preserving)
+
+        guard !deletedIDs.isEmpty else { return }
+        var removable: Set<UUID> = []
+        for id in deletedIDs where positions[id] != nil && !owned.contains(id) && !remote.contains(id) {
+            removable.insert(id)
+        }
+        removeBatch(removable, origin: .remote)
+    }
+
+    /// Folds every row of `remote` this store has no local claim on into
+    /// storage, and reports the resulting owned set.
+    ///
+    /// Shared by both reconciles: they differ only in where deletions come
+    /// from, so the ownership rule and the insert/overwrite loop live here once.
+    ///
+    /// - Returns: `preserving` plus this store's own un-drained changes — the
+    ///   IDs storage has no authority over, which the caller needs again to
+    ///   decide what it may remove.
+    private mutating func absorb(_ remote: EntityStore, preserving: Set<UUID>) -> Set<UUID> {
         var owned = preserving
         if !changes.upserts.isEmpty { owned.formUnion(changes.upserts) }
         if !changes.deletions.isEmpty { owned.formUnion(changes.deletions) }
@@ -369,15 +437,7 @@ public nonisolated struct EntityStore<
             // has itself been undone elsewhere. The ID is live again.
             clearRemoteRemoval(of: entity.id)
         }
-
-        guard removingMissing else { return }
-        // One pass over the keys we hold, allocating only for what's actually
-        // missing — a sync tick that deleted nothing should allocate nothing.
-        var missing: Set<UUID> = []
-        for id in positions.keys where !remote.contains(id) && !owned.contains(id) {
-            missing.insert(id)
-        }
-        removeBatch(missing, origin: .remote)
+        return owned
     }
 
     // MARK: - Restore (Undo/Redo)

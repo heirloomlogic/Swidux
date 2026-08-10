@@ -164,9 +164,55 @@ public final class PersistenceCoordinator<State, Action> {
         of type: E.Type,
         flushPending: Bool = true
     ) async throws -> [E] {
+        try await collapsingRead(of: E.self, flushPending: flushPending) { db in
+            try await db.fetchAllCollapsing(E.Model.self)
+        }
+    }
+
+    /// Reads just the named rows of `E` **without touching state**.
+    ///
+    /// The by-ID counterpart to ``fetchAll(of:flushPending:)``, for a caller that
+    /// already knows which identities it cares about: one batched fetch per 500
+    /// IDs, and only those rows are materialized.
+    ///
+    /// IDs matching no row are skipped rather than reported. Absence here is not
+    /// evidence of deletion — the row may never have existed — which is why
+    /// ``mergeRemote(into:ids:deleted:policy:)`` takes its deletions from an
+    /// explicit set rather than from a short result.
+    ///
+    /// - Parameters:
+    ///   - ids: The identities to load. Duplicates and unknown IDs are harmless.
+    ///   - type: The domain entity type, e.g. `Note.self`.
+    ///   - flushPending: Drains the debounce window first (the default), so the
+    ///     read cannot return a stale row for an entity the user just edited.
+    /// - Returns: One row per matched `id`, in fetch order.
+    /// - Throws: Whatever the underlying fetch throws, after reporting it to
+    ///   `onFailure` — the same stance ``fetchAll(of:flushPending:)`` takes.
+    public func fetch<E: PersistableEntity>(
+        ids: Set<UUID>,
+        of type: E.Type,
+        flushPending: Bool = true
+    ) async throws -> [E] {
+        try await collapsingRead(of: E.self, flushPending: flushPending) { db in
+            try await db.fetchCollapsing(ids: ids, as: E.Model.self)
+        }
+    }
+
+    /// The shared body of the state-free reads: flush, read, report whatever was
+    /// collapsed, and report-then-rethrow on failure.
+    ///
+    /// Rethrowing rather than swallowing is the deliberate half. Hydration has an
+    /// `EntityStore` to leave untouched when a fetch fails; these reads have
+    /// nothing, so eating the error could only present an unreadable database as
+    /// "no data".
+    private func collapsingRead<E: PersistableEntity>(
+        of type: E.Type,
+        flushPending: Bool,
+        _ read: (EntityDB) async throws -> (domains: [E], duplicatesCollapsed: Int)
+    ) async throws -> [E] {
         if flushPending { await corePlugin.flush() }
         do {
-            let fetched = try await handle.db.fetchAllCollapsing(E.Model.self)
+            let fetched = try await read(handle.db)
             if fetched.duplicatesCollapsed > 0 {
                 observers.onDiagnostic(
                     .duplicateRowsCollapsed(
@@ -220,37 +266,104 @@ public final class PersistenceCoordinator<State, Action> {
         return applies
     }
 
-    /// The re-hydration equivalent of ``hydratePhase()``.
+    /// Whether a re-hydration read the whole table or only named rows.
+    ///
+    /// The two differ in what they can conclude, not just in what they cost. A
+    /// whole-table read may infer a deletion from a row's absence; a partial one
+    /// may not — an ID that isn't in the result was not asked for. So the scope
+    /// travels with the read and decides where deletions come from.
+    private enum MergeScope {
+        case wholeTable
+
+        /// Read only these IDs, and treat `deleted` as the only evidence of
+        /// removal. Declared deletions are read too: a row storage still holds
+        /// is what refutes a stale tombstone, and only a fetch can tell us that.
+        case ids(Set<UUID>, deleted: Set<UUID>)
+
+        var declaredDeletions: Set<UUID> {
+            if case .ids(_, let deleted) = self { return deleted }
+            return []
+        }
+
+        /// The IDs to read, unioned once for the whole phase rather than per
+        /// registered entity.
+        var reading: Set<UUID> {
+            if case .ids(let ids, let deleted) = self { return ids.union(deleted) }
+            return []
+        }
+    }
+
+    /// Runs every registered entity's merge read in registration order, touching
+    /// no state, and returns the synchronous folds to apply.
     ///
     /// Each fold arrives with its entity's policy and dirty set already bound,
     /// resolved lazily inside the closure — so dirtiness is read once every
     /// fetch has completed, and a write that landed during the flush or during
     /// the fetch still counts as locally owned.
-    private func mergePhase() async -> [@MainActor (inout State, MergePolicy?) -> Void] {
+    ///
+    /// A partial scope's ID set is flat rather than keyed by entity type:
+    /// identities are UUIDs and don't collide across types, so an ID belonging
+    /// to one entity simply matches no row in the others. The cost is one small
+    /// round trip per unrelated entity, which is the trade for a caller that
+    /// knows *which* rows changed but not necessarily *what* they are.
+    private func mergePhase(
+        _ scope: MergeScope = .wholeTable
+    ) async -> [@MainActor (inout State, MergePolicy?) -> Void] {
         var folds: [@MainActor (inout State, MergePolicy?) -> Void] = []
         folds.reserveCapacity(entities.count)
+        let reading = scope.reading
+        let deleted = scope.declaredDeletions
         for (entity, writer) in zip(entities, writers) {
-            let merge = await entity.readForMerge(handle, observers)
-            folds.append { [mergePolicy, editing] state, override in
-                // Four sources, because no one of them is complete: the writer
-                // holds drained-but-unflushed IDs, the ledger holds IDs whose
-                // save failed, the app's editing holds cover values that were
-                // never dispatched at all, and the store's own `changes` hold
-                // mutations not yet drained. `reconcile` folds in the last.
-                let written = writer.pendingIDs.union(entity.unpersisted.ids)
-                let owned = written.union(editing.ids)
-                // Only the holds the writer doesn't already cover are worth
-                // reporting: attributing a pending write to the hold would
-                // point a leak hunt at the wrong thing.
-                let held = editing.ids.subtracting(written)
-                var resolved = mergePolicy
-                if let entityPolicy = entity.policy { resolved = resolved.restricted(by: entityPolicy) }
-                if let override { resolved = resolved.restricted(by: override) }
-                merge(&state, MergeContext(policy: resolved, locallyOwnedIDs: owned, heldIDs: held))
-            }
+            let merge =
+                switch scope {
+                case .wholeTable: await entity.readForMerge(handle, observers)
+                case .ids: await entity.readForPartialMerge(handle, observers, reading)
+                }
+            folds.append(fold(merge, entity, writer, deleted: deleted))
         }
         await duringReadPhase?()
         return folds
+    }
+
+    /// Binds one entity's already-fetched merge to the dirty sets and the
+    /// resolved policy, both read *inside* the returned closure.
+    ///
+    /// That lateness is the point: dirtiness is resolved once every fetch has
+    /// completed, so a write that landed during the flush or during the fetch
+    /// still counts as locally owned.
+    private func fold(
+        _ merge: @escaping PersistedEntity<State>.MergeApply,
+        _ entity: PersistedEntity<State>,
+        _ writer: StateWriter<State>,
+        deleted: Set<UUID>
+    ) -> @MainActor (inout State, MergePolicy?) -> Void {
+        // Lifted out field-by-field so the fold doesn't capture `entity` itself:
+        // it outlives this call, and holding the whole registration would keep
+        // all five of its closures — and whatever they captured — alive to read
+        // two fields. `unpersisted` is a class, so the late read below still
+        // sees the latest set.
+        let unpersisted = entity.unpersisted
+        let entityPolicy = entity.policy
+        return { [mergePolicy, editing] state, override in
+            // Four sources, because no one of them is complete: the writer
+            // holds drained-but-unflushed IDs, the ledger holds IDs whose
+            // save failed, the app's editing holds cover values that were
+            // never dispatched at all, and the store's own `changes` hold
+            // mutations not yet drained. `reconcile` folds in the last.
+            let written = writer.pendingIDs.union(unpersisted.ids)
+            let owned = written.union(editing.ids)
+            // Only the holds the writer doesn't already cover are worth
+            // reporting: attributing a pending write to the hold would
+            // point a leak hunt at the wrong thing.
+            let held = editing.ids.subtracting(written)
+            var resolved = mergePolicy
+            if let entityPolicy { resolved = resolved.restricted(by: entityPolicy) }
+            if let override { resolved = resolved.restricted(by: override) }
+            merge(
+                &state,
+                MergeContext(
+                    policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held))
+        }
     }
 
     /// Runs every registered collapse resolver against storage, in registration
@@ -335,6 +448,57 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
         await corePlugin.flush()
         let folds = await mergePhase()
+        store.mutate { state in
+            for fold in folds { fold(&state, policy) }
+        }
+    }
+
+    /// Re-hydration restricted to the rows a caller already knows changed.
+    ///
+    /// The O(k) counterpart to ``rehydrate(into:policy:)``, which re-reads every
+    /// row of every registered entity on every tick. Where a sync signal carries
+    /// *which* identities changed, this spends that knowledge: one batched fetch
+    /// per 500 IDs instead of a full-table scan, and only the named entities are
+    /// reconciled. Everything else in state is left exactly as it was.
+    ///
+    /// Every guarantee ``rehydrate(into:policy:)`` makes holds here. Pending
+    /// writes are flushed first; an ID with unflushed local intent — a
+    /// drained-but-unflushed write, an un-drained edit, a pending deletion, a
+    /// write whose save failed, or an ``editing`` hold — always wins, and that is
+    /// not configurable.
+    ///
+    /// > Important: A partial read cannot tell a deleted row from one that was
+    /// > never asked about, so this **never** infers a deletion. An ID vanishes
+    /// > only if you name it in `deleted`, and only if the resolved policy grants
+    /// > ``MergePolicy/removesMissingEntities``. Name only what you have positive
+    /// > evidence for — a history tombstone, not an empty fetch. In exchange,
+    /// > there is no empty-snapshot guard to work around: this can remove the
+    /// > last surviving entity, which ``rehydrate(into:policy:)`` cannot.
+    ///
+    /// An ID named in `deleted` that storage *still holds* is not removed. A live
+    /// row is evidence the deletion was itself undone elsewhere; a tombstone can
+    /// be stale.
+    ///
+    /// Registered `collapse:` resolvers do not run here — a resolver is handed
+    /// the whole table and asked which rows survive, and a subset would have it
+    /// judge a world it cannot see. Duplicate rows are still collapsed on read
+    /// and still reported. Use ``collapseDuplicates(into:)-(Store)`` or a full
+    /// ``rehydrate(into:policy:)`` to reclaim them.
+    ///
+    /// - Parameters:
+    ///   - store: The live store to reconcile.
+    ///   - ids: The identities to re-read. IDs matching no row, and IDs
+    ///     belonging to another entity type, are harmless.
+    ///   - deleted: Identities known to have been deleted elsewhere.
+    ///   - policy: Narrows the configured policy for this call only.
+    public func mergeRemote(
+        into store: Store<State, Action>,
+        ids: Set<UUID>,
+        deleted: Set<UUID> = [],
+        policy: MergePolicy? = nil
+    ) async {
+        await corePlugin.flush()
+        let folds = await mergePhase(.ids(ids, deleted: deleted))
         store.mutate { state in
             for fold in folds { fold(&state, policy) }
         }

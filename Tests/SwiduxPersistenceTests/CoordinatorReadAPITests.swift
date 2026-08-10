@@ -59,6 +59,47 @@ struct CoordinatorReadAPITests {
     // an empty result rather than an error, and corrupting the store file is
     // served from cache. Left uncovered deliberately rather than faked.
 
+    @Test("fetch(ids:of:) returns only the named rows and leaves state alone")
+    func fetchByIDsReturnsNamedRows() async throws {
+        let coordinator = try makeNotesCoordinator()
+        let wanted = Note(id: UUID(), title: "wanted", pinned: true)
+        let other = Note(id: UUID(), title: "other", pinned: false)
+        try await coordinator.database.apply(writes: [wanted, other], deletions: [], as: NoteModel.self)
+
+        let rows = try await coordinator.fetch(ids: [wanted.id], of: Note.self)
+
+        #expect(rows == [wanted])
+    }
+
+    @Test("fetch(ids:of:) flushes pending writes first, so it can't read a stale row")
+    func fetchByIDsFlushesByDefault() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        var state = NotesState()
+        let note = Note(id: UUID(), title: "just typed", pinned: false)
+        state.notes[note.id] = note
+        coordinator.corePlugin.drainAndScheduleFlush(&state)
+
+        let rows = try await coordinator.fetch(ids: [note.id], of: Note.self)
+
+        #expect(rows == [note], "a buffered write must be on disk before the read returns")
+    }
+
+    @Test("fetch(ids:of:) reports the duplicates it collapsed")
+    func fetchByIDsReportsDuplicates() async throws {
+        let diagnostics = SendableBox<[PersistenceDiagnostic]>([])
+        let container = try makeNotesContainer()
+        let coordinator = try makeNotesCoordinator(
+            container: container,
+            onDiagnostic: { diagnostic in diagnostics.withValue { $0.append(diagnostic) } })
+        let id = UUID()
+        try seedDuplicates(container, id: id, title: "dup", count: 3)
+
+        let rows = try await coordinator.fetch(ids: [id], of: Note.self)
+
+        #expect(rows.count == 1)
+        #expect(diagnostics.value.contains(.duplicateRowsCollapsed(entityType: "Note", count: 2)))
+    }
+
     @Test("snapshot(of:) yields a change-free EntityStore")
     func snapshotRecordsNoChanges() async throws {
         let coordinator = try makeNotesCoordinator()

@@ -57,6 +57,12 @@ public struct PersistedEntity<State> {
     /// Phase 1 of re-hydration: reads the database, touches no state.
     let readForMerge: @MainActor (DatabaseHandle, PersistenceObservers) async -> MergeApply
 
+    /// Phase 1 of a *partial* re-hydration: reads only the named rows, touches
+    /// no state. The IDs are everything the caller wants looked at — the ones it
+    /// believes changed plus the ones it believes were deleted, since a row
+    /// still on disk is what refutes a stale tombstone.
+    let readForPartialMerge: @MainActor (DatabaseHandle, PersistenceObservers, Set<UUID>) async -> MergeApply
+
     /// Runs the registered collapse against disk, if any, and returns the fold
     /// that removes the losers from live state.
     let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
@@ -111,11 +117,67 @@ public struct PersistedEntity<State> {
                 let fetched = try await handle.db.fetchAllCollapsing(E.Model.self)
                 (rows, removedIDs, duplicates) = (fetched.domains, [], fetched.duplicatesCollapsed)
             }
-            if duplicates > 0 {
-                observers.onDiagnostic(
-                    .duplicateRowsCollapsed(entityType: entityTypeName, count: duplicates))
-            }
+            reportDuplicates(duplicates, to: observers)
             return (rows, removedIDs)
+        }
+
+        /// Emits the duplicate-collapse diagnostic, when there was one.
+        ///
+        /// Both read paths collapse and both have to say so; only the count
+        /// differs. Kept in one place so a change to what the diagnostic carries
+        /// can't reach one path and miss the other.
+        @MainActor
+        func reportDuplicates(_ count: Int, to observers: PersistenceObservers) {
+            guard count > 0 else { return }
+            observers.onDiagnostic(
+                .duplicateRowsCollapsed(entityType: entityTypeName, count: count))
+        }
+
+        /// The bookkeeping both merges share: which IDs storage has no authority
+        /// over, and which editing holds actually cost something.
+        ///
+        /// `absenceRemoves` answers "would this ID have been removed, had the
+        /// hold not been in force?" for a row storage no longer has — inferred
+        /// from absence on the full path, declared outright on the partial one.
+        /// It is the only thing the two paths disagree about here.
+        ///
+        /// `candidates` is every ID this merge could possibly act on. It exists
+        /// so "in-memory wins" costs what the merge costs: `reconcile` consults
+        /// the preserved set only for rows it is about to write or remove, so
+        /// naming the whole table would make an O(k) merge allocate O(N) —
+        /// precisely what the by-ID path is for. The full path passes every held
+        /// ID because it really can act on any of them.
+        ///
+        /// - Returns: The IDs to preserve through the reconcile.
+        @MainActor
+        func resolvePreserved(
+            current: EntityStore<E>,
+            incoming: EntityStore<E>,
+            candidates: some Sequence<UUID>,
+            context: MergeContext,
+            observers: PersistenceObservers,
+            absenceRemoves: (UUID) -> Bool
+        ) -> Set<UUID> {
+            // "In-memory wins" is just "preserve everything already held", so
+            // one primitive serves every policy. Candidates the store doesn't
+            // hold are dropped: preserving one would block the insert that
+            // additive merging is supposed to make.
+            let preserved =
+                context.policy.remoteWinsOnConflict
+                ? context.locallyOwnedIDs
+                : context.locallyOwnedIDs.union(candidates.lazy.filter(current.contains))
+            // Report only holds that actually cost something. The hold is in
+            // force on every tick an open editor produces, so reporting one per
+            // tick would drown the channel and say nothing about a leak.
+            let withheld = context.heldIDs.filter { id in
+                guard let held = current[id] else { return false }
+                guard let stored = incoming[id] else { return absenceRemoves(id) }
+                return stored != held
+            }
+            if !withheld.isEmpty {
+                observers.onDiagnostic(.mergeWithheld(entityType: entityTypeName, ids: withheld))
+            }
+            return preserved
         }
 
         return PersistedEntity(
@@ -195,12 +257,6 @@ public struct PersistedEntity<State> {
                         // zombie until relaunch. Recorded as a deletion so it
                         // also propagates to any peer that still holds it.
                         current.remove(ids: loaded.removedIDs)
-                        // "In-memory wins" is just "preserve everything already
-                        // held", so one primitive serves every policy.
-                        let preserved =
-                            context.policy.remoteWinsOnConflict
-                            ? context.locallyOwnedIDs
-                            : context.locallyOwnedIDs.union(current.values.map(\.id))
                         // An empty snapshot is indistinguishable from a store
                         // that is unreadable or mid-import, so refuse to read
                         // "everything was deleted" out of it — the same stance
@@ -208,21 +264,49 @@ public struct PersistedEntity<State> {
                         let removes =
                             context.policy.removesMissingEntities
                             && !(incoming.isEmpty && !current.isEmpty)
-                        // Report only holds that actually cost something. The
-                        // hold is in force on every tick an open editor
-                        // produces, so reporting one per tick would drown the
-                        // channel and say nothing about a leak.
-                        let withheld = context.heldIDs.filter { id in
-                            guard let held = current[id] else { return false }
-                            guard let stored = incoming[id] else { return removes }
-                            return stored != held
-                        }
-                        if !withheld.isEmpty {
-                            observers.onDiagnostic(
-                                .mergeWithheld(entityType: entityTypeName, ids: withheld))
-                        }
+                        // Every held ID is a candidate: a full merge can write or
+                        // remove any row in the table.
+                        let preserved = resolvePreserved(
+                            current: current, incoming: incoming,
+                            candidates: current.values.lazy.map(\.id), context: context,
+                            observers: observers, absenceRemoves: { _ in removes })
                         current.reconcile(
                             with: incoming, preserving: preserved, removingMissing: removes)
+                        state[keyPath: keyPath] = current
+                    }
+                } catch {
+                    observers.onFailure(
+                        PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
+                    return { _, _ in }
+                }
+            },
+            readForPartialMerge: { handle, observers, ids in
+                do {
+                    // The registered collapse resolver deliberately does not run
+                    // here: it is handed every row of the table and asked which
+                    // survive, so running it against a subset would have it
+                    // judge a world it cannot see. Duplicates are still
+                    // collapsed on read, and still reported.
+                    let fetched = try await handle.db.fetchCollapsing(ids: ids, as: E.Model.self)
+                    reportDuplicates(fetched.duplicatesCollapsed, to: observers)
+                    let incoming = EntityStore(fetched.domains)
+                    return { state, context in
+                        var current = state[keyPath: keyPath]
+                        // No empty-snapshot guard, and none needed: this path
+                        // never infers a deletion, so an empty read removes
+                        // nothing on its own. Removal is exactly what the caller
+                        // declared, where policy grants the authority.
+                        let deleting =
+                            context.policy.removesMissingEntities ? context.deletedIDs : []
+                        // Only the rows this merge can reach: `reconcile` writes
+                        // what the snapshot holds and removes what was declared,
+                        // and consults the preserved set for nothing else.
+                        let preserved = resolvePreserved(
+                            current: current, incoming: incoming,
+                            candidates: incoming.values.map(\.id) + deleting, context: context,
+                            observers: observers, absenceRemoves: { deleting.contains($0) })
+                        current.reconcile(
+                            with: incoming, deleting: deleting, preserving: preserved)
                         state[keyPath: keyPath] = current
                     }
                 } catch {
