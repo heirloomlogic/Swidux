@@ -87,6 +87,17 @@ public struct PersistedEntity<State> {
     /// that removes the losers from live state.
     let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
 
+    /// `Schema.entityName(for:)` for this registration's model — how a merge
+    /// tells which of the identities it was handed are this entity's.
+    ///
+    /// The *model's* name, not the domain type's: it is what a
+    /// `PersistentIdentifier` reports, and so what a history scan attributes a
+    /// change with. Read off the history reader rather than stored again, so the
+    /// name a scan groups by and the name a merge matches on cannot drift apart.
+    /// Two registrations over the same model share it, and should — whatever
+    /// names one of them names both.
+    var entityName: String { historyReader.entityName }
+
     /// This entity's contribution to a persistent-history scan.
     ///
     /// Built here rather than in the scan because reading a tombstone needs

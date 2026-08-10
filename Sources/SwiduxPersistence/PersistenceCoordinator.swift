@@ -325,30 +325,65 @@ public final class PersistenceCoordinator<State, Action> {
         return applies
     }
 
-    /// Whether a re-hydration read the whole table or only named rows.
+    /// Whether a re-hydration read the whole table or only named rows — and if
+    /// only named rows, whether the caller could say which entity owns them.
     ///
-    /// The two differ in what they can conclude, not just in what they cost. A
-    /// whole-table read may infer a deletion from a row's absence; a partial one
-    /// may not — an ID that isn't in the result was not asked for. So the scope
-    /// travels with the read and decides where deletions come from.
+    /// The whole-table and partial scopes differ in what they can conclude, not
+    /// just in what they cost: a whole-table read may infer a deletion from a
+    /// row's absence, a partial one may not, because an ID that isn't in the
+    /// result was not asked for. So the scope travels with the read and decides
+    /// where deletions come from.
+    ///
+    /// The two partial scopes differ only in cost. Attribution is knowledge some
+    /// callers have and others don't, and neither answer changes what a merge is
+    /// allowed to conclude.
     fileprivate enum MergeScope {
         case wholeTable
 
-        /// Read only these IDs, and treat `deleted` as the only evidence of
-        /// removal. Declared deletions are read too: a row storage still holds
-        /// is what refutes a stale tombstone, and only a fetch can tell us that.
-        case ids(Set<UUID>, deleted: Set<UUID>)
+        /// Read only these IDs, each already attributed to the entity that owns
+        /// it, and treat `deleted` as the only evidence of removal. An entity
+        /// absent from both maps has nothing to do and is skipped outright.
+        ///
+        /// What ``mergeChanges(into:policy:)`` uses: a history scan resolves
+        /// every change through a `PersistentIdentifier`, which names its entity,
+        /// so the attribution is free and worth keeping.
+        case attributed(changed: [String: Set<UUID>], deleted: [String: Set<UUID>])
 
-        var declaredDeletions: Set<UUID> {
-            if case .ids(_, let deleted) = self { return deleted }
-            return []
+        /// Read these IDs in every registered entity, because the caller knows
+        /// the identities but not their types.
+        ///
+        /// What ``mergeRemote(into:ids:deleted:policy:)`` uses. Its callers take
+        /// a set of identities off a sync signal and genuinely cannot attribute
+        /// them, and that stays a supported thing not to know — the cost is one
+        /// small round trip per unrelated entity, and an ID belonging to one
+        /// entity simply matches no row in the others.
+        ///
+        /// `reading` is the union of the changed and deleted sets, taken once
+        /// when the scope is built. Every entity is handed the same answer, so
+        /// computing it per entity would be E copies of one set — the waste this
+        /// whole scoping exists to remove, reintroduced on the other path.
+        case unattributed(reading: Set<UUID>, deleted: Set<UUID>)
+
+        /// The IDs `entityName` was told were deleted.
+        func declaredDeletions(for entityName: String) -> Set<UUID> {
+            switch self {
+            case .wholeTable: []
+            case .attributed(_, let deleted): deleted[entityName] ?? []
+            case .unattributed(_, let deleted): deleted
+            }
         }
 
-        /// The IDs to read, unioned once for the whole phase rather than per
-        /// registered entity.
-        var reading: Set<UUID> {
-            if case .ids(let ids, let deleted) = self { return ids.union(deleted) }
-            return []
+        /// Everything `entityName` should read: what it was told changed, plus
+        /// what it was told was deleted. Declared deletions are read too — a row
+        /// storage still holds is what refutes a stale tombstone, and only a
+        /// fetch can tell us that.
+        func reading(for entityName: String) -> Set<UUID> {
+            switch self {
+            case .wholeTable: []
+            case .attributed(let changed, let deleted):
+                (changed[entityName] ?? []).union(deleted[entityName] ?? [])
+            case .unattributed(let reading, _): reading
+            }
         }
     }
 
@@ -360,23 +395,26 @@ public final class PersistenceCoordinator<State, Action> {
     /// fetch has completed, and a write that landed during the flush or during
     /// the fetch still counts as locally owned.
     ///
-    /// A partial scope's ID set is flat rather than keyed by entity type:
-    /// identities are UUIDs and don't collide across types, so an ID belonging
-    /// to one entity simply matches no row in the others. The cost is one small
-    /// round trip per unrelated entity, which is the trade for a caller that
-    /// knows *which* rows changed but not necessarily *what* they are.
+    /// An entity a partial scope named nothing for is skipped entirely rather
+    /// than read with an empty set. The two are equivalent — an empty set chunks
+    /// to no queries, and reconciling against an empty snapshot with nothing
+    /// declared deleted mutates nothing — so skipping saves the actor hop and
+    /// leaves a skipped entity indistinguishable from one that had no news.
     private func mergePhase(_ scope: MergeScope = .wholeTable) async -> MergePhase {
         var folds: [MergeFold] = []
         folds.reserveCapacity(entities.count)
         var allReadsSucceeded = true
-        let reading = scope.reading
-        let deleted = scope.declaredDeletions
         for (entity, writer) in zip(entities, writers) {
-            let read =
-                switch scope {
-                case .wholeTable: await entity.readForMerge(handle, observers)
-                case .ids: await entity.readForPartialMerge(handle, observers, reading)
-                }
+            let deleted = scope.declaredDeletions(for: entity.entityName)
+            let read: PersistedEntity<State>.MergeRead
+            switch scope {
+            case .wholeTable:
+                read = await entity.readForMerge(handle, observers)
+            case .attributed, .unattributed:
+                let reading = scope.reading(for: entity.entityName)
+                guard !reading.isEmpty else { continue }
+                read = await entity.readForPartialMerge(handle, observers, reading)
+            }
             allReadsSucceeded = allReadsSucceeded && read.succeeded
             folds.append(fold(read.apply, entity, writer, deleted: deleted))
         }
@@ -557,9 +595,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // has to see local intent already on disk, or a delete the user just undid
         // has nothing there to refute its own tombstone with.
         let complete = await merge(
-            .ids(scan.changed, deleted: scan.deleted), into: store, policy: policy)
-        observers.onDiagnostic(
-            .remoteChangesMerged(count: scan.changed.count + scan.deleted.count))
+            .attributed(changed: scan.changed, deleted: scan.deleted), into: store, policy: policy)
+        observers.onDiagnostic(.remoteChangesMerged(count: scan.count))
         if complete {
             handle.installWatermark(newWatermark, ifGeneration: anchor.generation)
         }
@@ -717,7 +754,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         deleted: Set<UUID> = [],
         policy: MergePolicy? = nil
     ) async {
-        await merge(.ids(ids, deleted: deleted), into: store, policy: policy)
+        await merge(
+            .unattributed(reading: ids.union(deleted), deleted: deleted),
+            into: store, policy: policy)
     }
 
     /// Runs every registered collapse resolver against storage, applying the

@@ -37,13 +37,23 @@ struct EntityHistoryReader: Sendable {
     let tombstoneID: @Sendable (HistoryChange) -> UUID?
 }
 
-/// The identities one window of persistent history touched.
+/// The identities one window of persistent history touched, keyed by the entity
+/// that owns them.
+///
+/// Keyed rather than flat because the scan knows the attribution for free —
+/// every change arrives with a `PersistentIdentifier.entityName` — and throwing
+/// it away would have the merge offer every ID to every registered entity, so an
+/// app with E entities pays E fetches per tick to answer one of them.
+///
+/// An entity with nothing in the window is **absent**, never present-and-empty.
+/// The two would be indistinguishable to ``isEmpty``, and a window that resolved
+/// to no identities at all must not read as one that named some.
 struct HistoryScan: Sendable {
     /// Inserted or updated — read these back and reconcile them.
-    var changed: Set<UUID> = []
+    var changed: [String: Set<UUID>] = [:]
 
     /// Deleted, read from tombstones. Positive evidence, unlike an absent row.
-    var deleted: Set<UUID> = []
+    var deleted: [String: Set<UUID>] = [:]
 
     /// The highest token in the window, or `nil` when the window was empty.
     ///
@@ -54,6 +64,11 @@ struct HistoryScan: Sendable {
 
     /// Whether the window named no rows this store mirrors.
     var isEmpty: Bool { changed.isEmpty && deleted.isEmpty }
+
+    /// How many identities the window named, across every entity.
+    var count: Int {
+        changed.values.reduce(0) { $0 + $1.count } + deleted.values.reduce(0) { $0 + $1.count }
+    }
 }
 
 /// Why a window could not be resolved into identities.
@@ -151,7 +166,7 @@ extension EntityDB {
                     guard let id = reader.tombstoneID(change) else {
                         throw HistoryScanFailure.unidentifiedDeletion(entityName: reader.entityName)
                     }
-                    scan.deleted.insert(id)
+                    scan.deleted[reader.entityName, default: []].insert(id)
                 case .insert, .update:
                     changedPIDs[reader.entityName, default: []].append(identifier)
                 @unknown default:
@@ -166,7 +181,12 @@ extension EntityDB {
         for (entityName, identifiers) in changedPIDs {
             guard let reader = byName[entityName] else { continue }
             let resolved = try identities(of: identifiers, asConcrete: reader.modelType)
-            scan.changed.formUnion(resolved.values)
+            // Absent, not present-and-empty: a group whose every identifier was
+            // deleted later in this same window resolves to nothing, and leaving
+            // the key behind would make `isEmpty` claim the window named rows.
+            if !resolved.isEmpty {
+                scan.changed[entityName, default: []].formUnion(resolved.values)
+            }
             // A row that no longer exists is explicable exactly once: it was
             // deleted later in this same window, and the tombstone already named
             // it. Anything else means the window holds a change this scan cannot
