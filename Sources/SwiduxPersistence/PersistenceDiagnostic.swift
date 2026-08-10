@@ -87,6 +87,26 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         /// can leak — and a leaked hold otherwise presents as a row that quietly
         /// stopped syncing.
         public static let mergeWithheld = Kind(rawValue: "mergeWithheld")
+
+        /// A remote-change tick resolved persistent history into a bounded set
+        /// of identities and merged only those.
+        ///
+        /// The healthy case, and the one worth watching: if it stops appearing,
+        /// ticks have quietly fallen back to re-reading every table.
+        public static let remoteChangesMerged = Kind(rawValue: "remoteChangesMerged")
+
+        /// A tick could not narrow its work from persistent history and re-read
+        /// every registered entity instead.
+        ///
+        /// Expected once per launch, and after a container rebuild. Repeatedly,
+        /// it means something is preventing the watermark from advancing — a
+        /// leaked editing hold, a failing read, or a store recording no usable
+        /// history — and each of those has a different fix. See
+        /// ``PersistenceDiagnostic/fallbackReason``.
+        public static let historyUnavailable = Kind(rawValue: "historyUnavailable")
+
+        /// Transactions older than the retention window were deleted.
+        public static let historyPruned = Kind(rawValue: "historyPruned")
     }
 
     /// Which condition was observed.
@@ -114,6 +134,14 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
     /// empty. Set only for ``Kind/mergeWithheld``.
     public let withheldIDs: Set<UUID>?
 
+    /// How many rows a tick named. Set for ``Kind/remoteChangesMerged``, and for
+    /// ``Kind/historyPruned`` it is the number of transactions deleted.
+    public let affectedCount: Int?
+
+    /// Why a tick fell back to re-reading everything, in prose.
+    /// Set only for ``Kind/historyUnavailable``.
+    public let fallbackReason: String?
+
     /// Creates a diagnostic. Prefer the static constructors, which fill in the
     /// payload each kind actually carries.
     public init(
@@ -122,7 +150,9 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         duplicateCount: Int? = nil,
         drainCount: Int? = nil,
         unpersistedIDs: Set<UUID>? = nil,
-        withheldIDs: Set<UUID>? = nil
+        withheldIDs: Set<UUID>? = nil,
+        affectedCount: Int? = nil,
+        fallbackReason: String? = nil
     ) {
         self.kind = kind
         self.entityType = entityType
@@ -130,6 +160,8 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         self.drainCount = drainCount
         self.unpersistedIDs = unpersistedIDs
         self.withheldIDs = withheldIDs
+        self.affectedCount = affectedCount
+        self.fallbackReason = fallbackReason
     }
 
     /// `count` rows of `entityType` were collapsed away on read.
@@ -153,6 +185,22 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         Self(kind: .mergeWithheld, entityType: entityType, withheldIDs: ids)
     }
 
+    /// A tick merged `count` identities read out of persistent history.
+    public static func remoteChangesMerged(count: Int) -> Self {
+        Self(kind: .remoteChangesMerged, affectedCount: count)
+    }
+
+    /// A tick re-read every registered entity because `reason` stopped it
+    /// narrowing the work.
+    public static func historyUnavailable(reason: String) -> Self {
+        Self(kind: .historyUnavailable, fallbackReason: reason)
+    }
+
+    /// `count` transactions older than the retention window were deleted.
+    public static func historyPruned(count: Int) -> Self {
+        Self(kind: .historyPruned, affectedCount: count)
+    }
+
     /// A one-line summary, suitable for a log line or a `default:` branch that
     /// meets a kind it doesn't recognise.
     public var description: String {
@@ -169,6 +217,12 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
                 : "\(entity): \(ids.count) write(s) not on disk"
         case .mergeWithheld:
             return "\(entity): \((withheldIDs ?? []).count) remote change(s) withheld by an editing hold"
+        case .remoteChangesMerged:
+            return "merged \(affectedCount ?? 0) changed row(s) from persistent history"
+        case .historyUnavailable:
+            return "re-read every entity: \(fallbackReason ?? "history was unavailable")"
+        case .historyPruned:
+            return "pruned \(affectedCount ?? 0) history transaction(s)"
         default:
             // A kind from a newer version. Still worth printing.
             return kind.rawValue

@@ -91,6 +91,7 @@ func makeNotesCoordinator(
     debounce: Duration = .milliseconds(10),
     retry: RetryPolicy = .default,
     mergePolicy: MergePolicy = .preferRemote,
+    historyRetention: Duration? = .seconds(7 * 24 * 60 * 60),
     entityPolicy: MergePolicy? = nil,
     collapse: (@Sendable ([Note]) -> [Note])? = nil,
     onFailure: PersistenceFailureHandler? = nil,
@@ -102,6 +103,7 @@ func makeNotesCoordinator(
         debounce: debounce,
         retry: retry,
         mergePolicy: mergePolicy,
+        historyRetention: historyRetention,
         onFailure: onFailure,
         onDiagnostic: onDiagnostic
     )

@@ -149,6 +149,16 @@ The one difference is deletions. A partial read can't tell a deleted row from on
 
 Two things it deliberately doesn't do: a registered `collapse:` resolver doesn't run (it judges the whole table, and a subset would have it judge a world it can't see — duplicates are still collapsed on read and still reported), and the ID set isn't keyed by entity type, so each registered entity pays one small round trip for IDs that turn out not to be its own.
 
+When *nothing* told you which identities changed — the usual case for a CloudKit remote-change notification — `mergeChanges(into:)` works it out for itself from the store's persistent-history log and spends the result through the same path, falling back to a full `rehydrate(into:)` for any window it can't fully account for. See <doc:HowToAddICloudSync>.
+
+### Persistent history
+
+SwiftData records a transaction log for every file-backed store, whether or not you read it. `mergeChanges(into:)` is what reads it; nothing else trims it, so left alone it grows for the life of the app.
+
+So the coordinator prunes it — transactions older than `historyRetention` (seven days by default) are deleted once per launch, from `hydrate(into:)`. Pass `historyRetention: nil` to turn that off, or call `pruneHistory(before:)` yourself.
+
+A **CloudKit-mirrored store is never pruned**, whatever you pass. Mirroring reads the same log to decide what to export, there is no API to ask how far it has got, and deleting a transaction it hasn't exported yet resets the sync state and forces a full re-upload. Unpruned history is the status quo; a broken export isn't.
+
 ### Reading rows without touching state
 
 For exports, migrations, diagnostics, or any other "what's actually on disk?" question, read directly — naming your domain type, not its generated shadow:

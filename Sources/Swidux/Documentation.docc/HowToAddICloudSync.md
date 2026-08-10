@@ -136,12 +136,20 @@ Start a `RemoteChangeObserver` while in cloud mode to pull in changes from other
 ```swift
 let observer = RemoteChangeObserver(debounce: .seconds(2)) { [weak store] in
     guard let store else { return }
-    await persistence.rehydrate(into: store)   // merge, never replace
+    await persistence.mergeChanges(into: store)   // merge, never replace
 }
 observer.start()
 ```
 
 Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
+
+`mergeChanges(into:)` reads the store's persistent-history log to find out *which* rows changed since the last tick and merges only those, so a tick on an N-row table where k rows changed costs O(k) rather than re-reading every table. A tick with nothing behind it costs one history fetch and stops there.
+
+It falls back to a full `rehydrate(into:)` for any window it can't fully account for — the first tick after launch or a container rebuild, an expired or failed history read, a deletion recorded before `@Attribute(.preserveValueOnDeletion)` shipped, or more than one store behind the container. The fallback is not a weakening: it keeps the empty-snapshot guard, and it re-establishes the watermark on the way through. Watch ``PersistenceDiagnostic/Kind/historyUnavailable`` if you want to know when it happens; seeing it on every tick means something is stopping the watermark advancing, and `fallbackReason` says what.
+
+The watermark lives for one session and is discarded whenever the container is swapped. There is nothing to persist across launches: state starts empty, so launch does a full `hydrate(into:)` read regardless, and a stored token could only ever describe rows that never reached memory.
+
+Calling `rehydrate(into:)` from the observer instead still works and is still correct — it is just O(N) per tick.
 
 `.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Feeding the app its own writes is a no-op: the rows it reads back are the ones it just wrote, and anything still pending is exempt from the merge, so the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
 
@@ -159,7 +167,7 @@ By default (`MergePolicy.preferRemote`) remote creations, edits, **and** deletio
 
 Three things are worth knowing:
 
-- **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing.
+- **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing. This applies to the whole-table read, where absence is the only evidence there is. `mergeChanges(into:)` reads deletions from history tombstones, which *are* evidence, so it needs no such guard and can remove the last surviving row.
 - **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Declare it with an editing hold — see below.
 - **Undo can't resurrect a remote deletion.** Once a deletion made elsewhere surfaces, `restore(from:)` skips that ID — otherwise an older undo snapshot would write the row back as a *creation* and re-seed every peer. The ID becomes undoable again if the user recreates it or the row returns to disk. See <doc:UndoRedo>.
 

@@ -87,6 +87,12 @@ public struct PersistedEntity<State> {
     /// that removes the losers from live state.
     let collapseOnDisk: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
 
+    /// This entity's contribution to a persistent-history scan.
+    ///
+    /// Built here rather than in the scan because reading a tombstone needs
+    /// `E.Model` bound concretely, and this factory is the only place it is.
+    let historyReader: EntityHistoryReader
+
     /// Registers the `EntityStore<E>` at `keyPath` for persistence.
     ///
     /// - Parameters:
@@ -358,7 +364,33 @@ public struct PersistedEntity<State> {
                         PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
                     return { _ in }
                 }
-            }
+            },
+            historyReader: EntityHistoryReader(
+                entityName: Schema.entityName(for: E.Model.self),
+                modelType: E.Model.self,
+                tombstoneID: { change in
+                    guard case .delete(let deletion) = change else { return nil }
+                    // Pattern-match *then* bind: `HistoryChange` is an enum, and
+                    // casting one straight to `any HistoryDelete` compiles and
+                    // always misses.
+                    guard let tombstone = (deletion as? any HistoryDelete<E.Model>)?.tombstone else {
+                        return nil
+                    }
+                    // Iterated, not `tombstone[\.id]`. The subscript looks a value
+                    // up by key-path identity, and `\E.Model.id` written here —
+                    // in a generic context — is the protocol witness rather than
+                    // the stored attribute the tombstone is keyed by, so it
+                    // silently finds nothing. In Debug as well as Release.
+                    //
+                    // Requiring *exactly* one identity is the safety: `@Persisted`
+                    // preserves only `id`, so a tombstone carrying several
+                    // candidates came from a model this can't read, and guessing
+                    // between them would delete the wrong row. Nil escalates the
+                    // tick to a full re-hydration, which needs no tombstone.
+                    let candidates = tombstone.compactMap { $0 as? UUID }
+                    return candidates.count == 1 ? candidates.first : nil
+                }
+            )
         )
     }
 }
