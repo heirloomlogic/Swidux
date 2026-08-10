@@ -143,7 +143,7 @@ observer.start()
 
 Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
 
-`mergeChanges(into:)` reads the store's persistent-history log to find out *which* rows changed since the last tick and merges only those, so a tick on an N-row table where k rows changed costs O(k) rather than re-reading every table. A tick with nothing behind it costs one history fetch and stops there.
+`mergeChanges(into:)` reads the store's persistent-history log to find out *which* rows changed since the last tick and merges only those, so a tick on an N-row table where k rows changed costs O(k) rather than re-reading every table. History names the entity each changed row belongs to, so a tick reads only the entities it actually has news for — editing one note in a five-entity app is one query, not five. A tick with nothing behind it costs one history fetch and stops there.
 
 It falls back to a full `rehydrate(into:)` for any window it can't fully account for — the first tick after launch or a container rebuild, an expired or failed history read, a deletion recorded before `@Attribute(.preserveValueOnDeletion)` shipped, or more than one store behind the container. The fallback is not a weakening: it keeps the empty-snapshot guard, and it re-establishes the watermark on the way through. Watch ``PersistenceDiagnostic/Kind/historyUnavailable`` if you want to know when it happens; seeing it on every tick means something is stopping the watermark advancing, and `fallbackReason` says what.
 

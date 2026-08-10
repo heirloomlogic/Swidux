@@ -175,9 +175,14 @@ func diagnosticLog() -> (SendableBox<[PersistenceDiagnostic]>, PersistenceDiagno
 }
 
 extension SendableBox where T == [PersistenceDiagnostic] {
-    /// Whether a diagnostic of `kind` was reported.
-    func contains(_ kind: PersistenceDiagnostic.Kind) -> Bool {
-        value.contains { $0.kind == kind }
+    /// Whether a diagnostic of `kind` was reported — for `entityType`, when one
+    /// is named.
+    ///
+    /// Naming the entity is what lets a multi-entity suite ask "was this entity
+    /// read at all?", since a read that touches duplicate rows collapses them
+    /// and says so.
+    func contains(_ kind: PersistenceDiagnostic.Kind, entityType: String? = nil) -> Bool {
+        value.contains { $0.kind == kind && (entityType == nil || $0.entityType == entityType) }
     }
 
     /// The prose reasons of every fallback reported.
