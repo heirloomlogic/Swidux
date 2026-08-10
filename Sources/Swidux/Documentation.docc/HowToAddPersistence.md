@@ -135,6 +135,20 @@ It takes the **store**, not `inout State`: re-hydration is asynchronous, and a c
 
 If you need to *read* rows without touching state, don't re-hydrate into a throwaway `AppState()` — that idiom breaks silently the moment re-hydration starts reading the state it is handed. Use `fetchAll(of:)` / `snapshot(of:)` on the coordinator instead.
 
+### Refreshing only the rows that changed
+
+`rehydrate(into:)` re-reads every row of every registered entity. When something already told you *which* identities changed — a sync signal, a server push, a screen that knows what it just touched — `mergeRemote(into:ids:deleted:)` spends that knowledge instead of rediscovering it:
+
+```swift
+await persistence.mergeRemote(into: store, ids: changedIDs, deleted: tombstonedIDs)
+```
+
+One batched fetch per 500 IDs instead of a full-table scan, and only the named entities are reconciled — everything else in state is left exactly as it was. Every guarantee `rehydrate(into:)` makes still holds: pending writes flush first, and an ID with unflushed local intent always wins.
+
+The one difference is deletions. A partial read can't tell a deleted row from one you simply didn't ask about, so this **never** infers a deletion — an ID vanishes only if you name it in `deleted:`, and only if the resolved policy allows removal. Name only what you have positive evidence for. In exchange there's no empty-snapshot guard to work around, so unlike `rehydrate(into:)` this *can* remove the last surviving entity.
+
+Two things it deliberately doesn't do: a registered `collapse:` resolver doesn't run (it judges the whole table, and a subset would have it judge a world it can't see — duplicates are still collapsed on read and still reported), and the ID set isn't keyed by entity type, so each registered entity pays one small round trip for IDs that turn out not to be its own.
+
 ### Reading rows without touching state
 
 For exports, migrations, diagnostics, or any other "what's actually on disk?" question, read directly — naming your domain type, not its generated shadow:
@@ -142,6 +156,7 @@ For exports, migrations, diagnostics, or any other "what's actually on disk?" qu
 ```swift
 let notes = try await persistence.fetchAll(of: Note.self)
 let store = try await persistence.snapshot(of: Note.self)   // as an EntityStore
+let some  = try await persistence.fetch(ids: knownIDs, of: Note.self)   // just these
 ```
 
 Both flush the debounce window first by default, so they can't return a stale row for something the user just edited; pass `flushPending: false` on a hot path where that doesn't matter. Both report failures to `onFailure` **and** rethrow — there is no state to leave untouched here, so swallowing the error could only present an unreadable database as "no data".

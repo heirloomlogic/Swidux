@@ -77,6 +77,18 @@ struct MergeContext {
     /// declared it is editing.
     let locallyOwnedIDs: Set<UUID>
 
+    /// IDs the caller has positive evidence were deleted elsewhere.
+    ///
+    /// Only a partial merge fills this in. A full-table merge infers deletion
+    /// from a row's absence, which a snapshot covering *some* IDs cannot do —
+    /// an ID that isn't there wasn't deleted, it wasn't asked for. Honoured only
+    /// where ``MergePolicy/removesMissingEntities`` grants the authority, and
+    /// never for an ID storage still holds.
+    ///
+    /// Not defaulted: a full merge passes an empty set because absence is its
+    /// evidence, and that should be a statement rather than an omission.
+    let deletedIDs: Set<UUID>
+
     /// The subset of ``locallyOwnedIDs`` exempt *only* because an
     /// ``EditingHolds`` hold is in force.
     ///

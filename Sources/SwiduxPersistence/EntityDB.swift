@@ -48,18 +48,18 @@ public actor EntityDB {
         try fetchAllCollapsing(M.self).domains
     }
 
-    /// ``fetchAll(_:)`` plus how many rows it collapsed away.
+    /// Collapses rows to one domain value per `id`, keeping the first in fetch
+    /// order, and logs it when anything was collapsed.
     ///
-    /// The count is returned rather than pushed through a handler stored on the
-    /// actor: `EntityDB` is swapped wholesale when a container is rebuilt (see
-    /// ``DatabaseHandle``), and a handler living here would have to be
-    /// reinstalled on every swap. Callers on the main actor already hold the
-    /// app's diagnostic handler, so they emit it.
-    func fetchAllCollapsing<M: PersistableModel>(
-        _ type: M.Type
-    ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
-        let rows = try modelContext.fetch(FetchDescriptor<M>())
-        var seen = Set<UUID>()
+    /// The single definition of what "collapse" means on a read, shared by the
+    /// full-table and by-ID paths. Two reads of the same row disagreeing on the
+    /// survivor would make a partial merge flap between values on every tick.
+    ///
+    /// - Returns: The domain values, and how many rows were collapsed away. The
+    ///   count goes back to the caller as well as to the log: only the main
+    ///   actor holds the app's diagnostic handler.
+    private func collapse<M: PersistableModel>(_ rows: [M]) -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+        var seen = Set<UUID>(minimumCapacity: rows.count)
         var domains: [M.Domain] = []
         domains.reserveCapacity(rows.count)
         for row in rows where seen.insert(row.id).inserted {
@@ -78,6 +78,19 @@ public actor EntityDB {
         return (domains, duplicates)
     }
 
+    /// ``fetchAll(_:)`` plus how many rows it collapsed away.
+    ///
+    /// The count is returned rather than pushed through a handler stored on the
+    /// actor: `EntityDB` is swapped wholesale when a container is rebuilt (see
+    /// ``DatabaseHandle``), and a handler living here would have to be
+    /// reinstalled on every swap. Callers on the main actor already hold the
+    /// app's diagnostic handler, so they emit it.
+    func fetchAllCollapsing<M: PersistableModel>(
+        _ type: M.Type
+    ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+        collapse(try modelContext.fetch(FetchDescriptor<M>()))
+    }
+
     /// Loads every persisted row of the **domain** type `E`.
     ///
     /// The same read as ``fetchAll(_:)``, named by the entity you wrote rather
@@ -85,6 +98,47 @@ public actor EntityDB {
     /// of `fetchAll(NoteModel.self)`.
     public func fetchAll<E: PersistableEntity>(of type: E.Type) throws -> [E] {
         try fetchAll(E.Model.self)
+    }
+
+    /// Loads just the rows named by `ids`, and reconstructs domain values.
+    ///
+    /// The by-ID counterpart to ``fetchAll(of:)``: the read a caller who already
+    /// knows *which* rows changed should make, instead of scanning the table to
+    /// find out. Costs one round trip per ``batchFetchChunkSize`` IDs and
+    /// materializes only the rows it asked for, so a sync tick that touched
+    /// three rows no longer pays for the whole table.
+    ///
+    /// IDs with no row are skipped rather than reported, so a short result is
+    /// not evidence of anything — see
+    /// ``PersistenceCoordinator/mergeRemote(into:ids:deleted:policy:)`` for what
+    /// that costs a merge.
+    ///
+    /// Rows sharing an `id` collapse to the first in fetch order, identically to
+    /// ``fetchAll(of:)``. Duplicates are logged, not treated as an error.
+    ///
+    /// - Parameters:
+    ///   - ids: The identities to load. Duplicates and unknown IDs are harmless.
+    ///   - type: The domain entity type, e.g. `Note.self`.
+    /// - Returns: One domain value per matched `id`, in fetch order.
+    /// - Throws: Whatever the underlying fetch throws.
+    public func fetch<E: PersistableEntity>(
+        ids: some Sequence<UUID>,
+        of type: E.Type
+    ) throws -> [E] {
+        try fetchCollapsing(ids: ids, as: E.Model.self).domains
+    }
+
+    /// ``fetch(ids:of:)`` plus how many rows it collapsed away.
+    ///
+    /// Split out for the same reason ``fetchAllCollapsing(_:)`` is: the count
+    /// goes back to the caller on the main actor, which holds the app's
+    /// diagnostic handler, rather than to a handler stored on an actor that gets
+    /// swapped wholesale on a container rebuild.
+    func fetchCollapsing<M: PersistableModel>(
+        ids: some Sequence<UUID>,
+        as type: M.Type
+    ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+        collapse(try rows(ids: ids, as: M.self))
     }
 
     /// Inserts or updates the row for `domain.id`, then saves.
@@ -255,16 +309,46 @@ public actor EntityDB {
         as type: M.Type
     ) throws -> [UUID: [M]] {
         var byID: [UUID: [M]] = [:]
-        let allIDs = Array(ids)
-        var start = 0
-        while start < allIDs.count {
-            let chunk = Array(allIDs[start..<min(start + Self.batchFetchChunkSize, allIDs.count)])
-            // Per-model descriptor, not a generic `#Predicate` — see `swiduxBatchFetchDescriptor`.
-            for model in try modelContext.fetch(M.swiduxBatchFetchDescriptor(ids: chunk)) {
-                byID[model.id, default: []].append(model)
-            }
-            start += Self.batchFetchChunkSize
+        for model in try rows(ids: ids, as: M.self) {
+            byID[model.id, default: []].append(model)
         }
         return byID
+    }
+
+    /// Every existing row whose ID is in `ids`, in fetch order, fetched in
+    /// chunks of ``batchFetchChunkSize``.
+    ///
+    /// The one place a by-ID fetch is issued — the read path collapses these to
+    /// domain values, the write path groups them by ID. Order is preserved so
+    /// "first row in fetch order wins" means the same thing to both.
+    private func rows<M: PersistableModel>(
+        ids: some Sequence<UUID>,
+        as type: M.Type
+    ) throws -> [M] {
+        var rows: [M] = []
+        for chunk in Self.idChunks(ids) {
+            // Per-model descriptor, not a generic `#Predicate` — see `swiduxBatchFetchDescriptor`.
+            rows.append(contentsOf: try modelContext.fetch(M.swiduxBatchFetchDescriptor(ids: chunk)))
+        }
+        return rows
+    }
+
+    /// Splits `ids` into fetch-sized chunks, deduplicated, in the order given.
+    ///
+    /// Kept separate from the fetch so the batching claim — one round trip per
+    /// ``batchFetchChunkSize`` IDs, whatever the table holds — is directly
+    /// testable. There is no seam to count `ModelContext` fetches.
+    ///
+    /// Order is preserved rather than normalised through a `Set`: which chunk an
+    /// ID lands in decides where its row appears in the result, and `Set`
+    /// iteration is seeded per process. Deduplicating through one would make a
+    /// read of more than ``batchFetchChunkSize`` IDs come back in a different
+    /// order on every launch, and a merge append its new rows accordingly.
+    static func idChunks(_ ids: some Sequence<UUID>) -> [[UUID]] {
+        var seen = Set<UUID>()
+        let unique = ids.filter { seen.insert($0).inserted }
+        return stride(from: 0, to: unique.count, by: batchFetchChunkSize).map {
+            Array(unique[$0..<min($0 + batchFetchChunkSize, unique.count)])
+        }
     }
 }
