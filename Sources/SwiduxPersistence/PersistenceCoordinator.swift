@@ -306,23 +306,56 @@ public final class PersistenceCoordinator<State, Action> {
     /// to one entity simply matches no row in the others. The cost is one small
     /// round trip per unrelated entity, which is the trade for a caller that
     /// knows *which* rows changed but not necessarily *what* they are.
-    private func mergePhase(
-        _ scope: MergeScope = .wholeTable
-    ) async -> [@MainActor (inout State, MergePolicy?) -> Void] {
-        var folds: [@MainActor (inout State, MergePolicy?) -> Void] = []
+    private func mergePhase(_ scope: MergeScope = .wholeTable) async -> MergePhase {
+        var folds: [MergeFold] = []
         folds.reserveCapacity(entities.count)
+        var allReadsSucceeded = true
         let reading = scope.reading
         let deleted = scope.declaredDeletions
         for (entity, writer) in zip(entities, writers) {
-            let merge =
+            let read =
                 switch scope {
                 case .wholeTable: await entity.readForMerge(handle, observers)
                 case .ids: await entity.readForPartialMerge(handle, observers, reading)
                 }
-            folds.append(fold(merge, entity, writer, deleted: deleted))
+            allReadsSucceeded = allReadsSucceeded && read.succeeded
+            folds.append(fold(read.apply, entity, writer, deleted: deleted))
         }
         await duringReadPhase?()
-        return folds
+        return MergePhase(folds: folds, allReadsSucceeded: allReadsSucceeded)
+    }
+
+    /// One entity's bound merge. Returns the IDs it declined to act on.
+    fileprivate typealias MergeFold = @MainActor (inout State, MergePolicy?) -> Set<UUID>
+
+    /// A merge phase's folds, plus what the phase can promise about them.
+    ///
+    /// Whole-table re-hydration ignores both flags — it re-reads everything next
+    /// tick, so an unread entity or a deferred row costs one stale tick and
+    /// nothing more. They exist for callers that consume evidence once.
+    fileprivate struct MergePhase {
+        let folds: [MergeFold]
+
+        /// Whether every registered entity's read completed. A read that threw
+        /// contributes a no-op fold, which is indistinguishable from "nothing
+        /// changed" unless the phase says so.
+        let allReadsSucceeded: Bool
+    }
+
+    /// What a completed merge could and could not promise.
+    ///
+    /// Both fields answer the same question from different ends — "is it safe to
+    /// treat this window as fully consumed?" — and both must be clear before a
+    /// watermark may advance past it.
+    fileprivate struct MergeOutcome {
+        let allReadsSucceeded: Bool
+
+        /// Rows storage had something to say about that the merge declined to
+        /// apply, because an editing hold was in force.
+        let withheldIDs: Set<UUID>
+
+        /// Whether the merge applied everything it read.
+        var isComplete: Bool { allReadsSucceeded && withheldIDs.isEmpty }
     }
 
     /// Binds one entity's already-fetched merge to the dirty sets and the
@@ -336,7 +369,7 @@ public final class PersistenceCoordinator<State, Action> {
         _ entity: PersistedEntity<State>,
         _ writer: StateWriter<State>,
         deleted: Set<UUID>
-    ) -> @MainActor (inout State, MergePolicy?) -> Void {
+    ) -> MergeFold {
         // Lifted out field-by-field so the fold doesn't capture `entity` itself:
         // it outlives this call, and holding the whole registration would keep
         // all five of its closures — and whatever they captured — alive to read
@@ -359,7 +392,7 @@ public final class PersistenceCoordinator<State, Action> {
             var resolved = mergePolicy
             if let entityPolicy { resolved = resolved.restricted(by: entityPolicy) }
             if let override { resolved = resolved.restricted(by: override) }
-            merge(
+            return merge(
                 &state,
                 MergeContext(
                     policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held))
@@ -447,10 +480,26 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     ///     where a row's absence says nothing about whether it was deleted.
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
         await corePlugin.flush()
-        let folds = await mergePhase()
+        apply(await mergePhase(), to: store, policy: policy)
+    }
+
+    /// Applies a phase's folds and reports what the merge could not promise.
+    ///
+    /// The folds run inside one `mutate`, so the merge still lands in a single
+    /// suspension-free step; collecting the withheld IDs on the way out costs
+    /// nothing and is the only way a caller can learn that a row it read was
+    /// deliberately not applied.
+    @discardableResult
+    fileprivate func apply(
+        _ phase: MergePhase,
+        to store: Store<State, Action>,
+        policy: MergePolicy?
+    ) -> MergeOutcome {
+        var withheld: Set<UUID> = []
         store.mutate { state in
-            for fold in folds { fold(&state, policy) }
+            for fold in phase.folds { withheld.formUnion(fold(&state, policy)) }
         }
+        return MergeOutcome(allReadsSucceeded: phase.allReadsSucceeded, withheldIDs: withheld)
     }
 
     /// Re-hydration restricted to the rows a caller already knows changed.
@@ -498,10 +547,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         policy: MergePolicy? = nil
     ) async {
         await corePlugin.flush()
-        let folds = await mergePhase(.ids(ids, deleted: deleted))
-        store.mutate { state in
-            for fold in folds { fold(&state, policy) }
-        }
+        apply(await mergePhase(.ids(ids, deleted: deleted)), to: store, policy: policy)
     }
 
     /// Runs every registered collapse resolver against storage, applying the
