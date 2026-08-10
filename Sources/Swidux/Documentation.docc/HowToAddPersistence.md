@@ -229,7 +229,7 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
 )
 ```
 
-Four kinds ship today:
+Seven kinds ship today:
 
 | Kind | Means | Payload |
 |---|---|---|
@@ -237,6 +237,9 @@ Four kinds ship today:
 | `.possibleDispatchLoop` | `afterReduce` fired far more often in one debounce interval than a user could cause. Usually an effect or plugin dispatching on every state change. Reported once per burst, not once per dispatch. | `drainCount` |
 | `.writesUnpersisted` | The set of IDs whose last flush failed changed. Fires again with an **empty** set once they land, so an indicator can be cleared rather than guessed at. | `entityType`, `unpersistedIDs` |
 | `.mergeWithheld` | A re-hydration left a stored value unapplied because an editing hold was in force. Expected while the user is editing; a hold that outlives the edit shows up here. See <doc:HowToAddICloudSync>. | `entityType`, `withheldIDs` |
+| `.remoteChangesMerged` | A `mergeChanges(into:)` tick narrowed its work from persistent history and merged only the rows that changed. The healthy case — if it stops appearing, ticks have quietly gone back to reading every table. | `mergedCount` |
+| `.historyUnavailable` | A tick couldn't narrow its work and re-read every registered entity. Expected once per launch and after a container rebuild; repeatedly, something is stopping the watermark advancing, and `fallbackReason` says what. | `fallbackReason` |
+| `.historyPruned` | Transactions older than `historyRetention` were deleted. Once per launch, never for a CloudKit-mirrored store. | `prunedCount` |
 
 `PersistenceDiagnostic` is a struct with static constructors rather than an enum, so a future kind can't break an exhaustive `switch` in your code — match on `kind` and read the payload you expect. Duplicate reads and dispatch loops are logged whether or not you supply a handler; the unpersisted set has no log of its own, because the individual `PersistenceFailure`s behind it are already logged.
 

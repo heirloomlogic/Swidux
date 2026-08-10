@@ -345,7 +345,14 @@ public actor EntityDB {
     /// read of more than ``batchFetchChunkSize`` IDs come back in a different
     /// order on every launch, and a merge append its new rows accordingly.
     static func idChunks(_ ids: some Sequence<UUID>) -> [[UUID]] {
-        var seen = Set<UUID>()
+        chunks(ids)
+    }
+
+    /// ``idChunks(_:)`` for any identifier type — the history scan chunks
+    /// `PersistentIdentifier`s through the same rule, and one chunk size with
+    /// two implementations is one too many.
+    static func chunks<ID: Hashable>(_ ids: some Sequence<ID>) -> [[ID]] {
+        var seen = Set<ID>()
         let unique = ids.filter { seen.insert($0).inserted }
         return stride(from: 0, to: unique.count, by: batchFetchChunkSize).map {
             Array(unique[$0..<min($0 + batchFetchChunkSize, unique.count)])

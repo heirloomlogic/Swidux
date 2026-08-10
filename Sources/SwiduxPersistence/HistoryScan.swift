@@ -52,10 +52,6 @@ struct HistoryScan: Sendable {
     /// the store felt like returning.
     var newWatermark: DefaultHistoryToken?
 
-    /// How many transactions the window held. Zero means there is nothing to do
-    /// at all — not even a merge.
-    var transactionCount = 0
-
     /// Whether the window named no rows this store mirrors.
     var isEmpty: Bool { changed.isEmpty && deleted.isEmpty }
 }
@@ -66,6 +62,10 @@ struct HistoryScan: Sendable {
 /// data failure — they are reported through `onDiagnostic`, not `onFailure`. A
 /// store that records no usable history is a capability gap, not a broken store.
 enum HistoryScanFailure: Error, Sendable {
+    /// There is no watermark to scan from — the first tick of a session, or the
+    /// first after a container rebuild. Expected, and not a problem.
+    case noWatermark
+
     /// The watermark is older than the oldest retained transaction, so the
     /// window between them is unknowable.
     case tokenExpired
@@ -124,49 +124,56 @@ extension EntityDB {
 
         let transactions = try transactions(since: watermark)
         var scan = HistoryScan()
-        scan.transactionCount = transactions.count
         guard !transactions.isEmpty else { return scan }
-        scan.newWatermark = transactions.map(\.token).max()
 
         let byName = Dictionary(
             readers.map { ($0.entityName, $0) }, uniquingKeysWith: { first, _ in first })
         var changedPIDs: [String: [PersistentIdentifier]] = [:]
         var deletedPIDs: Set<PersistentIdentifier> = []
 
-        for change in transactions.flatMap(\.changes) {
-            let identifier = change.changedPersistentIdentifier
-            // A model no registered entity mirrors. Its rows are not in state, so
-            // nothing here has anything to say about them.
-            guard let reader = byName[identifier.entityName] else { continue }
-            switch change {
-            case .delete:
-                deletedPIDs.insert(identifier)
-                guard let id = reader.tombstoneID(change) else {
-                    throw HistoryScanFailure.unidentifiedDeletion(entityName: reader.entityName)
+        // One pass. The window can hold every change of a first CloudKit import,
+        // and `flatMap(\.changes)` would materialize a second array as large as
+        // the transactions it came from, alongside them.
+        for transaction in transactions {
+            // The *highest* token, not the last: `HistoryDescriptor.sortBy` is
+            // macOS 26+, so below that the fetch order is unspecified.
+            if scan.newWatermark.map({ transaction.token > $0 }) ?? true {
+                scan.newWatermark = transaction.token
+            }
+            for change in transaction.changes {
+                let identifier = change.changedPersistentIdentifier
+                // A model no registered entity mirrors. Its rows are not in
+                // state, so nothing here has anything to say about them.
+                guard let reader = byName[identifier.entityName] else { continue }
+                switch change {
+                case .delete:
+                    deletedPIDs.insert(identifier)
+                    guard let id = reader.tombstoneID(change) else {
+                        throw HistoryScanFailure.unidentifiedDeletion(entityName: reader.entityName)
+                    }
+                    scan.deleted.insert(id)
+                case .insert, .update:
+                    changedPIDs[reader.entityName, default: []].append(identifier)
+                @unknown default:
+                    // A change kind this build doesn't know about, against a
+                    // model it does mirror. Treating it as "nothing happened"
+                    // would advance the watermark past it; re-reading costs a tick.
+                    throw HistoryScanFailure.unresolvedChanges(entityName: reader.entityName)
                 }
-                scan.deleted.insert(id)
-            case .insert, .update:
-                changedPIDs[reader.entityName, default: []].append(identifier)
-            @unknown default:
-                // A change kind this build doesn't know about, against a model
-                // it does mirror. Treating it as "nothing happened" would advance
-                // the watermark past it; re-reading the table costs a tick.
-                throw HistoryScanFailure.unresolvedChanges(entityName: reader.entityName)
             }
         }
 
         for (entityName, identifiers) in changedPIDs {
             guard let reader = byName[entityName] else { continue }
-            let unique = identifiers.reduce(into: [PersistentIdentifier]()) {
-                if !$1.isContained(in: $0) { $0.append($1) }
-            }
-            let resolved = try identities(of: unique, as: reader.modelType)
+            let resolved = try identities(of: identifiers, asConcrete: reader.modelType)
             scan.changed.formUnion(resolved.values)
             // A row that no longer exists is explicable exactly once: it was
             // deleted later in this same window, and the tombstone already named
             // it. Anything else means the window holds a change this scan cannot
             // account for, and advancing past it would lose that change for good.
-            let unexplained = unique.contains { resolved[$0] == nil && !deletedPIDs.contains($0) }
+            let unexplained = identifiers.contains {
+                resolved[$0] == nil && !deletedPIDs.contains($0)
+            }
             if unexplained {
                 throw HistoryScanFailure.unresolvedChanges(entityName: entityName)
             }
@@ -187,25 +194,39 @@ extension EntityDB {
             return try modelContext.fetchHistory(descriptor).first?.token
         }
         return try modelContext.fetchHistory(HistoryDescriptor<DefaultHistoryTransaction>())
-            .map(\.token).max()
+            .lazy.map(\.token).max()
     }
 
-    /// Deletes transactions recorded before `cutoff`.
+    /// Deletes transactions recorded before `cutoff`, unless CloudKit mirroring
+    /// is reading the same log.
     ///
-    /// - Returns: How many transactions were removed.
+    /// The mirrored-store guard lives here rather than in the caller because it
+    /// is an invariant, not a policy: mirroring decides what to export from these
+    /// transactions, there is no API to ask how far it has got, and deleting one
+    /// it hasn't exported resets the sync state. Any future caller gets the same
+    /// protection without having to know.
+    ///
+    /// - Parameters:
+    ///   - cutoff: Transactions recorded before this instant are deleted.
+    ///   - counting: Whether to count what it deletes. Counting costs a second
+    ///     full evaluation of the predicate, so it is skipped when no diagnostic
+    ///     handler is listening.
+    /// - Returns: How many transactions were removed, or 0 when not counting.
+    /// - Throws: Whatever the underlying fetch or delete throws.
     @discardableResult
-    func pruneHistory(before cutoff: Date) throws -> Int {
+    func pruneHistory(before cutoff: Date, counting: Bool = true) throws -> Int {
+        guard !isCloudKitBacked else { return 0 }
         let descriptor = HistoryDescriptor<DefaultHistoryTransaction>(
             predicate: #Predicate { $0.timestamp < cutoff })
-        let doomed = try modelContext.fetchHistory(descriptor).count
-        guard doomed > 0 else { return 0 }
+        let doomed = counting ? try modelContext.fetchHistory(descriptor).count : 0
+        if counting, doomed == 0 { return 0 }
         try modelContext.deleteHistory(descriptor)
         return doomed
     }
 
     /// Every transaction after `watermark`, or all of retained history when
     /// there is no watermark yet.
-    private func transactions(
+    func transactions(
         since watermark: DefaultHistoryToken?
     ) throws -> [DefaultHistoryTransaction] {
         let descriptor =
@@ -222,29 +243,28 @@ extension EntityDB {
         }
     }
 
-    /// Maps persistent identifiers to entity identities, in chunks.
+    /// Maps persistent identifiers to entity identities, chunked by
+    /// ``EntityDB/chunks(_:)`` like every other batched read.
     ///
-    /// Opens the model existential so the `#Predicate` is built against a
-    /// concrete type. Identifiers whose row no longer exists are simply absent
-    /// from the result — the caller decides whether that is explicable. That
-    /// "absent, not fatal" behaviour is the whole reason this is a fetch rather
-    /// than `ModelContext.model(for:)`, which returns a fault and raises an
+    /// Identifiers whose row no longer exists are simply absent from the result;
+    /// the caller decides whether that is explicable. That "absent, not fatal"
+    /// behaviour is the whole reason this is a fetch rather than
+    /// `ModelContext.model(for:)`, which returns a fault and raises an
     /// uncatchable ObjC exception for a row deleted since the scan.
-    private func identities(
-        of identifiers: [PersistentIdentifier],
-        as type: any PersistableModel.Type
-    ) throws -> [PersistentIdentifier: UUID] {
-        try identities(of: identifiers, asConcrete: type)
-    }
-
+    ///
+    /// Unlike the by-`id` read, this builds its `#Predicate` inline rather than
+    /// going through a generated per-model descriptor. `persistentModelID` is a
+    /// `PersistentModel` requirement, so it is the same generic-keypath shape
+    /// that miscompiles under `-O` for `id` — but measured, this one is
+    /// translated correctly in Debug and Release alike, and the tests covering it
+    /// run in both. Generating a descriptor for it would be the belt to that
+    /// braces; see the follow-up on #74.
     private func identities<M: PersistableModel>(
         of identifiers: [PersistentIdentifier],
         asConcrete type: M.Type
     ) throws -> [PersistentIdentifier: UUID] {
         var resolved: [PersistentIdentifier: UUID] = [:]
-        for start in stride(from: 0, to: identifiers.count, by: Self.batchFetchChunkSize) {
-            let chunk = Array(
-                identifiers[start..<min(start + Self.batchFetchChunkSize, identifiers.count)])
+        for chunk in Self.chunks(identifiers) {
             let rows = try modelContext.fetch(
                 FetchDescriptor<M>(predicate: #Predicate { chunk.contains($0.persistentModelID) }))
             for row in rows { resolved[row.persistentModelID] = row.id }
@@ -253,20 +273,11 @@ extension EntityDB {
     }
 }
 
-extension PersistentIdentifier {
-    /// Whether `identifiers` already holds this one.
-    ///
-    /// `PersistentIdentifier` is `Hashable`, but deduplicating through a `Set`
-    /// would make the chunk boundaries — and so the fetch order — depend on
-    /// per-process seeding, which is the trap `EntityDB.idChunks` documents.
-    fileprivate func isContained(in identifiers: [PersistentIdentifier]) -> Bool {
-        identifiers.contains(self)
-    }
-}
-
 extension HistoryScanFailure: CustomStringConvertible {
     var description: String {
         switch self {
+        case .noWatermark:
+            "no watermark yet"
         case .tokenExpired:
             "the stored watermark is older than the oldest retained transaction"
         case .unidentifiedDeletion(let entityName):
@@ -279,10 +290,4 @@ extension HistoryScanFailure: CustomStringConvertible {
             "the history fetch failed: \(message)"
         }
     }
-}
-
-extension Duration {
-    /// This duration in seconds, for the `Date` arithmetic a retention window
-    /// needs. Sub-second precision is irrelevant at that scale and is dropped.
-    var seconds: TimeInterval { TimeInterval(components.seconds) }
 }

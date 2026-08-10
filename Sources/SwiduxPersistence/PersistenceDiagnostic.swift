@@ -134,9 +134,13 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
     /// empty. Set only for ``Kind/mergeWithheld``.
     public let withheldIDs: Set<UUID>?
 
-    /// How many rows a tick named. Set for ``Kind/remoteChangesMerged``, and for
-    /// ``Kind/historyPruned`` it is the number of transactions deleted.
-    public let affectedCount: Int?
+    /// How many rows a tick merged out of persistent history.
+    /// Set only for ``Kind/remoteChangesMerged``.
+    public let mergedCount: Int?
+
+    /// How many history transactions were deleted.
+    /// Set only for ``Kind/historyPruned``.
+    public let prunedCount: Int?
 
     /// Why a tick fell back to re-reading everything, in prose.
     /// Set only for ``Kind/historyUnavailable``.
@@ -151,7 +155,8 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         drainCount: Int? = nil,
         unpersistedIDs: Set<UUID>? = nil,
         withheldIDs: Set<UUID>? = nil,
-        affectedCount: Int? = nil,
+        mergedCount: Int? = nil,
+        prunedCount: Int? = nil,
         fallbackReason: String? = nil
     ) {
         self.kind = kind
@@ -160,7 +165,8 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         self.drainCount = drainCount
         self.unpersistedIDs = unpersistedIDs
         self.withheldIDs = withheldIDs
-        self.affectedCount = affectedCount
+        self.mergedCount = mergedCount
+        self.prunedCount = prunedCount
         self.fallbackReason = fallbackReason
     }
 
@@ -187,7 +193,7 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
 
     /// A tick merged `count` identities read out of persistent history.
     public static func remoteChangesMerged(count: Int) -> Self {
-        Self(kind: .remoteChangesMerged, affectedCount: count)
+        Self(kind: .remoteChangesMerged, mergedCount: count)
     }
 
     /// A tick re-read every registered entity because `reason` stopped it
@@ -198,7 +204,7 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
 
     /// `count` transactions older than the retention window were deleted.
     public static func historyPruned(count: Int) -> Self {
-        Self(kind: .historyPruned, affectedCount: count)
+        Self(kind: .historyPruned, prunedCount: count)
     }
 
     /// A one-line summary, suitable for a log line or a `default:` branch that
@@ -218,11 +224,11 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         case .mergeWithheld:
             return "\(entity): \((withheldIDs ?? []).count) remote change(s) withheld by an editing hold"
         case .remoteChangesMerged:
-            return "merged \(affectedCount ?? 0) changed row(s) from persistent history"
+            return "merged \(mergedCount ?? 0) changed row(s) from persistent history"
         case .historyUnavailable:
             return "re-read every entity: \(fallbackReason ?? "history was unavailable")"
         case .historyPruned:
-            return "pruned \(affectedCount ?? 0) history transaction(s)"
+            return "pruned \(prunedCount ?? 0) history transaction(s)"
         default:
             // A kind from a newer version. Still worth printing.
             return kind.rawValue

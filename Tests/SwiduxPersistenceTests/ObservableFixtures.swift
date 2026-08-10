@@ -164,6 +164,43 @@ func poll(until condition: () -> Bool, timeout: Duration = .seconds(2)) async th
     }
 }
 
+/// Collects diagnostics off the `@Sendable` handler.
+///
+/// The box-plus-appending-closure pair is spelled inline in half a dozen suites;
+/// this is that, named once.
+@MainActor
+func diagnosticLog() -> (SendableBox<[PersistenceDiagnostic]>, PersistenceDiagnosticHandler) {
+    let box = SendableBox<[PersistenceDiagnostic]>([])
+    return (box, { diagnostic in box.withValue { $0.append(diagnostic) } })
+}
+
+extension SendableBox where T == [PersistenceDiagnostic] {
+    /// Whether a diagnostic of `kind` was reported.
+    func contains(_ kind: PersistenceDiagnostic.Kind) -> Bool {
+        value.contains { $0.kind == kind }
+    }
+
+    /// The prose reasons of every fallback reported.
+    var fallbackReasons: [String] {
+        value.filter { $0.kind == .historyUnavailable }.compactMap(\.fallbackReason)
+    }
+
+    /// Forgets everything reported so far, so a later assertion speaks only for
+    /// the step it follows.
+    func clear() { value = [] }
+}
+
+/// Writes the way another device's changes arrive — through the database,
+/// behind the store's back.
+@MainActor
+func remoteWrite(
+    _ coordinator: PersistenceCoordinator<NotesState, NotesAction>,
+    writes: [Note] = [],
+    deletions: Set<UUID> = []
+) async throws {
+    try await coordinator.database.apply(writes: writes, deletions: deletions, as: NoteModel.self)
+}
+
 /// Inserts rows through a second `ModelContext`, bypassing `EntityDB` entirely.
 ///
 /// This is the only way to manufacture the duplicate-ID rows the API under test

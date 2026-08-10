@@ -21,26 +21,6 @@ import Testing
 
 // MARK: - Helpers
 
-/// Collects diagnostics off the `@Sendable` handler.
-private func diagnosticLog() -> (SendableBox<[PersistenceDiagnostic]>, PersistenceDiagnosticHandler) {
-    let box = SendableBox<[PersistenceDiagnostic]>([])
-    return (box, { diagnostic in box.withValue { $0.append(diagnostic) } })
-}
-
-extension SendableBox where T == [PersistenceDiagnostic] {
-    fileprivate var kinds: [PersistenceDiagnostic.Kind] { value.map(\.kind) }
-
-    fileprivate func contains(_ kind: PersistenceDiagnostic.Kind) -> Bool {
-        kinds.contains(kind)
-    }
-
-    fileprivate var fallbackReasons: [String] {
-        value.filter { $0.kind == .historyUnavailable }.compactMap(\.fallbackReason)
-    }
-
-    fileprivate func clear() { value = [] }
-}
-
 /// Runs the first tick, which has no watermark and so always re-reads
 /// everything, leaving an anchor behind for the ticks the test actually cares
 /// about.
@@ -52,17 +32,38 @@ private func establishWatermark(
     await coordinator.mergeChanges(into: store)
 }
 
-/// Writes `notes` the way another device's changes arrive — through the
-/// database, behind the store's back.
+/// A coordinator and store holding one flushed note, already anchored — the
+/// state almost every test here starts from.
 @MainActor
-private func remoteWrite(
-    _ coordinator: PersistenceCoordinator<NotesState, NotesAction>,
-    writes: [Note] = [],
-    deletions: Set<UUID> = []
-) async throws {
-    try await coordinator.database.apply(
-        writes: writes, deletions: deletions, as: NoteModel.self)
+private func makeAnchoredNote(
+    title: String = "mine",
+    container: ModelContainer? = nil,
+    onDiagnostic: PersistenceDiagnosticHandler? = nil
+) async throws -> (
+    coordinator: PersistenceCoordinator<NotesState, NotesAction>,
+    store: Store<NotesState, NotesAction>, id: UUID
+) {
+    let coordinator = try makeNotesCoordinator(
+        container: container, debounce: .seconds(30), onDiagnostic: onDiagnostic)
+    let id = UUID()
+    let store = makeNotesStore(coordinator)
+    store.send(.add(Note(id: id, title: title, pinned: false)))
+    await coordinator.corePlugin.flush()
+    await establishWatermark(coordinator, store)
+    return (coordinator, store, id)
 }
+
+/// Every reason a scan can refuse to answer. The seam throws in place of the
+/// scan, so these prove the *escalation*, not the trigger — that a window the
+/// scan gave up on is still fully merged, whatever gave up on it.
+private let scanFailures: [any Error] = [
+    SwiftDataError.historyTokenExpired,
+    HistoryScanFailure.tokenExpired,
+    HistoryScanFailure.fetchFailed("the store said no"),
+    HistoryScanFailure.unidentifiedDeletion(entityName: "NoteModel"),
+    HistoryScanFailure.unresolvedChanges(entityName: "NoteModel"),
+    HistoryScanFailure.multipleStores,
+]
 
 // MARK: - The narrow path
 
@@ -71,13 +72,7 @@ private func remoteWrite(
 struct HistoryWatermarkTests {
     @Test("a remote edit recorded in history surfaces")
     func surfacesARemoteEdit() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let id = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: id, title: "mine", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, id) = try await makeAnchoredNote()
 
         try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
         await coordinator.mergeChanges(into: store)
@@ -100,13 +95,7 @@ struct HistoryWatermarkTests {
 
     @Test("a remote deletion surfaces from its tombstone, without echoing back")
     func surfacesARemoteDeletion() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let doomed = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: doomed, title: "doomed", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, doomed) = try await makeAnchoredNote(title: "doomed")
 
         try await remoteWrite(coordinator, deletions: [doomed])
         await coordinator.mergeChanges(into: store)
@@ -120,13 +109,7 @@ struct HistoryWatermarkTests {
 
     @Test("a deletion read from history can remove the last surviving row")
     func removesTheLastRow() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let only = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: only, title: "the only one", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, only) = try await makeAnchoredNote(title: "the only one")
 
         try await remoteWrite(coordinator, deletions: [only])
         await coordinator.mergeChanges(into: store)
@@ -139,13 +122,8 @@ struct HistoryWatermarkTests {
     @Test("a window with no transactions does nothing at all")
     func emptyWindowIsANoOp() async throws {
         let (log, onDiagnostic) = diagnosticLog()
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), onDiagnostic: onDiagnostic)
-        let kept = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: kept, title: "kept", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, kept) = try await makeAnchoredNote(
+            title: "kept", onDiagnostic: onDiagnostic)
         log.clear()
 
         await coordinator.mergeChanges(into: store)
@@ -196,13 +174,7 @@ struct HistoryWatermarkTests {
 
     @Test("an unflushed local write outranks the remote change in the same window")
     func pendingLocalWriteWins() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let id = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: id, title: "mine", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, id) = try await makeAnchoredNote()
 
         try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
         // Dispatched but never flushed: local intent the merge must not clobber.
@@ -215,13 +187,7 @@ struct HistoryWatermarkTests {
 
     @Test("a write drained during the fetch is not overwritten by the stored row")
     func writeDrainedDuringTheFetchSurvives() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let id = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: id, title: "mine", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, id) = try await makeAnchoredNote()
 
         try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
         // Lands after the flush and after the fetch was issued — the window the
@@ -235,13 +201,7 @@ struct HistoryWatermarkTests {
 
     @Test("a locally deleted row is not resurrected by its own history")
     func doesNotResurrectALocalDelete() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let id = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: id, title: "doomed", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "doomed")
 
         store.send(.remove(id))
         await coordinator.mergeChanges(into: store)
@@ -251,13 +211,7 @@ struct HistoryWatermarkTests {
 
     @Test("a local delete undone before the tick refutes its own tombstone")
     func anUndoneDeleteOutranksItsOwnTombstone() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let id = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: id, title: "kept after all", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "kept after all")
 
         // Deleted and flushed, so history holds a tombstone naming it...
         store.send(.remove(id))
@@ -293,32 +247,10 @@ struct HistoryWatermarkTests {
         #expect(log.fallbackReasons.contains("no watermark yet"))
     }
 
-    @Test("an expired token re-reads everything")
-    func expiredTokenReReadsEverything() async throws {
-        try await expectFallback(injecting: SwiftDataError.historyTokenExpired)
-    }
-
-    @Test("any history-fetch failure re-reads everything")
-    func anyScanFailureReReadsEverything() async throws {
-        try await expectFallback(injecting: HistoryScanFailure.fetchFailed("the store said no"))
-    }
-
-    @Test("a deletion whose tombstone carries no identity re-reads everything")
-    func unidentifiedDeletionReReadsEverything() async throws {
-        try await expectFallback(injecting: HistoryScanFailure.unidentifiedDeletion(entityName: "NoteModel"))
-    }
-
-    /// Drives one fallback trigger end to end: the tick must still apply the
-    /// remote change, and must say why it had to re-read to find it.
-    private func expectFallback(injecting error: any Error) async throws {
+    @Test("a scan that gives up still re-reads everything", arguments: scanFailures)
+    func aScanFailureReReadsEverything(error: any Error) async throws {
         let (log, onDiagnostic) = diagnosticLog()
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), onDiagnostic: onDiagnostic)
-        let id = UUID()
-        let store = makeNotesStore(coordinator)
-
-        store.send(.add(Note(id: id, title: "mine", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
+        let (coordinator, store, id) = try await makeAnchoredNote(onDiagnostic: onDiagnostic)
         log.clear()
 
         try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
@@ -432,16 +364,13 @@ struct HistoryWatermarkTests {
         #expect(store.notes[held]?.title == "edited elsewhere")
     }
 
-    @Test("swapping the database discards the watermark")
+    @Test("swapping the database discards the watermark, and refuses to take it back")
     func swappingTheDatabaseDiscardsTheWatermark() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let store = makeNotesStore(coordinator)
         // A store with no transactions has no token to anchor to, so there has
         // to be at least one write before there is a watermark to discard.
-        store.send(.add(Note(id: UUID(), title: "anything", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
-        #expect(coordinator.handle.watermark.token != nil)
+        let (coordinator, _, _) = try await makeAnchoredNote(title: "anything")
+        let stale = coordinator.handle.watermark
+        let token = try #require(stale.token)
 
         coordinator.handle.db = EntityDB(modelContainer: try makeNotesContainer())
 
@@ -449,20 +378,7 @@ struct HistoryWatermarkTests {
             coordinator.handle.watermark.token == nil,
             "a token means nothing to a store that didn't issue it, and a stale one reads as 'nothing changed'"
         )
-    }
-
-    @Test("a watermark computed against a swapped-away database is refused")
-    func staleGenerationIsRefused() async throws {
-        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
-        let store = makeNotesStore(coordinator)
-        store.send(.add(Note(id: UUID(), title: "anything", pinned: false)))
-        await coordinator.corePlugin.flush()
-        await establishWatermark(coordinator, store)
-
-        let stale = coordinator.handle.watermark
-        let token = try #require(stale.token)
-        coordinator.handle.db = EntityDB(modelContainer: try makeNotesContainer())
-
+        // A tick suspended across the swap, arriving with the old store's answer.
         #expect(coordinator.handle.installWatermark(token, ifGeneration: stale.generation) == false)
         #expect(coordinator.handle.watermark.token == nil)
     }
@@ -509,6 +425,9 @@ struct HistoryWatermarkTests {
             "there must be something to prune, or the test proves nothing")
 
         await coordinator.hydrate(into: store)
+        // Pruning is detached so it can't sit on the launch path, so this waits
+        // for it rather than assuming it already ran.
+        try await poll(until: { log.contains(.historyPruned) })
 
         #expect(try await coordinator.database.historyTransactionCount() == 0)
         #expect(log.contains(.historyPruned))
@@ -525,10 +444,14 @@ struct HistoryWatermarkTests {
 
         try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
         await coordinator.hydrate(into: store)
+        try await poll(until: { log.contains(.historyPruned) })
         log.clear()
 
         try seedNotes(container, [Note(id: UUID(), title: "newer", pinned: false)])
         await coordinator.hydrate(into: store)
+        // A negative assertion, so it has to wait rather than poll: give the
+        // detached prune every chance to fire before concluding it didn't.
+        try await Task.sleep(for: .milliseconds(120))
 
         #expect(!log.contains(.historyPruned))
         #expect(try await coordinator.database.historyTransactionCount() > 0)
@@ -592,6 +515,6 @@ struct HistoryWatermarkTests {
 extension EntityDB {
     /// How many transactions retained history currently holds.
     fileprivate func historyTransactionCount() throws -> Int {
-        try modelContext.fetchHistory(HistoryDescriptor<DefaultHistoryTransaction>()).count
+        try transactions(since: nil).count
     }
 }
