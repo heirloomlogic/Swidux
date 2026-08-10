@@ -48,9 +48,22 @@ public protocol PersistableModel: PersistentModel {
     /// avoids that. CI runs `swift test -c release` to keep that regression
     /// class caught.
     ///
-    /// This is the *only* descriptor, and it carries no `fetchLimit`: `id` has
-    /// no unique constraint (CloudKit forbids one), so a lookup for a single ID
-    /// may legitimately return several rows and every caller must see all of
-    /// them. See ``EntityDB`` for what that implies for reads and writes.
+    /// It carries no `fetchLimit`: `id` has no unique constraint (CloudKit
+    /// forbids one), so a lookup for a single ID may legitimately return several
+    /// rows and every caller must see all of them. See ``EntityDB`` for what
+    /// that implies for reads and writes.
     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<Self>
+
+    /// A monomorphic fetch descriptor locating the rows in `persistentIDs`.
+    ///
+    /// Generated per-model for the reason above: `persistentModelID` is a
+    /// `PersistentModel` requirement too, so a generic `#Predicate` over it is
+    /// the same shape. Measured, that one translates correctly today — but it
+    /// resolves the identifiers persistent history hands back, where the
+    /// failure mode is merging nothing at all, silently. Requiring the
+    /// descriptor makes the rule structural rather than a comment somebody has
+    /// to read.
+    static func swiduxBatchFetchDescriptor(
+        persistentIDs: [PersistentIdentifier]
+    ) -> FetchDescriptor<Self>
 }

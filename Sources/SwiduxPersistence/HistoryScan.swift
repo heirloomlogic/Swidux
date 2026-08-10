@@ -272,21 +272,18 @@ extension EntityDB {
     /// `ModelContext.model(for:)`, which returns a fault and raises an
     /// uncatchable ObjC exception for a row deleted since the scan.
     ///
-    /// Unlike the by-`id` read, this builds its `#Predicate` inline rather than
-    /// going through a generated per-model descriptor. `persistentModelID` is a
-    /// `PersistentModel` requirement, so it is the same generic-keypath shape
-    /// that miscompiles under `-O` for `id` — but measured, this one is
-    /// translated correctly in Debug and Release alike, and the tests covering it
-    /// run in both. Generating a descriptor for it would be the belt to that
-    /// braces; see the follow-up on #74.
-    private func identities<M: PersistableModel>(
+    /// Internal rather than private so the tests can drive the real read. It is
+    /// the only generic context in the package that builds a by-identifier
+    /// fetch, and a test that reimplemented it would keep passing after this
+    /// stopped using the generated descriptor.
+    func identities<M: PersistableModel>(
         of identifiers: [PersistentIdentifier],
         asConcrete type: M.Type
     ) throws -> [PersistentIdentifier: UUID] {
         var resolved: [PersistentIdentifier: UUID] = [:]
         for chunk in Self.chunks(identifiers) {
-            let rows = try modelContext.fetch(
-                FetchDescriptor<M>(predicate: #Predicate { chunk.contains($0.persistentModelID) }))
+            // Per-model descriptor, not a generic `#Predicate` — see `swiduxBatchFetchDescriptor`.
+            let rows = try modelContext.fetch(M.swiduxBatchFetchDescriptor(persistentIDs: chunk))
             for row in rows { resolved[row.persistentModelID] = row.id }
         }
         return resolved

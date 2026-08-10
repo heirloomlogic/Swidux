@@ -68,6 +68,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<CounterModel> {
+                        FetchDescriptor<CounterModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Counter: PersistableEntity {
@@ -141,6 +149,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    public static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<ProfileModel> {
+                        FetchDescriptor<ProfileModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Profile: PersistableEntity {
@@ -206,6 +222,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<DeckModel> {
+                        FetchDescriptor<DeckModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Deck: PersistableEntity {
@@ -261,6 +285,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<PetModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<PetModel> {
+                        FetchDescriptor<PetModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -329,6 +361,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<PetModel> {
+                        FetchDescriptor<PetModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Pet: PersistableEntity {
@@ -392,6 +432,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<DocModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<DocModel> {
+                        FetchDescriptor<DocModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -463,6 +511,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<NoteModel> {
+                        FetchDescriptor<NoteModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Note: PersistableEntity {
@@ -521,6 +577,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<FooModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<FooModel> {
+                        FetchDescriptor<FooModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -587,6 +651,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<CounterModel> {
+                        FetchDescriptor<CounterModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Counter: PersistableEntity {
@@ -640,6 +712,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<PersonModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<PersonModel> {
+                        FetchDescriptor<PersonModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -695,6 +775,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<TaskModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<TaskModel> {
+                        FetchDescriptor<TaskModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -774,6 +862,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<ProfileModel> {
+                        FetchDescriptor<ProfileModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Profile: PersistableEntity {
@@ -843,6 +939,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<TagModel> {
+                        FetchDescriptor<TagModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Tag: PersistableEntity {
@@ -907,6 +1011,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<EntryModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<EntryModel> {
+                        FetchDescriptor<EntryModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -974,6 +1086,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<EntryModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<EntryModel> {
+                        FetchDescriptor<EntryModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -1044,6 +1164,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<ProfileModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<ProfileModel> {
+                        FetchDescriptor<ProfileModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
@@ -1120,6 +1248,14 @@ final class PersistedMacroTests: XCTestCase {
                                 ids.contains($0.id)
                             })
                     }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<DeckModel> {
+                        FetchDescriptor<DeckModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
                 }
 
                 extension Deck: PersistableEntity {
@@ -1186,6 +1322,14 @@ final class PersistedMacroTests: XCTestCase {
                         FetchDescriptor<BadgeModel>(predicate: #Predicate {
                                 ids.contains($0.id)
                             })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<BadgeModel> {
+                        FetchDescriptor<BadgeModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
                     }
                 }
 
