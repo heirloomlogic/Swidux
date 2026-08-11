@@ -174,6 +174,26 @@ func diagnosticLog() -> (SendableBox<[PersistenceDiagnostic]>, PersistenceDiagno
     return (box, { diagnostic in box.withValue { $0.append(diagnostic) } })
 }
 
+/// Collects failures off the `@Sendable` handler — the other observer channel's
+/// half of ``diagnosticLog()``, named here for the same reason.
+@MainActor
+func failureLog() -> (SendableBox<[PersistenceFailure]>, PersistenceFailureHandler) {
+    let box = SendableBox<[PersistenceFailure]>([])
+    return (box, { failure in box.withValue { $0.append(failure) } })
+}
+
+extension SendableBox where T == [PersistenceFailure] {
+    /// The failures reported for one kind of operation.
+    ///
+    /// Both channels matter and they fail differently: a read reports `.fetch`
+    /// and is never retried, a write reports `.save` several times over.
+    /// Filtering at the assertion keeps a suite about one of them from passing
+    /// on evidence of the other.
+    func failures(_ operation: PersistenceFailure.Operation) -> [PersistenceFailure] {
+        value.filter { $0.operation == operation }
+    }
+}
+
 extension SendableBox where T == [PersistenceDiagnostic] {
     /// Whether a diagnostic of `kind` was reported — for `entityType`, when one
     /// is named.

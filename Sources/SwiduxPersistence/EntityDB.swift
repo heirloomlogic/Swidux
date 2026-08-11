@@ -38,6 +38,44 @@ import SwiftData
 public actor EntityDB {
     private static let logger = Logger(subsystem: "swidux", category: "persistence")
 
+    /// An error the next read should throw instead of touching the store.
+    private var injectedFetchFailure: (any Error)?
+
+    /// Test seam: makes the next read throw `error` rather than run, so the
+    /// read-failure branch of hydration and of every merge can be exercised.
+    ///
+    /// Nothing else can reach those branches. A store reopened `allowsSave: false`
+    /// — the trick ``PersistenceCoordinator``'s retry tests use — fails *saves*
+    /// and leaves reads working, which is the point of it; an in-memory store
+    /// does not fail at all; and `failNextHistoryScan` covers the scan rather
+    /// than the read it precedes.
+    ///
+    /// Like that seam, this proves the **escalation** — that a read which threw
+    /// is reported and applies nothing — rather than that a real SwiftData fetch
+    /// throws instead of trapping. The branch is reachable in production (a
+    /// corrupt store, a revoked file handle, a container yanked mid-tick); an
+    /// injected error stands in for the throw, not for its cause.
+    ///
+    /// One-shot, so arming it cannot poison later reads: the tick *after* the
+    /// one that failed reads for real, which is what the callers that re-offer
+    /// an unconsumed window assert on.
+    ///
+    /// Reads only, and a method rather than a settable property. The write path
+    /// fetches the rows it is about to touch through the same chunked by-ID
+    /// query, so seaming that shared helper would make "the read failed" and
+    /// "the save failed" one event; and `EntityDB` is an actor, so cross-actor
+    /// assignment to isolated state isn't expressible.
+    func failNextFetch(with error: any Error) {
+        injectedFetchFailure = error
+    }
+
+    /// Throws and disarms the injected failure, if one is armed.
+    private func consumeInjectedFetchFailure() throws {
+        guard let injected = injectedFetchFailure else { return }
+        injectedFetchFailure = nil
+        throw injected
+    }
+
     /// Loads every persisted row of `M` and reconstructs domain values.
     ///
     /// Rows sharing an `id` are collapsed to the first one in fetch order:
@@ -88,7 +126,8 @@ public actor EntityDB {
     func fetchAllCollapsing<M: PersistableModel>(
         _ type: M.Type
     ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
-        collapse(try modelContext.fetch(FetchDescriptor<M>()))
+        try consumeInjectedFetchFailure()
+        return collapse(try modelContext.fetch(FetchDescriptor<M>()))
     }
 
     /// Loads every persisted row of the **domain** type `E`.
@@ -138,7 +177,8 @@ public actor EntityDB {
         ids: some Sequence<UUID>,
         as type: M.Type
     ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
-        collapse(try rows(ids: ids, as: M.self))
+        try consumeInjectedFetchFailure()
+        return collapse(try rows(ids: ids, as: M.self))
     }
 
     /// Inserts or updates the row for `domain.id`, then saves.
