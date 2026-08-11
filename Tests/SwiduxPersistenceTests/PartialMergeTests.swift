@@ -15,6 +15,30 @@ import Testing
 
 @testable import SwiduxPersistence
 
+// MARK: - Helpers
+
+/// A coordinator holding one flushed note that the app has declared it is
+/// editing — the state every carry-over test starts from.
+///
+/// The hold is the only thing that can withhold anything here: memory and
+/// storage agree and nothing is pending, so a deferral in these tests is never
+/// some other exemption wearing a hold's clothes. No watermark is established
+/// either, so nothing falls back to a full read that would deliver a row the
+/// narrow path was supposed to owe.
+@MainActor
+private func makeHeldNote() async throws -> (
+    coordinator: PersistenceCoordinator<NotesState, NotesAction>,
+    store: Store<NotesState, NotesAction>, id: UUID
+) {
+    let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+    let id = UUID()
+    let store = makeNotesStore(coordinator)
+    store.send(.add(Note(id: id, title: "being edited", pinned: false)))
+    await coordinator.corePlugin.flush()
+    coordinator.editing.hold(id)
+    return (coordinator, store, id)
+}
+
 @Suite("PersistenceCoordinator.mergeRemote")
 @MainActor
 struct PartialMergeTests {
@@ -452,5 +476,158 @@ struct PartialMergeTests {
         #expect(store.notes.count == 1, "an EntityStore cannot represent duplicates")
         #expect(diagnostics.value.contains(.duplicateRowsCollapsed(entityType: "Note", count: 2)))
         #expect(try rawNoteRows(container).count == 3, "collapsing on read must not delete anything on disk")
+    }
+
+    // MARK: - Carrying deferrals forward
+
+    @Test("a deferred edit is re-offered by a later tick that names nothing")
+    func aWithheldEditIsReOfferedWithoutANewSignal() async throws {
+        let (coordinator, store, held) = try await makeHeldNote()
+
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+        #expect(store.notes[held]?.title == "being edited", "a hold defers a remote change")
+
+        // The signal that named this row is spent, and releasing a hold writes no
+        // transaction of its own — so a tick naming *nothing* is the only thing
+        // left that can deliver it.
+        coordinator.editing.release(held)
+        await coordinator.mergeRemote(into: store, ids: [])
+
+        #expect(
+            store.notes[held]?.title == "edited elsewhere",
+            "a hold defers a remote change; it does not veto one")
+    }
+
+    @Test("a deferred deletion is re-offered by a later tick that names nothing")
+    func aWithheldDeletionIsReOfferedWithoutANewSignal() async throws {
+        let (coordinator, store, held) = try await makeHeldNote()
+
+        try await remoteWrite(coordinator, deletions: [held])
+        await coordinator.mergeRemote(into: store, ids: [], deleted: [held])
+        #expect(store.notes[held] != nil, "a row under the cursor is not pulled out from under it")
+
+        // A deferred deletion has no row left to re-read, so re-offering it means
+        // declaring it again — which is why the debt records *which way* a row
+        // was withheld rather than only that it was.
+        coordinator.editing.release(held)
+        await coordinator.mergeRemote(into: store, ids: [])
+
+        #expect(store.notes[held] == nil, "a deferred deletion is still owed")
+    }
+
+    @Test("a deferral from mergeRemote is delivered by the watermark path too")
+    func aWithheldRowCrossesToMergeChanges() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let held = UUID()
+        let store = makeNotesStore(coordinator)
+        store.send(.add(Note(id: held, title: "being edited", pinned: false)))
+        await coordinator.corePlugin.flush()
+        // Anchors the session, so the tick below narrows rather than falling back
+        // to a full read that would have delivered the row regardless.
+        await coordinator.mergeChanges(into: store)
+
+        coordinator.editing.hold(held)
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+        #expect(store.notes[held]?.title == "being edited")
+
+        // Move the watermark past the window that recorded the edit, as any
+        // later tick would. History will never name this row again, so the debt
+        // is now the only thing that still knows about it.
+        let generation = coordinator.handle.anchor.generation
+        let spent = try #require(await coordinator.database.currentHistoryToken())
+        coordinator.handle.installAnchor(watermark: spent, carryOver: nil, ifGeneration: generation)
+
+        coordinator.editing.release(held)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(
+            store.notes[held]?.title == "edited elsewhere",
+            "one debt, whichever path recorded it and whichever path settles it")
+    }
+
+    @Test("a tick for an unrelated ID does not swallow what is already owed")
+    func anUnrelatedTickDoesNotClobberTheDebt() async throws {
+        let (coordinator, store, held) = try await makeHeldNote()
+        let unrelated = UUID()
+        store.send(.add(Note(id: unrelated, title: "not being edited", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+
+        // One debt slot serves every path, so a tick that was never offered the
+        // held row must not record an empty set over it.
+        try await remoteWrite(coordinator, writes: [Note(id: unrelated, title: "theirs", pinned: false)])
+        await coordinator.mergeRemote(into: store, ids: [unrelated])
+        #expect(store.notes[unrelated]?.title == "theirs")
+
+        coordinator.editing.release(held)
+        await coordinator.mergeRemote(into: store, ids: [])
+
+        #expect(store.notes[held]?.title == "edited elsewhere", "the debt survived a tick that never named it")
+    }
+
+    @Test("a session that never established a watermark still records what it owes")
+    func anUnanchoredSessionRecordsTheDebt() async throws {
+        // `mergeChanges` is never called here, so nothing ever anchors. A debt
+        // that could only hang off a watermark would be dropped on the floor.
+        let (coordinator, store, held) = try await makeHeldNote()
+
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+
+        #expect(coordinator.handle.anchor.token == nil, "nothing in this test anchors a window")
+        #expect(
+            !coordinator.handle.anchor.carryOver.isEmpty,
+            "the debt is about identities, not about a window — only the generation has to match")
+    }
+
+    @Test("swapping the database discards a debt mergeRemote recorded")
+    func swappingTheDatabaseDiscardsTheDebt() async throws {
+        let (coordinator, store, held) = try await makeHeldNote()
+
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+        #expect(!coordinator.handle.anchor.carryOver.isEmpty, "there has to be a debt to discard")
+
+        coordinator.handle.db = EntityDB(modelContainer: try makeNotesContainer())
+
+        #expect(
+            coordinator.handle.anchor.carryOver.isEmpty,
+            "identities resolved against one store say nothing about another")
+    }
+
+    @Test("rehydrate still records nothing")
+    func rehydrateLeavesTheDebtAlone() async throws {
+        let (coordinator, store, held) = try await makeHeldNote()
+
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+        let owed = coordinator.handle.anchor.carryOver.reading(for: "NoteModel")
+        #expect(owed == [held], "there has to be a debt for rehydrate to leave alone")
+
+        await coordinator.rehydrate(into: store)
+
+        #expect(
+            coordinator.handle.anchor.carryOver.reading(for: "NoteModel") == owed,
+            "a whole-table read re-offers everything next time, so it has no accounting to keep")
+    }
+
+    @Test("a settled debt clears, so nothing re-offers forever")
+    func aSettledDebtClears() async throws {
+        let (coordinator, store, held) = try await makeHeldNote()
+
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeRemote(into: store, ids: [held])
+        #expect(!coordinator.handle.anchor.carryOver.isEmpty)
+
+        coordinator.editing.release(held)
+        await coordinator.mergeRemote(into: store, ids: [])
+
+        #expect(
+            coordinator.handle.anchor.carryOver.isEmpty,
+            "a debt that outlived the hold that caused it would be re-read on every tick")
     }
 }
