@@ -53,6 +53,19 @@ private func makeAnchoredNote(
     return (coordinator, store, id)
 }
 
+/// Holds `id`, lands a conflicting remote edit on it, and runs the tick that
+/// defers that edit — leaving exactly one row owed and the hold still in force.
+@MainActor
+private func withholdARemoteEdit(
+    _ coordinator: PersistenceCoordinator<NotesState, NotesAction>,
+    _ store: Store<NotesState, NotesAction>,
+    _ id: UUID
+) async throws {
+    coordinator.editing.hold(id)
+    try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
+    await coordinator.mergeChanges(into: store)
+}
+
 /// Every reason a scan can refuse to answer. The seam throws in place of the
 /// scan, so these prove the *escalation*, not the trigger — that a window the
 /// scan gave up on is still fully merged, whatever gave up on it.
@@ -313,7 +326,96 @@ struct HistoryWatermarkTests {
         #expect(!log.contains(.remoteChangesMerged))
     }
 
-    // MARK: - The watermark only advances on a clean tick
+    // MARK: - Withholding carries forward instead of pinning the anchor
+
+    @Test("a fallback that withheld a row still anchors, so the next tick can narrow")
+    func aWithholdingFallbackStillAnchors() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), onDiagnostic: onDiagnostic)
+        let held = UUID()
+        let store = makeNotesStore(coordinator)
+
+        // Memory and storage agree, and nothing is pending — so the hold below is
+        // the *only* thing that can withhold anything. No watermark is
+        // established first, deliberately: the tick that withholds has to be the
+        // full-read fallback, which is the path that used to leave no anchor.
+        store.send(.add(Note(id: held, title: "being edited", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await withholdARemoteEdit(coordinator, store, held)
+
+        #expect(store.notes[held]?.title == "being edited", "a hold defers a remote change")
+        #expect(log.fallbackReasons.contains("no watermark yet"))
+        #expect(
+            coordinator.handle.anchor.token != nil,
+            "a withheld row is carried forward, so the window it came from is still safe to anchor"
+        )
+        log.clear()
+
+        // The hold is still in force, so this tick withholds again. It must not
+        // cost another full-table read to do it.
+        await coordinator.mergeChanges(into: store)
+
+        #expect(
+            !log.contains(.historyUnavailable),
+            "an unreleased hold used to leave the session unanchored, making every tick O(N)")
+        #expect(log.contains(.remoteChangesMerged), "the carried-over row is re-offered by the narrow path")
+        #expect(store.notes[held]?.title == "being edited")
+    }
+
+    @Test("a hold lifting delivers through the narrow path, though nothing new was written")
+    func aCarriedOverRowNeedsNoNewTransaction() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, held) = try await makeAnchoredNote(
+            title: "being edited", onDiagnostic: onDiagnostic)
+
+        try await withholdARemoteEdit(coordinator, store, held)
+        #expect(store.notes[held]?.title == "being edited")
+        log.clear()
+
+        // Nothing is written between here and the next tick. Releasing a hold
+        // records no transaction, so the window this tick scans is empty and the
+        // carry-over is the only thing that still names the row.
+        coordinator.editing.release(held)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[held]?.title == "edited elsewhere")
+        #expect(!log.contains(.historyUnavailable), "an empty window is no reason to re-read the table")
+        #expect(log.contains(.remoteChangesMerged))
+    }
+
+    @Test("a carried-over deletion is refused once the row is back on disk")
+    func aCarriedOverDeletionIsRefutedByALiveRow() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "a hold defers a remote deletion")
+
+        // Re-created elsewhere while the hold was in force. The deletion is
+        // still owed, but the row it named is back — and a row storage holds
+        // outranks a tombstone, carried over or not.
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "back again", pinned: false)])
+        coordinator.editing.release(id)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id]?.title == "back again")
+    }
+
+    @Test("swapping the database discards what was carried over, not just the token")
+    func swappingTheDatabaseDiscardsTheCarryOver() async throws {
+        let (coordinator, store, held) = try await makeAnchoredNote(title: "being edited")
+
+        try await withholdARemoteEdit(coordinator, store, held)
+        #expect(!coordinator.handle.anchor.carryOver.isEmpty, "there has to be a debt to discard")
+
+        coordinator.handle.db = EntityDB(modelContainer: try makeNotesContainer())
+
+        #expect(
+            coordinator.handle.anchor.carryOver.isEmpty,
+            "identities resolved against one store say nothing about another, exactly as its token doesn't"
+        )
+    }
 
     @Test("a deletion withheld by an editing hold is applied once the hold lifts")
     func withheldDeletionIsReOfferedAfterTheHoldLifts() async throws {
@@ -369,18 +471,20 @@ struct HistoryWatermarkTests {
         // A store with no transactions has no token to anchor to, so there has
         // to be at least one write before there is a watermark to discard.
         let (coordinator, _, _) = try await makeAnchoredNote(title: "anything")
-        let stale = coordinator.handle.watermark
+        let stale = coordinator.handle.anchor
         let token = try #require(stale.token)
 
         coordinator.handle.db = EntityDB(modelContainer: try makeNotesContainer())
 
         #expect(
-            coordinator.handle.watermark.token == nil,
+            coordinator.handle.anchor.token == nil,
             "a token means nothing to a store that didn't issue it, and a stale one reads as 'nothing changed'"
         )
         // A tick suspended across the swap, arriving with the old store's answer.
-        #expect(coordinator.handle.installWatermark(token, ifGeneration: stale.generation) == false)
-        #expect(coordinator.handle.watermark.token == nil)
+        let reinstalled = coordinator.handle.installAnchor(
+            watermark: token, carryOver: nil, ifGeneration: stale.generation)
+        #expect(reinstalled == false)
+        #expect(coordinator.handle.anchor.token == nil)
     }
 
     @Test("an older token does not rewind the watermark")
@@ -391,18 +495,18 @@ struct HistoryWatermarkTests {
         store.send(.add(Note(id: UUID(), title: "one", pinned: false)))
         await coordinator.corePlugin.flush()
         await establishWatermark(coordinator, store)
-        let first = try #require(coordinator.handle.watermark.token)
+        let first = try #require(coordinator.handle.anchor.token)
 
         store.send(.add(Note(id: UUID(), title: "two", pinned: false)))
         await coordinator.corePlugin.flush()
         await coordinator.mergeChanges(into: store)
-        let second = try #require(coordinator.handle.watermark.token)
+        let second = try #require(coordinator.handle.anchor.token)
         #expect(second > first, "the second tick consumed a later window")
 
         // The slower of two overlapping ticks, arriving late with its older answer.
-        let generation = coordinator.handle.watermark.generation
-        #expect(coordinator.handle.installWatermark(first, ifGeneration: generation) == false)
-        #expect(coordinator.handle.watermark.token == second)
+        let generation = coordinator.handle.anchor.generation
+        #expect(coordinator.handle.installAnchor(watermark: first, carryOver: nil, ifGeneration: generation) == false)
+        #expect(coordinator.handle.anchor.token == second)
     }
 
     // MARK: - Pruning

@@ -69,6 +69,41 @@ struct EntityScopedMergeTests {
         #expect(log.contains(.remoteChangesMerged))
     }
 
+    @Test("a row carried over from one entity does not read another")
+    func carryOverIsScopedToItsOwnEntity() async throws {
+        let container = try makeTaggedContainer()
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = try makeTaggedCoordinator(container: container, onDiagnostic: onDiagnostic)
+        let store = makeTaggedStore(coordinator)
+
+        // The same collision probe as above: one identity belonging to a note
+        // and to a pair of duplicate tag rows, so a tag read that shouldn't have
+        // happened announces itself.
+        let shared = UUID()
+        try seedTags(container, [Tag(id: shared, label: "twin"), Tag(id: shared, label: "twin")])
+        store.send(.addNote(Note(id: shared, title: "being edited", pinned: false)))
+        await coordinator.corePlugin.flush()
+        await establishWatermark(coordinator, store)
+        log.clear()
+
+        // Withheld as a note, so the carry-over records it under the note
+        // entity — the same key the scan would have grouped it under.
+        coordinator.editing.hold(shared)
+        try await remoteWriteNotes(
+            coordinator, writes: [Note(id: shared, title: "from a peer", pinned: false)])
+        await coordinator.mergeChanges(into: store)
+        log.clear()
+
+        // This tick's window is empty, so the carry-over is the only thing
+        // naming any work at all.
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[shared]?.title == "being edited", "the hold is still in force")
+        #expect(
+            !log.contains(.duplicateRowsCollapsed, entityType: "Tag"),
+            "a debt owed by the note entity must not put the tag entity back on the read path")
+    }
+
     @Test("every entity history names is merged, and none is dropped")
     func bothEntitiesMerge() async throws {
         let coordinator = try makeTaggedCoordinator()

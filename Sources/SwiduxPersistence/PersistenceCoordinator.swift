@@ -347,7 +347,7 @@ public final class PersistenceCoordinator<State, Action> {
         /// What ``mergeChanges(into:policy:)`` uses: a history scan resolves
         /// every change through a `PersistentIdentifier`, which names its entity,
         /// so the attribution is free and worth keeping.
-        case attributed(changed: [String: Set<UUID>], deleted: [String: Set<UUID>])
+        case attributed(AttributedIDs)
 
         /// Read these IDs in every registered entity, because the caller knows
         /// the identities but not their types.
@@ -368,20 +368,16 @@ public final class PersistenceCoordinator<State, Action> {
         func declaredDeletions(for entityName: String) -> Set<UUID> {
             switch self {
             case .wholeTable: []
-            case .attributed(_, let deleted): deleted[entityName] ?? []
+            case .attributed(let ids): ids.deletions(for: entityName)
             case .unattributed(_, let deleted): deleted
             }
         }
 
-        /// Everything `entityName` should read: what it was told changed, plus
-        /// what it was told was deleted. Declared deletions are read too — a row
-        /// storage still holds is what refutes a stale tombstone, and only a
-        /// fetch can tell us that.
+        /// Everything `entityName` should read.
         func reading(for entityName: String) -> Set<UUID> {
             switch self {
             case .wholeTable: []
-            case .attributed(let changed, let deleted):
-                (changed[entityName] ?? []).union(deleted[entityName] ?? [])
+            case .attributed(let ids): ids.reading(for: entityName)
             case .unattributed(let reading, _): reading
             }
         }
@@ -422,14 +418,15 @@ public final class PersistenceCoordinator<State, Action> {
         return MergePhase(folds: folds, allReadsSucceeded: allReadsSucceeded)
     }
 
-    /// One entity's bound merge. Returns the IDs it declined to act on.
-    fileprivate typealias MergeFold = @MainActor (inout State, MergePolicy?) -> Set<UUID>
+    /// One entity's bound merge. Returns what it declined to act on, already
+    /// keyed by the entity name the next history scan will match on.
+    fileprivate typealias MergeFold = @MainActor (inout State, MergePolicy?) -> AttributedIDs
 
     /// A merge phase's folds, plus what the phase can promise about them.
     ///
-    /// Whole-table re-hydration ignores both flags — it re-reads everything next
-    /// tick, so an unread entity or a deferred row costs one stale tick and
-    /// nothing more. They exist for callers that consume evidence once.
+    /// Whole-table re-hydration ignores the flag — it re-reads everything next
+    /// tick, so an unread entity costs one stale tick and nothing more. It
+    /// exists for callers that consume evidence once.
     fileprivate struct MergePhase {
         let folds: [MergeFold]
 
@@ -454,10 +451,11 @@ public final class PersistenceCoordinator<State, Action> {
         // Lifted out field-by-field so the fold doesn't capture `entity` itself:
         // it outlives this call, and holding the whole registration would keep
         // all five of its closures — and whatever they captured — alive to read
-        // two fields. `unpersisted` is a class, so the late read below still
+        // three fields. `unpersisted` is a class, so the late read below still
         // sees the latest set.
         let unpersisted = entity.unpersisted
         let entityPolicy = entity.policy
+        let entityName = entity.entityName
         return { [mergePolicy, editing] state, override in
             // Four sources, because no one of them is complete: the writer
             // holds drained-but-unflushed IDs, the ledger holds IDs whose
@@ -473,10 +471,13 @@ public final class PersistenceCoordinator<State, Action> {
             var resolved = mergePolicy
             if let entityPolicy { resolved = resolved.restricted(by: entityPolicy) }
             if let override { resolved = resolved.restricted(by: override) }
-            return merge(
+            let withheld = merge(
                 &state,
                 MergeContext(
                     policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held))
+            var carryOver = AttributedIDs()
+            carryOver.record(withheld, for: entityName)
+            return carryOver
         }
     }
 
@@ -518,13 +519,17 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // Anchored before the read, not after: a write that lands while the
         // fetches are in flight gets a token above this one, so the first tick
         // still sees it. Anchoring afterwards would step over it silently.
-        let anchor = handle.watermark
+        let anchor = handle.anchor
         let token = try? await handle.db.currentHistoryToken()
         let applies = await hydratePhase()
         store.mutate { state in
             for apply in applies { apply(&state) }
         }
-        if let token { handle.installWatermark(token, ifGeneration: anchor.generation) }
+        // Replaces rather than merges, so it offers nothing to anything and can
+        // settle no debt — hence `carryOver: nil`, "leave it as it is".
+        if let token {
+            handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
+        }
         await pruneHistoryIfNeeded()
     }
 
@@ -554,13 +559,12 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// when a changed row can't be resolved, and when more than one store sits
     /// behind the container.
     ///
-    /// The watermark only advances when a tick both read every registered entity
-    /// successfully *and* applied everything it read. That is what makes evidence
-    /// safe to consume once. A full re-hydration re-offers a withheld change on
-    /// the next tick because it re-reads everything; a watermark would step past
-    /// it forever, so a tick that withheld anything — an editing hold on a row a
-    /// peer deleted, say — leaves the anchor where it is and re-reads the same
-    /// window next time.
+    /// The watermark advances whenever a tick read every registered entity
+    /// successfully — including a tick that declined to apply some of what it
+    /// read. A row an editing hold defers is carried forward by identity and
+    /// re-offered next tick, which is what keeps a hold from quietly becoming a
+    /// veto without costing a full table read per tick to prevent. See
+    /// <doc:HowToAddICloudSync>.
     ///
     /// Both outcomes are reported: ``PersistenceDiagnostic/Kind/remoteChangesMerged``
     /// for a narrowed tick, ``PersistenceDiagnostic/Kind/historyUnavailable``
@@ -572,8 +576,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     public func mergeChanges(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
         // Read once, up front: the generation pins every later decision to the
         // database this tick started against.
-        let anchor = handle.watermark
-        let scan: HistoryScan
+        let anchor = handle.anchor
+        var scan: HistoryScan
         do {
             guard let watermark = anchor.token else { throw HistoryScanFailure.noWatermark }
             scan = try await scanHistory(since: watermark)
@@ -582,24 +586,36 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             return
         }
 
-        // Nothing happened at all. Not even a flush is owed.
-        guard let newWatermark = scan.newWatermark else { return }
-        guard !scan.isEmpty else {
-            // Transactions, but none against a mirrored model — consumed all the
-            // same, or the same window is rescanned on every future tick.
-            handle.installWatermark(newWatermark, ifGeneration: anchor.generation)
+        // Rows the last tick was offered and deferred ride along with whatever
+        // this window found. They have to: releasing a hold writes no
+        // transaction, so no future window will ever name them again.
+        scan.rows.formUnion(anchor.carryOver)
+
+        guard !scan.rows.isEmpty else {
+            if let newWatermark = scan.newWatermark {
+                // Transactions, but none against a mirrored model — consumed all
+                // the same, or the same window is rescanned on every future tick.
+                // Nothing was offered, so nothing can be settled either.
+                handle.installAnchor(
+                    watermark: newWatermark, carryOver: nil, ifGeneration: anchor.generation)
+            }
+            // Otherwise nothing happened at all. Not even a flush is owed.
             return
         }
 
         // The scan runs *before* the flush that `merge` performs: the by-ID read
         // has to see local intent already on disk, or a delete the user just undid
         // has nothing there to refute its own tombstone with.
-        let complete = await merge(
-            .attributed(changed: scan.changed, deleted: scan.deleted), into: store, policy: policy)
-        observers.onDiagnostic(.remoteChangesMerged(count: scan.count))
-        if complete {
-            handle.installWatermark(newWatermark, ifGeneration: anchor.generation)
-        }
+        let carryOver = await merge(.attributed(scan.rows), into: store, policy: policy)
+        observers.onDiagnostic(.remoteChangesMerged(count: scan.rows.count))
+        guard let carryOver else { return }
+        // Every row the window named was offered, and whatever was declined is
+        // now named explicitly — so the token can move even though this tick did
+        // not apply all of it. `newWatermark` is nil when the only work was
+        // re-offering the carry-over: nothing to advance past, but the debt it
+        // settled still counts.
+        handle.installAnchor(
+            watermark: scan.newWatermark, carryOver: carryOver, ifGeneration: anchor.generation)
     }
 
     /// A full re-hydration that also re-establishes the watermark.
@@ -613,10 +629,19 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // Anchored before the read, not after: a write landing while the fetches
         // are in flight gets a token above this one and is picked up next tick.
         let token = try? await handle.db.currentHistoryToken()
-        let complete = await merge(.wholeTable, into: store, policy: policy)
-        if complete, let token {
-            handle.installWatermark(token, ifGeneration: generation)
-        }
+        let carryOver = await merge(.wholeTable, into: store, policy: policy)
+        guard let carryOver, let token else { return }
+        // Anchoring even though the read withheld something is what keeps one
+        // held row from costing a full table scan on every tick until it is
+        // released — this path has no anchor to stand still on, so refusing here
+        // means never acquiring one.
+        //
+        // A deletion withheld here was inferred from absence rather than read
+        // from a tombstone, so carrying it forward promotes an inference to a
+        // declaration. That is the outcome this read would have reached had
+        // nothing been held, and under ``MergePolicy/preferRemoteAdditive`` it
+        // cannot arise at all.
+        handle.installAnchor(watermark: token, carryOver: carryOver, ifGeneration: generation)
     }
 
     /// Resolves the window since `watermark`, honouring the test seam.
@@ -678,6 +703,10 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     ///     ``MergePolicy/preferRemoteAdditive`` after a container rebuild,
     ///     where a row's absence says nothing about whether it was deleted.
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
+        // The carry-over is discarded on purpose: this path re-reads every row
+        // next time it runs, so a row it defers is re-offered without anyone
+        // having to remember it. Only a caller that consumes evidence once —
+        // ``mergeChanges(into:policy:)`` — needs the bookkeeping.
         await merge(.wholeTable, into: store, policy: policy)
     }
 
@@ -692,22 +721,22 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// The folds run inside a single `mutate`, so the merge still lands in one
     /// suspension-free step.
     ///
-    /// - Returns: Whether the merge applied everything it read. `false` means a
-    ///   read threw, or an editing hold withheld a stored value — either way the
-    ///   window is not safe to treat as consumed.
+    /// - Returns: The rows the merge was offered and declined to apply, or `nil`
+    ///   when a read threw — which leaves the window unaccounted for, so there
+    ///   is nothing trustworthy to say about what within it is still owed.
     @discardableResult
     fileprivate func merge(
         _ scope: MergeScope,
         into store: Store<State, Action>,
         policy: MergePolicy?
-    ) async -> Bool {
+    ) async -> AttributedIDs? {
         await corePlugin.flush()
         let phase = await mergePhase(scope)
-        var withheld: Set<UUID> = []
+        var carryOver = AttributedIDs()
         store.mutate { state in
-            for fold in phase.folds { withheld.formUnion(fold(&state, policy)) }
+            for fold in phase.folds { carryOver.formUnion(fold(&state, policy)) }
         }
-        return phase.allReadsSucceeded && withheld.isEmpty
+        return phase.allReadsSucceeded ? carryOver : nil
     }
 
     /// Re-hydration restricted to the rows a caller already knows changed.
@@ -754,6 +783,11 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         deleted: Set<UUID> = [],
         policy: MergePolicy? = nil
     ) async {
+        // No carry-over is recorded, because there is no anchor for one to hang
+        // off: this path is driven by the caller's own signal, not by a window
+        // this coordinator consumed. An ID an editing hold defers here is
+        // re-offered by the next ``mergeChanges(into:policy:)`` tick if history
+        // still names it, and otherwise by whatever resends the signal.
         await merge(
             .unattributed(reading: ids.union(deleted), deleted: deleted),
             into: store, policy: policy)

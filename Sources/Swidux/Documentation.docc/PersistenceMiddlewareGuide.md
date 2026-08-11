@@ -40,12 +40,13 @@ annotate a domain entity with `@Persisted` and the macro generates its `@Model`
 shadow, the `init(from:)`/`toDomain()`/`update(from:)` converters, and a
 `PersistableEntity` conformance. A generic `EntityDB` actor and a
 `PersistenceCoordinator` build the container, synthesize the writers, and reuse
-this `PersistencePlugin` under the hood — exposing only a merge-based
-re-hydration path so a "refresh from disk" can't clobber unflushed writes or
-live edits.
+this `PersistencePlugin` under the hood — exposing only re-hydration paths that
+merge, so a "refresh from disk" can't clobber unflushed writes or live edits.
 
 **`SwiduxCloudKitSync`** layers opt-in iCloud sync on top: a runtime opt-out
 toggle, launch-time entitlement/account detection, and a merge-based
-remote-change observer. Linking it is the single signal that an app needs the
+remote-change observer. A tick narrows itself to the rows persistent history
+says changed, so it costs O(k) rather than a full table scan; see
+<doc:HowToAddICloudSync>. Linking it is the single signal that an app needs the
 iCloud/CloudKit/Push entitlements.
 
