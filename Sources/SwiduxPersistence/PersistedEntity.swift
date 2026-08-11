@@ -166,7 +166,7 @@ public struct PersistedEntity<State> {
         @MainActor
         func reportDuplicates(_ count: Int, to observers: PersistenceObservers) {
             guard count > 0 else { return }
-            observers.onDiagnostic(
+            observers.report(
                 .duplicateRowsCollapsed(entityType: entityTypeName, count: count))
         }
 
@@ -230,7 +230,7 @@ public struct PersistedEntity<State> {
                 if stored != held { withheld.changed.insert(id) }
             }
             if !withheld.isEmpty {
-                observers.onDiagnostic(.mergeWithheld(entityType: entityTypeName, ids: withheld.ids))
+                observers.report(.mergeWithheld(entityType: entityTypeName, ids: withheld.ids))
             }
             return (preserved, withheld)
         }
@@ -261,7 +261,7 @@ public struct PersistedEntity<State> {
                     @MainActor
                     func record(_ change: @MainActor (UnpersistedIDs) -> Bool) {
                         guard change(unpersisted) else { return }
-                        observers.onDiagnostic(
+                        observers.report(
                             .writesUnpersisted(entityType: entityTypeName, ids: unpersisted.ids))
                     }
                     do {

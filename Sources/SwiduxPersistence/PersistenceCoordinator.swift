@@ -105,7 +105,6 @@ public final class PersistenceCoordinator<State, Action> {
         self.entities = entities
         self.mergePolicy = mergePolicy
         self.historyRetention = historyRetention
-        self.reportsDiagnostics = onDiagnostic != nil
         let handle = DatabaseHandle(EntityDB(modelContainer: container))
         self.handle = handle
 
@@ -123,8 +122,7 @@ public final class PersistenceCoordinator<State, Action> {
         // Unlike failures, diagnostics are already logged where they are
         // detected — the emitter has the detail, and logging again here would
         // only duplicate it.
-        let observers = PersistenceObservers(
-            onFailure: handler, onDiagnostic: onDiagnostic ?? { _ in })
+        let observers = PersistenceObservers(onFailure: handler, onDiagnostic: onDiagnostic)
         self.observers = observers
 
         // Left nil when the app isn't listening, so a runaway loop doesn't also
@@ -155,12 +153,6 @@ public final class PersistenceCoordinator<State, Action> {
     /// Whether this handle's history has already been pruned this session.
     private var hasPrunedHistory = false
 
-    /// Whether the app supplied a diagnostic handler. Counting what a prune
-    /// deletes costs a second full evaluation of the predicate, so it is only
-    /// paid for when someone is listening — the same bargain `onLoopSuspected`
-    /// strikes above.
-    private let reportsDiagnostics: Bool
-
     /// Deletes persistent-history transactions recorded before `cutoff`.
     ///
     /// Runs automatically once per launch from ``hydrate(into:)-(Store)``, using
@@ -184,11 +176,14 @@ public final class PersistenceCoordinator<State, Action> {
     /// - Returns: How many transactions were deleted.
     @discardableResult
     public func pruneHistory(before cutoff: Date) async -> Int {
-        let counting = reportsDiagnostics
+        // Counting what was deleted costs a second full evaluation of the
+        // predicate, so it is only paid for when someone is listening — the same
+        // bargain `onLoopSuspected` strikes in the initialiser.
+        let counting = observers.isReportingDiagnostics
         guard let removed = try? await handle.db.pruneHistory(before: cutoff, counting: counting),
             removed > 0
         else { return 0 }
-        observers.onDiagnostic(.historyPruned(count: removed))
+        observers.report(.historyPruned(count: removed))
         return removed
     }
 
@@ -273,7 +268,7 @@ public final class PersistenceCoordinator<State, Action> {
         do {
             let fetched = try await read(handle.db)
             if fetched.duplicatesCollapsed > 0 {
-                observers.onDiagnostic(
+                observers.report(
                     .duplicateRowsCollapsed(
                         entityType: "\(E.self)", count: fetched.duplicatesCollapsed))
             }
@@ -568,7 +563,11 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     ///
     /// Both outcomes are reported: ``PersistenceDiagnostic/Kind/remoteChangesMerged``
     /// for a narrowed tick, ``PersistenceDiagnostic/Kind/historyUnavailable``
-    /// with a reason for a fallback.
+    /// with a reason for a fallback. A narrowed tick counts what it re-offered
+    /// separately from what it merged, so a hold that is never released — which
+    /// makes every tick re-offer the same rows forever — reads as
+    /// ``PersistenceDiagnostic/carriedOverCount`` equal to
+    /// ``PersistenceDiagnostic/mergedCount``, rather than as healthy traffic.
     ///
     /// - Parameters:
     ///   - store: The live store to reconcile.
@@ -607,7 +606,12 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // has to see local intent already on disk, or a delete the user just undid
         // has nothing there to refute its own tombstone with.
         let carryOver = await merge(.attributed(scan.rows), into: store, policy: policy)
-        observers.onDiagnostic(.remoteChangesMerged(count: scan.rows.count))
+        // The debt is reported beside the total rather than folded into it. Both
+        // numbers are read off the same merge, so a tick that only re-offered
+        // what it already owed — the shape of every tick a leaked hold produces —
+        // is one comparison away, instead of a correlation across two channels.
+        observers.report(
+            .remoteChangesMerged(count: scan.rows.count, carriedOver: anchor.carryOver.count))
         guard let carryOver else { return }
         // Every row the window named was offered, and whatever was declined is
         // now named explicitly — so the token can move even though this tick did
@@ -625,7 +629,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         generation: Int,
         reason: any Error
     ) async {
-        observers.onDiagnostic(.historyUnavailable(reason: "\(reason)"))
+        observers.report(.historyUnavailable(reason: "\(reason)"))
         // Anchored before the read, not after: a write landing while the fetches
         // are in flight gets a token above this one and is picked up next tick.
         let token = try? await handle.db.currentHistoryToken()

@@ -383,6 +383,115 @@ struct HistoryWatermarkTests {
         #expect(log.contains(.remoteChangesMerged))
     }
 
+    // MARK: - A debt that never settles is readable off one diagnostic
+
+    @Test("a tick that only re-offers its debt is told apart from one that merged a peer's write")
+    func aPureReOfferIsDistinguishable() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, held) = try await makeAnchoredNote(
+            title: "being edited", onDiagnostic: onDiagnostic)
+
+        try await withholdARemoteEdit(coordinator, store, held)
+        log.clear()
+
+        // The hold is still in force and nothing has been written since, so this
+        // tick's window is empty and the debt is the only thing in it. This is
+        // the shape of *every* tick a leaked hold produces.
+        await coordinator.mergeChanges(into: store)
+
+        let tick = try #require(log.merges.first)
+        #expect(tick.merged == 1)
+        #expect(
+            tick.carried == tick.merged,
+            "every row this tick merged was one it already owed — no peer wrote anything")
+    }
+
+    @Test("a tick that merged a peer's write owes nothing, and says so")
+    func aFreshMergeCarriesNothing() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, id) = try await makeAnchoredNote(onDiagnostic: onDiagnostic)
+        log.clear()
+
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeChanges(into: store)
+
+        let tick = try #require(log.merges.first)
+        #expect(tick.merged == 1)
+        #expect(tick.carried == 0, "nothing was owed, so this row is news")
+    }
+
+    @Test("a debt and a peer's write arriving together are counted apart")
+    func aDebtAndNewsAreCountedApart() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, held) = try await makeAnchoredNote(
+            title: "being edited", onDiagnostic: onDiagnostic)
+
+        try await withholdARemoteEdit(coordinator, store, held)
+        log.clear()
+
+        // A different row entirely, so the window names something the debt does
+        // not — the tick that must not read as a pure re-offer.
+        let arrived = UUID()
+        try await remoteWrite(coordinator, writes: [Note(id: arrived, title: "from a peer", pinned: false)])
+        await coordinator.mergeChanges(into: store)
+
+        let tick = try #require(log.merges.first)
+        #expect(tick.merged == 2)
+        #expect(tick.carried == 1, "one of the two was owed; the other is news")
+        #expect(store.notes[arrived]?.title == "from a peer")
+        #expect(store.notes[held]?.title == "being edited", "the hold is still in force")
+    }
+
+    @Test("the debt settles when the hold lifts, and the counts say so")
+    func theDebtSettlesWhenTheHoldLifts() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, held) = try await makeAnchoredNote(
+            title: "being edited", onDiagnostic: onDiagnostic)
+
+        try await withholdARemoteEdit(coordinator, store, held)
+        log.clear()
+
+        // The tick that delivers the debt still reports it as carried — it was
+        // owed when the tick started, and only settles by being applied.
+        coordinator.editing.release(held)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[held]?.title == "edited elsewhere")
+        #expect(try #require(log.merges.first).carried == 1)
+        log.clear()
+
+        await coordinator.mergeChanges(into: store)
+
+        #expect(
+            log.merges.isEmpty,
+            "a settled debt is not re-offered — which is what makes a repeating one a leak"
+        )
+    }
+
+    @Test("the counts track a debt from taken on to settled")
+    func theCountsTrackADebtsWholeLife() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, held) = try await makeAnchoredNote(
+            title: "being edited", onDiagnostic: onDiagnostic)
+
+        // Every shape a tick has, in the order a leaked-then-released hold
+        // produces them. The debt is folded into the scan before it is counted,
+        // so what was carried is part of the total on every one of them.
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "first", pinned: false)])
+        await coordinator.mergeChanges(into: store)  // news, nothing owed yet
+        try await withholdARemoteEdit(coordinator, store, held)  // news, and the debt is taken on
+        await coordinator.mergeChanges(into: store)  // a pure re-offer
+        try await remoteWrite(coordinator, writes: [Note(id: UUID(), title: "from a peer", pinned: false)])
+        await coordinator.mergeChanges(into: store)  // the debt, plus a peer's write
+        coordinator.editing.release(held)
+        await coordinator.mergeChanges(into: store)  // the settlement
+
+        #expect(
+            log.merges.map { [$0.merged, $0.carried] } == [[1, 0], [1, 0], [1, 1], [2, 1], [1, 1]],
+            "only the two 1-1 ticks brought nothing of their own, and only they may read as a leak"
+        )
+    }
+
     @Test("a carried-over deletion is refused once the row is back on disk")
     func aCarriedOverDeletionIsRefutedByALiveRow() async throws {
         let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
