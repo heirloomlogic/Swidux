@@ -705,8 +705,13 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
         // The carry-over is discarded on purpose: this path re-reads every row
         // next time it runs, so a row it defers is re-offered without anyone
-        // having to remember it. Only a caller that consumes evidence once —
-        // ``mergeChanges(into:policy:)`` — needs the bookkeeping.
+        // having to remember it. Only a caller that consumes evidence once
+        // needs the bookkeeping.
+        //
+        // Dropping it cannot leave a debt *wrong*, either. A whole-table read
+        // offers everything, so anything still owed afterwards was already owed;
+        // the most a stale entry costs is one by-ID read on a later tick, which
+        // then finds nothing withheld and clears it.
         await merge(.wholeTable, into: store, policy: policy)
     }
 
@@ -765,6 +770,18 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// row is evidence the deletion was itself undone elsewhere; a tombstone can
     /// be stale.
     ///
+    /// ## Deferred rows are re-offered
+    ///
+    /// A tick may read a row and decline to apply it — an ``editing`` hold is the
+    /// one exemption that leaves no other trace. Those rows are remembered by
+    /// identity and re-offered on the next call, on top of whatever `ids` names,
+    /// so a caller does not have to re-queue them against its own signal. That
+    /// matters here because a sync signal is generally not resent and releasing a
+    /// hold writes no transaction of its own, so without it a hold would quietly
+    /// become a veto. ``mergeChanges(into:policy:)`` shares the same debt, so
+    /// either path settles what the other deferred. Both discard it when the
+    /// container is swapped.
+    ///
     /// Registered `collapse:` resolvers do not run here — a resolver is handed
     /// the whole table and asked which rows survive, and a subset would have it
     /// judge a world it cannot see. Duplicate rows are still collapsed on read
@@ -783,14 +800,25 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         deleted: Set<UUID> = [],
         policy: MergePolicy? = nil
     ) async {
-        // No carry-over is recorded, because there is no anchor for one to hang
-        // off: this path is driven by the caller's own signal, not by a window
-        // this coordinator consumed. An ID an editing hold defers here is
-        // re-offered by the next ``mergeChanges(into:policy:)`` tick if history
-        // still names it, and otherwise by whatever resends the signal.
-        await merge(
-            .unattributed(reading: ids.union(deleted), deleted: deleted),
+        // Read once, up front: the generation pins what this tick records to the
+        // database it started against.
+        let anchor = handle.anchor
+        // Rows an earlier tick was offered and deferred ride along with the
+        // caller's own identities, exactly as they do on the watermark path —
+        // and re-offering them here is what lets the debt be replaced below
+        // rather than reconciled against what this tick happened to be handed.
+        let declared = deleted.union(anchor.carryOver.allDeleted)
+        let reading = ids.union(declared).union(anchor.carryOver.allChanged)
+        let carryOver = await merge(
+            .unattributed(reading: reading, deleted: declared),
             into: store, policy: policy)
+        // A read threw, which leaves this tick unable to say what within it is
+        // still owed — so it says nothing, and the existing debt stands.
+        guard let carryOver else { return }
+        // Everything owed was re-offered above, so what came back is the whole
+        // debt and can replace it outright. No watermark moves: this tick
+        // consumed no window of its own.
+        handle.installAnchor(watermark: nil, carryOver: carryOver, ifGeneration: anchor.generation)
     }
 
     /// Runs every registered collapse resolver against storage, applying the

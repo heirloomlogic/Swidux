@@ -147,6 +147,8 @@ One batched fetch per 500 IDs instead of a full-table scan, and only the named e
 
 The one difference is deletions. A partial read can't tell a deleted row from one you simply didn't ask about, so this **never** infers a deletion — an ID vanishes only if you name it in `deleted:`, and only if the resolved policy allows removal. Name only what you have positive evidence for. In exchange there's no empty-snapshot guard to work around, so unlike `rehydrate(into:)` this *can* remove the last surviving entity.
 
+A row an `editing` hold defers is remembered and re-offered on the next call, on top of whatever you name in `ids:`. You don't have to re-queue the ID yourself, which matters because the signal that named it is usually spent — so a hold delays a remote change here rather than vetoing it. `mergeChanges(into:)` shares the same debt, so either path delivers what the other deferred.
+
 Two things it deliberately doesn't do: a registered `collapse:` resolver doesn't run (it judges the whole table, and a subset would have it judge a world it can't see — duplicates are still collapsed on read and still reported), and the ID set isn't keyed by entity type, so each registered entity pays one small round trip for IDs that turn out not to be its own.
 
 When *nothing* told you which identities changed — the usual case for a CloudKit remote-change notification — `mergeChanges(into:)` works it out for itself from the store's persistent-history log and spends the result through the same path, falling back to a full `rehydrate(into:)` for any window it can't fully account for. See <doc:HowToAddICloudSync>.

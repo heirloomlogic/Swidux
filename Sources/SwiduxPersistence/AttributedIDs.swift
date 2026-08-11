@@ -33,6 +33,17 @@ struct AttributedIDs: Sendable {
     /// The identities `entityName` was told were deleted.
     func deletions(for entityName: String) -> Set<UUID> { deleted[entityName] ?? [] }
 
+    /// Every identity named as changed, with the attribution dropped.
+    ///
+    /// Dropping it costs nothing where these two are spent. An unattributed
+    /// scope hands every registered entity the same set regardless, so there is
+    /// nothing for the attribution to narrow down — and an identity offered to
+    /// an entity that doesn't own it matches no row and concludes nothing.
+    var allChanged: Set<UUID> { Self.flattened(changed) }
+
+    /// Every identity named as deleted, with the attribution dropped.
+    var allDeleted: Set<UUID> { Self.flattened(deleted) }
+
     /// Everything `entityName` should read: what it was told changed, plus what
     /// it was told was deleted. Declared deletions are read too — a row storage
     /// still holds is what refutes a stale tombstone, and only a fetch can tell
@@ -80,6 +91,16 @@ struct AttributedIDs: Sendable {
         } else {
             groups[entityName]?.formUnion(ids)
         }
+    }
+
+    /// Folds one side's groups into a single set.
+    ///
+    /// The one-entity case — every app with a single registered collection, and
+    /// most ticks in the rest — hands back the set that is already there rather
+    /// than hashing every element into a copy of it.
+    private static func flattened(_ groups: [String: Set<UUID>]) -> Set<UUID> {
+        guard groups.count > 1 else { return groups.first?.value ?? [] }
+        return groups.values.reduce(into: Set()) { $0.formUnion($1) }
     }
 }
 

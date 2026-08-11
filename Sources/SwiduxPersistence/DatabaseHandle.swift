@@ -24,15 +24,21 @@ public final class DatabaseHandle: @unchecked Sendable {
     /// happens mid-merge invalidates the anchor the merge computed.
     private var generation = 0
 
-    /// The newest history token a merge has offered in full, and the rows it
-    /// offered but declined to apply.
+    /// The newest history token a merge has offered in full.
+    private var watermark: DefaultHistoryToken?
+
+    /// The rows a merge was offered and declined to apply, still owed.
     ///
-    /// One value because they are one fact: "everything up to `token` has been
-    /// offered, except `carryOver`". A token on its own would claim a withheld
-    /// row was consumed. Both are discarded together when `db` is replaced — a
-    /// token means nothing to a store that didn't issue it, and neither do
-    /// identities resolved against it.
-    private var installed: (token: DefaultHistoryToken, carryOver: AttributedIDs)?
+    /// Stored beside the watermark rather than inside it, because the two are
+    /// not one fact. A watermark describes a *window* this coordinator consumed;
+    /// a debt describes *identities*, and a caller-fed merge incurs one without
+    /// consuming any window at all. Pinning the debt to the token would mean a
+    /// path with no window of its own could never record what it owes.
+    ///
+    /// What they do share is the store the identities were resolved against, so
+    /// both are discarded when `db` is replaced — a token means nothing to a
+    /// store that didn't issue it, and neither do identities resolved against it.
+    private var outstanding = AttributedIDs()
 
     /// Creates a handle wrapping an initial ``EntityDB``.
     public init(_ db: EntityDB) {
@@ -55,7 +61,8 @@ public final class DatabaseHandle: @unchecked Sendable {
         set {
             lock.lock()
             storage = newValue
-            installed = nil
+            watermark = nil
+            outstanding = AttributedIDs()
             generation &+= 1
             lock.unlock()
         }
@@ -80,7 +87,7 @@ public final class DatabaseHandle: @unchecked Sendable {
     var anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int) {
         lock.lock()
         defer { lock.unlock() }
-        return (installed?.token, installed?.carryOver ?? AttributedIDs(), generation)
+        return (watermark, outstanding, generation)
     }
 
     /// Records what a tick accounted for: the window it consumed, and the rows
@@ -98,15 +105,19 @@ public final class DatabaseHandle: @unchecked Sendable {
     /// container was swapped while the merge was suspended, so `token` describes
     /// a store this handle no longer points at. A `token` no newer than the one
     /// held means two ticks overlapped and this is the slower one — installing it
-    /// would rewind the anchor and re-merge a window that has already landed.
+    /// would rewind the anchor and re-merge a window that has already landed, so
+    /// its accounting is refused wholesale rather than half-applied.
     ///
     /// - Parameters:
-    ///   - token: The newest token the tick consumed.
-    ///   - carryOver: What is still owed. Replaces rather than accumulates: the
-    ///     tick recomputed withholding against everything it was offered, which
-    ///     included everything the last one deferred.
+    ///   - token: The newest token the tick consumed, or `nil` for a tick that
+    ///     consumed no window of its own — either a caller-fed merge, or the one
+    ///     that finally delivers a row after its hold lifts.
+    ///   - carryOver: What is still owed. Replaces rather than accumulates,
+    ///     which is sound because every path that records one first re-offers
+    ///     everything already owed — so the tick recomputed withholding against
+    ///     its own news *and* the last tick's deferrals together.
     ///   - generation: The generation the tick read before it started.
-    /// - Returns: Whether the anchor moved.
+    /// - Returns: Whether anything moved.
     @discardableResult
     func installAnchor(
         watermark token: DefaultHistoryToken?,
@@ -117,15 +128,16 @@ public final class DatabaseHandle: @unchecked Sendable {
         defer { lock.unlock() }
         guard generation == self.generation else { return false }
         guard let token else {
-            // No window to advance past, so there is only a debt to update — and
-            // with no anchor there is nowhere to attach one. None is owed there
-            // either: an unanchored session re-reads everything next tick.
-            guard installed != nil, let carryOver else { return false }
-            installed?.carryOver = carryOver
+            // No window to advance past, so there is only a debt to update. It
+            // needs no watermark to hang off: identities are meaningful against
+            // the store that resolved them, which the generation already checks.
+            guard let carryOver else { return false }
+            outstanding = carryOver
             return true
         }
-        if let current = installed?.token, token <= current { return false }
-        installed = (token, carryOver ?? installed?.carryOver ?? AttributedIDs())
+        if let watermark, token <= watermark { return false }
+        watermark = token
+        if let carryOver { outstanding = carryOver }
         return true
     }
 }
