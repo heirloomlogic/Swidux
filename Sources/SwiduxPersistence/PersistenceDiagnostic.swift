@@ -91,8 +91,13 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         /// A remote-change tick resolved persistent history into a bounded set
         /// of identities and merged only those.
         ///
-        /// The healthy case, and the one worth watching: if it stops appearing,
-        /// ticks have quietly fallen back to re-reading every table.
+        /// The healthy case, and the one worth watching — in both directions. If
+        /// it stops appearing, ticks have quietly fallen back to re-reading every
+        /// table. If it keeps appearing with
+        /// ``PersistenceDiagnostic/carriedOverCount`` equal to
+        /// ``PersistenceDiagnostic/mergedCount``, tick after tick, no peer is
+        /// writing anything and an editing hold has been leaked: the same rows
+        /// are being re-offered and deferred forever.
         public static let remoteChangesMerged = Kind(rawValue: "remoteChangesMerged")
 
         /// A tick could not narrow its work from persistent history and re-read
@@ -138,6 +143,18 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
     /// Set only for ``Kind/remoteChangesMerged``.
     public let mergedCount: Int?
 
+    /// How many of ``mergedCount`` were rows an earlier tick deferred and this
+    /// one re-offered, rather than news the window brought.
+    /// Set only for ``Kind/remoteChangesMerged``.
+    ///
+    /// A deferred row is carried forward by identity and folded into the scan
+    /// before the merge runs, so this is never larger than ``mergedCount``.
+    /// Equal to it means the tick named nothing the debt did not already — no
+    /// peer wrote anything, and the only work was re-offering what an
+    /// ``EditingHolds`` hold declined last time. Once, that is a hold doing its
+    /// job. Every tick, unchanging, it is a hold that was never released.
+    public let carriedOverCount: Int?
+
     /// How many history transactions were deleted.
     /// Set only for ``Kind/historyPruned``.
     public let prunedCount: Int?
@@ -156,6 +173,7 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         unpersistedIDs: Set<UUID>? = nil,
         withheldIDs: Set<UUID>? = nil,
         mergedCount: Int? = nil,
+        carriedOverCount: Int? = nil,
         prunedCount: Int? = nil,
         fallbackReason: String? = nil
     ) {
@@ -166,6 +184,7 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         self.unpersistedIDs = unpersistedIDs
         self.withheldIDs = withheldIDs
         self.mergedCount = mergedCount
+        self.carriedOverCount = carriedOverCount
         self.prunedCount = prunedCount
         self.fallbackReason = fallbackReason
     }
@@ -191,9 +210,10 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         Self(kind: .mergeWithheld, entityType: entityType, withheldIDs: ids)
     }
 
-    /// A tick merged `count` identities read out of persistent history.
-    public static func remoteChangesMerged(count: Int) -> Self {
-        Self(kind: .remoteChangesMerged, mergedCount: count)
+    /// A tick merged `count` identities, `carriedOver` of which it already owed
+    /// from an earlier tick rather than reading out of this window.
+    public static func remoteChangesMerged(count: Int, carriedOver: Int = 0) -> Self {
+        Self(kind: .remoteChangesMerged, mergedCount: count, carriedOverCount: carriedOver)
     }
 
     /// A tick re-read every registered entity because `reason` stopped it
@@ -224,7 +244,9 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         case .mergeWithheld:
             return "\(entity): \((withheldIDs ?? []).count) remote change(s) withheld by an editing hold"
         case .remoteChangesMerged:
-            return "merged \(mergedCount ?? 0) changed row(s) from persistent history"
+            let merged = "merged \(mergedCount ?? 0) changed row(s) from persistent history"
+            guard let carried = carriedOverCount, carried > 0 else { return merged }
+            return "\(merged) (\(carried) re-offered from an earlier tick)"
         case .historyUnavailable:
             return "re-read every entity: \(fallbackReason ?? "history was unavailable")"
         case .historyPruned:
@@ -248,5 +270,32 @@ public typealias PersistenceDiagnosticHandler = @Sendable (PersistenceDiagnostic
 /// keeps the registration free of any late-bound mutable state.
 struct PersistenceObservers: Sendable {
     let onFailure: PersistenceFailureHandler
-    let onDiagnostic: PersistenceDiagnosticHandler
+
+    /// Nil rather than a no-op sink, so "is anyone listening?" is answerable
+    /// from anywhere this value reaches — which is everywhere a diagnostic is
+    /// raised, including the merge fold, which could not reach the coordinator's
+    /// own copy of that answer.
+    private let onDiagnostic: PersistenceDiagnosticHandler?
+
+    init(onFailure: @escaping PersistenceFailureHandler, onDiagnostic: PersistenceDiagnosticHandler?) {
+        self.onFailure = onFailure
+        self.onDiagnostic = onDiagnostic
+    }
+
+    /// Whether the app supplied a diagnostic handler.
+    ///
+    /// Read this before doing work whose *only* consumer is the diagnostic —
+    /// counting what a prune deleted costs a second full evaluation of the
+    /// predicate, and nobody should pay it to report a number into a void.
+    var isReportingDiagnostics: Bool { onDiagnostic != nil }
+
+    /// Delivers a diagnostic, building it only if it will be read.
+    ///
+    /// The argument is an autoclosure because the payloads are not free: a
+    /// merged-row count folds two dictionaries, a withheld set unions two more.
+    /// Call sites read exactly as they would if it were eager.
+    func report(_ diagnostic: @autoclosure () -> PersistenceDiagnostic) {
+        guard let onDiagnostic else { return }
+        onDiagnostic(diagnostic())
+    }
 }

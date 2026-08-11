@@ -241,6 +241,47 @@ struct PersistenceDiagnosticTests {
         #expect(try await coordinator.fetchAll(of: Note.self).count == 1)
     }
 
+    @Test("A nil handler leaves the merge paths working, holds and all")
+    func nilHandlerIsHarmlessAcrossAMerge() async throws {
+        // The paths that now skip building a diagnostic nobody asked for: a
+        // narrowed tick, and the hold inside it that withholds a row. Both still
+        // have to do their real work, which is the merge and the carry-over.
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let held = UUID()
+        let store = makeNotesStore(coordinator)
+
+        store.send(.add(Note(id: held, title: "being edited", pinned: false)))
+        await coordinator.corePlugin.flush()
+        await coordinator.mergeChanges(into: store)
+
+        coordinator.editing.hold(held)
+        try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[held]?.title == "being edited", "a hold defers a remote change")
+
+        coordinator.editing.release(held)
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[held]?.title == "edited elsewhere", "and the debt is still re-offered")
+    }
+
+    // MARK: - How a narrowed tick describes itself
+
+    @Test("A merge that re-offered nothing describes itself as it always did")
+    func descriptionOmitsAnEmptyCarryOver() {
+        #expect(
+            PersistenceDiagnostic.remoteChangesMerged(count: 3).description
+                == "merged 3 changed row(s) from persistent history"
+        )
+    }
+
+    @Test("A merge that re-offered a debt says so in its description")
+    func descriptionNamesTheCarryOver() {
+        // The one-line read of a leaked hold: everything merged was already owed.
+        let described = PersistenceDiagnostic.remoteChangesMerged(count: 2, carriedOver: 2).description
+
+        #expect(described.contains("2 re-offered"))
+    }
+
     // MARK: - The ledger's own semantics
 
     @Test("The unpersisted ledger reports every change, including recovery to empty")

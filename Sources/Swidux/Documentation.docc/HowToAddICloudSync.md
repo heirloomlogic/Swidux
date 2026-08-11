@@ -200,6 +200,8 @@ The hold is taken when the editor appears and given back when it goes away, so t
 
 A hold **defers a remote change, it does not veto one.** Release it and the next merge applies whatever storage holds, deletions included, so the worst a leaked hold can do is strand one row at a stale value. It won't do that quietly either: a merge that actually withheld a differing value reports `.mergeWithheld` on the diagnostic channel.
 
+A hold that outlives its edit shows up on the other diagnostic too. The deferred row is carried forward and re-offered on every later tick, so `.remoteChangesMerged` keeps arriving with `carriedOverCount == mergedCount` — the tick merged nothing but what it already owed. Once is a hold doing its job; unchanging, tick after tick, it is a hold nobody gave back.
+
 **Turn remote-wins off for the whole collection.** The blunt instrument, for a store where a remote edit arriving under the cursor is always worse than a stale row:
 
 ```swift

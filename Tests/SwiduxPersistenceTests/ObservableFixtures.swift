@@ -210,6 +210,16 @@ extension SendableBox where T == [PersistenceDiagnostic] {
         value.filter { $0.kind == .historyUnavailable }.compactMap(\.fallbackReason)
     }
 
+    /// Every narrowed tick reported, as the pair that tells one apart from
+    /// another: how much was merged, and how much of that was already owed.
+    ///
+    /// Asking for both at once is the point — either number alone is what the
+    /// conflation looked like.
+    var merges: [(merged: Int, carried: Int)] {
+        value.filter { $0.kind == .remoteChangesMerged }
+            .map { (merged: $0.mergedCount ?? 0, carried: $0.carriedOverCount ?? 0) }
+    }
+
     /// Forgets everything reported so far, so a later assertion speaks only for
     /// the step it follows.
     func clear() { value = [] }
