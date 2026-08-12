@@ -51,7 +51,7 @@ The generated model is **CloudKit-safe by construction**, so the *same* model ba
 
 - **Non-optional mirrored attributes get a default.** If you wrote one on the domain property (`var count: Int = 0`), it is propagated verbatim; otherwise the macro fills a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). Defaults are inert locally — `init(from:)` overwrites them on every load.
 - **Non-primitive, non-optional properties** (a custom `Codable` type, `URL`, an enum) have no default the macro can invent. Give the property a default (`= …`), make it optional, or mark it `@Inline` — otherwise `@Persisted` emits a compile-time error.
-- **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a compile-time error (CloudKit forbids non-optional relationships).
+- **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a compile-time error (CloudKit forbids non-optional relationships). The generated `update(from:)` **reconciles related rows by `id`** — surviving identities are updated in place, new ones inserted, and departed ones deleted. It has to: a `deleteRule` fires when the *parent* is deleted, never when a child leaves the relationship, so rebuilding the set on each save would detach the previous rows rather than remove them and leave an orphan behind every time.
 - **`@Inline` blob columns** default to `Data()`, so any `Codable` type is CloudKit-safe through `@Inline`. Because `Data()` is never decodable, a **non-optional** `@Inline` property must also carry a domain default (`= …`) — the generated getter falls back to it when the blob is missing or undecodable (e.g. a row CloudKit materialized before the blob synced). Omitting the default is a compile-time error (`inlineRequiresDefault`).
 
 `@Persisted` lives on the **entity**; `@Swidux` lives on **state containers** (`AppState`, `@Slice` slices). They are different layers and never apply to the same type.
@@ -126,6 +126,8 @@ extension Store where State == AppState, Action == AppAction {
     }
 }
 ```
+
+Registering the plugin is all the wiring it needs. `Store` also finds it there for the two paths that drain *outside* the plugin lifecycle — `store.mutate { … }` and undo/redo — so you don't have to name it a second time as `persistencePlugin:`. (That parameter still exists, for draining through a plugin you deliberately didn't register.)
 
 `hydrate(into:)` is **first-load only** — it replaces each ``EntityStore`` with the on-disk rows before any live edits exist. It takes `inout State` because it runs *before the store is built*, so there is nothing to race with.
 

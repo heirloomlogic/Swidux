@@ -86,6 +86,12 @@ public actor SimulatedPaywallService: PaywallService {
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.removeContinuation(id) }
             }
+            // Registration hops onto the actor, so it lands after this call
+            // returns. Anything granted in that window would reach a
+            // continuation the actor hasn't seen — the stream's *first* value
+            // is the current snapshot, replayed on registration, so a late
+            // registration still delivers the latest state rather than an
+            // update that was missed. `register` yields it for exactly that.
             Task { await self.register(id, continuation) }
         }
     }

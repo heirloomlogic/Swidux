@@ -44,6 +44,30 @@ private func makeStore(
     )
 }
 
+/// Records what each flush carried, behind a plugin with a short debounce.
+///
+/// Deletions are recorded alongside writes because undo restores a *diff*: the
+/// step that proves a restore was drained is a deletion, and a recorder that
+/// only watched writes would pass on an empty flush.
+@MainActor
+private func makeRecordingPlugin() -> (
+    plugin: PersistencePlugin<TestState, TestAction>,
+    writes: SendableBox<[UUID]>,
+    deletions: SendableBox<[UUID]>
+) {
+    let writes = SendableBox<[UUID]>([])
+    let deletions = SendableBox<[UUID]>([])
+    let writer = StateWriter<TestState>(keyPath: \.items) { written, deleted in
+        writes.value.append(contentsOf: written.map(\.id))
+        deletions.value.append(contentsOf: deleted)
+    }
+    return (
+        PersistencePlugin<TestState, TestAction>(writers: [writer], debounce: .milliseconds(10)),
+        writes,
+        deletions
+    )
+}
+
 // MARK: - Tests
 
 @Suite("Store.mutate")
@@ -101,12 +125,7 @@ struct StoreMutateTests {
 
     @Test("entity writes made while merging are drained and scheduled for persistence")
     func mergedWritesAreScheduledForFlush() async throws {
-        let recorded = SendableBox<[UUID]>([])
-        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
-            recorded.value.append(contentsOf: writes.map(\.id))
-        }
-        let plugin = PersistencePlugin<TestState, TestAction>(
-            writers: [writer], debounce: .milliseconds(10))
+        let (plugin, recorded, _) = makeRecordingPlugin()
         let store = makeStore(persistencePlugin: plugin)
         let entity = TestEntity(name: "merged")
 
@@ -120,6 +139,50 @@ struct StoreMutateTests {
         // No intervening `send` — without the drain inside `mutate`, this write
         // would sit in the store unflushed until the next dispatch.
         #expect(recorded.value == [entity.id])
+    }
+
+    @Test("a plugin registered on the host alone is still drained by mutate")
+    func registeredPluginIsFoundWithoutTheParameter() async throws {
+        let (plugin, recorded, _) = makeRecordingPlugin()
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(plugin)
+        // Registered and *not* passed as `persistencePlugin:` — the wiring
+        // <doc:HowToAddPersistence> shows. Two ways to say one thing is a
+        // footgun: the write below reaches disk only on the next dispatch when
+        // the store can't find the plugin, so an app that folds an API result in
+        // with `mutate` and then terminates loses it.
+        let store = Store(initialState: TestState(), reducer: testReducer, plugins: plugins)
+        let entity = TestEntity(name: "merged")
+
+        store.mutate { $0.items[entity.id] = entity }
+        await plugin.flush()
+
+        #expect(recorded.value == [entity.id])
+    }
+
+    @Test("undo/redo writes are drained through a host-registered plugin too")
+    func undoDrainsThroughTheRegisteredPlugin() async throws {
+        let (plugin, writes, deletions) = makeRecordingPlugin()
+        let undo = UndoPlugin<TestState, TestAction>()
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(undo)
+        plugins.register(plugin)
+        let store = Store(
+            initialState: TestState(), reducer: testReducer, plugins: plugins, undoPlugin: undo)
+        let entity = TestEntity(name: "undone")
+
+        store.send(.insert(entity))
+        await plugin.flush()
+        #expect(writes.value == [entity.id])
+
+        store.undo()
+        await plugin.flush()
+
+        // Undoing the insert leaves a deletion to persist. Reaching the writer
+        // is the assertion: with no plugin to drain through it would sit in the
+        // `EntityStore`'s changelog, and the row would survive on disk.
+        #expect(store.items[entity.id] == nil)
+        #expect(deletions.value == [entity.id])
     }
 
     @Test("a send from inside merging is deferred, then runs after the merge commits")

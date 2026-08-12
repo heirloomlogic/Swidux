@@ -91,6 +91,19 @@ public final class Store<State: SwiduxObservable, Action> {
 
     /// Creates a store with the given initial state, reducer, and optional plugins.
     ///
+    /// - Parameters:
+    ///   - initialState: The state the observer tree is built from.
+    ///   - reducer: The app reducer.
+    ///   - plugins: The registered plugins, in execution order.
+    ///   - undoPlugin: The plugin ``undo()`` / ``redo()`` drive. Register it on
+    ///     `plugins` too — it snapshots from `willReduce`.
+    ///   - persistencePlugin: The plugin ``mutate(_:)`` and undo/redo drain
+    ///     through. **Usually leave this nil**: a `PersistencePlugin` registered
+    ///     on `plugins` is found automatically, so registering it once is
+    ///     enough. Pass it only to drain through a plugin that is deliberately
+    ///     *not* registered on the host.
+    ///   - isUndoable: Which actions register with the platform `UndoManager`.
+    ///
     /// - Note: `isUndoable` only controls platform `UndoManager` registration
     ///   (menu items, gestures); the `UndoPlugin` snapshots according to its
     ///   *own* `isUndoable` predicate. Pass the same predicate to both —
@@ -108,7 +121,17 @@ public final class Store<State: SwiduxObservable, Action> {
         self.reduce = reducer
         self.plugins = plugins
         self.undoPlugin = undoPlugin
-        self.persistencePlugin = persistencePlugin
+        // Fall back to whatever is registered. `mutate` and undo/redo are the
+        // two paths that drain outside the plugin lifecycle, so a store that
+        // couldn't find the plugin recorded their changes and scheduled
+        // nothing: the write reached disk only if a later `send` happened to
+        // drain it first, and an explicit `flush()` — which empties the writers'
+        // buffers but never drains into them — wrote nothing at all. Requiring
+        // the same plugin to be named twice made that the default outcome for
+        // anyone following <doc:HowToAddPersistence>.
+        self.persistencePlugin =
+            persistencePlugin
+            ?? plugins.plugins.lazy.compactMap { $0 as? PersistencePlugin<State, Action> }.first
         self.isUndoableAction = isUndoable
     }
 
@@ -213,13 +236,23 @@ public final class Store<State: SwiduxObservable, Action> {
     /// persistence exactly as after a dispatch, and a `send(_:)` issued from
     /// inside `apply` is deferred and runs after the merge commits.
     public func mutate(_ apply: @MainActor (inout State) -> Void) {
+        // Restored, not cleared. A synchronous `mutate` from inside a reducer or
+        // plugin hook is already re-entrant; forcing the flag back to `false` on
+        // the way out would disarm the guard for the *rest* of the outer
+        // dispatch, so a later `send` would run inline and the outer `apply`
+        // would then clobber it — the exact failure the guard exists to stop.
+        let wasDispatching = isDispatching
         isDispatching = true
-        defer { isDispatching = false }
+        defer { isDispatching = wasDispatching }
         var state = State(observer: observer)
         apply(&state)
         persistencePlugin?.drainAndScheduleFlush(&state)
         State.apply(state, to: observer)
-        drainPending()
+        // Only the outermost caller drains. Nested, the enclosing cycle has an
+        // `apply` of its own still to come, so anything run here would be
+        // overwritten by it; left queued, the same actions run after that apply
+        // lands and against fresh state.
+        if !wasDispatching { drainPending() }
     }
 
     /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.

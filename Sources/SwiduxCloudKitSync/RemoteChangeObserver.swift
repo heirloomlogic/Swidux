@@ -38,7 +38,12 @@ public final class RemoteChangeObserver {
     private let ownedStoreURLs: StoreIdentity?
     private let logger: Logger
     private let notificationCenter: NotificationCenter
-    private var observerToken: (any NSObjectProtocol)?
+    /// `nonisolated(unsafe)` only so `deinit` can give the registration back.
+    /// Every other access is on the MainActor, and a `deinit` runs when no other
+    /// reference to this observer exists — so there is no second accessor to
+    /// race with. The token's type is a non-`Sendable` existential, which is the
+    /// whole reason an isolated stored property can't be read from there.
+    nonisolated(unsafe) private var observerToken: (any NSObjectProtocol)?
     private var pending: Task<Void, Never>?
 
     /// The accepted notifications seen since the last callback fired, or `nil`
@@ -130,6 +135,23 @@ public final class RemoteChangeObserver {
         // would fold stores observed before a container rebuild into the first
         // burst after one.
         burst = nil
+    }
+
+    /// Gives the registration back if the owner dropped this observer without
+    /// calling ``stop()``.
+    ///
+    /// The block captures `self` weakly, so a forgotten `stop()` was never a
+    /// leak of the *observer* — but the token it returns is a separate object
+    /// the center keeps until it is removed, and a scene that builds an observer
+    /// per appearance would accumulate one per cycle. Deinit is the only place
+    /// that can be sure no one else is going to.
+    ///
+    /// Only the token: `pending` holds `[weak self]` and dies on its own, and
+    /// there is nothing left to cancel it for.
+    deinit {
+        if let observerToken {
+            notificationCenter.removeObserver(observerToken)
+        }
     }
 
     /// Folds one notification into the current burst, unless it belongs to a

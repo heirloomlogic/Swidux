@@ -252,13 +252,19 @@ private func updateLine(for prop: PersistedProperty) -> String? {
     switch prop.kind {
     case .mirror, .inlineBlob:
         return "        self.\(prop.name) = domain.\(prop.name)"
-    case .relation(_, _, let cardinality, let element):
-        switch cardinality {
-        case .toMany, .toOneOptional:
-            return "        self.\(prop.name) = domain.\(prop.name).map { \(element)Model(from: $0) }"
-        case .toOne:
-            return "        self.\(prop.name) = \(element)Model(from: domain.\(prop.name))"
-        }
+    case .relation:
+        // Reconciled by id rather than rebuilt. Rebuilding detaches the previous
+        // rows instead of removing them — a delete rule fires when the *parent*
+        // goes, not when a child leaves the relationship — so every save would
+        // leave another orphaned copy behind. See `SwiduxRelationCodec`.
+        //
+        // One spelling for every cardinality: the codec is overloaded on the
+        // array and optional forms, and a non-optional to-one is diagnosed
+        // (`relationRequiresOptional`) before this expansion is ever compiled.
+        return """
+                    self.\(prop.name) = SwiduxRelationCodec.reconcile(
+                        self.\(prop.name), with: domain.\(prop.name), in: modelContext)
+            """
     case .ignored:
         return nil
     }
