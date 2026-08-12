@@ -17,7 +17,7 @@ release — write release notes on the release itself.
 * Persistence: retry a failed flush instead of losing the write by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/62
 * Undo: don't resurrect an entity another device deleted by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/63
 * KeyValueStore: degrade on an unreachable Keychain instead of trapping by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/67
-* Plugins: annotate every state slice with @Swidux so @Slice compiles by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/68
+* Plugins: annotate every state slice with `@Swidux` so `@Slice` compiles by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/68
 #### Other Changes
 * Persistence: a diagnostic channel for what isn't a failure by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/66
 * Persistence: an editing hold for the edit the store can't see by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/71
