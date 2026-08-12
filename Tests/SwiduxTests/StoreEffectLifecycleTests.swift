@@ -92,6 +92,51 @@ struct StoreEffectLifecycleTests {
         #expect(store.items[entity.id] == entity)
     }
 
+    @Test("a cancelled effect can still dispatch from its catch block")
+    @MainActor
+    func cancelledEffectCanStillSend() async throws {
+        let marker = TestEntity(name: "cleanup")
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+
+        let store = Store<TestState, TestAction>(
+            initialState: TestState(),
+            reducer: { state, action in
+                switch action {
+                case .noOp:
+                    return { send in
+                        started.yield()
+                        do {
+                            try await Task.sleep(for: .seconds(60))
+                        } catch {
+                            // The cleanup path every plugin's async effect
+                            // relies on to clear its own in-flight flag.
+                            await send(.insert(marker))
+                            throw error
+                        }
+                    }
+                case .insert(let entity):
+                    state.items[entity.id] = entity
+                    return nil
+                default:
+                    return nil
+                }
+            }
+        )
+        store.send(.noOp)
+        var startedSignals = startedStream.makeAsyncIterator()
+        await startedSignals.next()
+
+        store.cancelEffects()
+
+        // Cancellation stops the *sleep*; hopping to the main actor to dispatch
+        // afterwards is not itself cancellable. This is why a plugin that sets
+        // an `isFetching`-style flag and clears it in `catch` does not strand
+        // the flag on teardown — pinned here because the alternative is a
+        // spinner that never stops, and nothing else would notice.
+        try await poll(until: { store.items[marker.id] != nil })
+        #expect(store.items[marker.id] == marker)
+    }
+
     @Test("completed effects remove themselves from the registry")
     @MainActor
     func completedEffectsSelfRemove() async {

@@ -111,6 +111,14 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
                     let config = try await service.fetch()
                     await send(lift(.refreshSucceeded(config, fetchedAt: Date())))
                 } catch {
+                    // Deliberately unfiltered, cancellation included:
+                    // `isFetching` is cleared by `.refreshSucceeded` or
+                    // `.refreshFailed` and by nothing else, so an effect torn
+                    // down mid-flight — `Store.cancelEffects()` on scene
+                    // teardown is the ordinary way — has to land here or the
+                    // flag stays latched for the session. Dispatching from a
+                    // cancelled effect works; `StoreEffectLifecycleTests` pins
+                    // that, because this depends on it.
                     await send(lift(.refreshFailed(String(describing: error))))
                 }
             }

@@ -132,6 +132,33 @@ struct RemoteChangeObserverTests {
     }
 
     @MainActor
+    @Test("an observer dropped without stop() deallocates, and its center outlives it safely")
+    func droppedObserverDeallocates() async throws {
+        let center = NotificationCenter()
+        weak var leaked: RemoteChangeObserver?
+
+        do {
+            let observer = RemoteChangeObserver(
+                debounce: .milliseconds(10), notificationCenter: center
+            ) { _ in }
+            observer.start()
+            leaked = observer
+            #expect(leaked != nil)
+        }
+
+        // The center retains the block `start()` handed it. That block captures
+        // `self` weakly, so the observer still dies — this pins that capture,
+        // which a future edit could turn into a cycle without any other signal.
+        #expect(leaked == nil, "the notification registration must not retain the observer")
+
+        // And the registration itself is gone: posting afterwards reaches a
+        // center holding nothing of ours. `deinit` is the only place that can
+        // remove the token when the owner forgot to `stop()`.
+        post(to: center, storeURL: Self.ours)
+        try await Task.sleep(for: .milliseconds(30))
+    }
+
+    @MainActor
     @Test("a notification from an unidentifiable store still triggers a merge")
     func unidentifiedStoreStillMerges() async throws {
         let (observer, center, recorder) = makeObserver(owning: [Self.ours])

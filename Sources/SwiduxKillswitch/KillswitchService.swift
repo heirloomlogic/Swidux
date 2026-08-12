@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Swidux
 
 /// A provider-agnostic service for fetching and caching the remote
 /// killswitch configuration.
@@ -48,6 +49,25 @@ public struct KillswitchService: Sendable {
     /// body exceeds 1 MB (it is streamed, never fully buffered past the cap),
     /// and non-2xx statuses are treated as fetch failures (the plugin then
     /// falls back to its cache).
+    ///
+    /// ## The cache is the other input path
+    ///
+    /// A cached config produces a verdict with exactly the authority a fetched
+    /// one has, and it is reached without any successful fetch ever having
+    /// happened — launch offline and the failure path loads it directly. So it
+    /// is scoped and checked rather than trusted:
+    ///
+    /// - It lives in a **bundle-scoped subdirectory** of the caches directory.
+    ///   On a non-sandboxed macOS build `.cachesDirectory` is `~/Library/Caches`,
+    ///   shared by the whole user account, so a bare filename would have every
+    ///   Swidux app reading every other's blocked verdict.
+    /// - It records the **endpoint it came from**, and ``loadCached`` treats a
+    ///   payload written for a different one as absent. Repointing the endpoint
+    ///   therefore invalidates the cache rather than inheriting it.
+    ///
+    /// Neither of those makes the file authenticated. A process running as the
+    /// user can still write it on a platform where the caches directory isn't
+    /// sandboxed — see <doc:SecurityPosture>.
     public static func live(
         endpoint: URL,
         fetchTimeout: TimeInterval = 10,
@@ -60,82 +80,66 @@ public struct KillswitchService: Sendable {
             "KillswitchService endpoint must use HTTPS: \(endpoint)"
         )
         let cacheURL = Self.cacheFileURL()
+        let origin = endpoint.absoluteString
 
         return KillswitchService(
             fetch: {
                 var request = URLRequest(url: endpoint)
                 request.timeoutInterval = fetchTimeout
                 request.cachePolicy = .reloadIgnoringLocalCacheData
-                let data = try await boundedData(
+                let data = try await BoundedResponse.data(
                     for: request, session: session, limit: Self.maxResponseBytes
                 )
                 return try JSONDecoder().decode(KillswitchConfig.self, from: data)
             },
             loadCached: {
                 guard let data = try? Data(contentsOf: cacheURL),
-                    let config = try? JSONDecoder().decode(KillswitchConfig.self, from: data)
+                    let cached = try? JSONDecoder().decode(CachedConfig.self, from: data),
+                    cached.endpoint == origin
                 else { return nil }
-                return config
+                return cached.config
             },
             saveCached: { config in
-                guard let data = try? JSONEncoder().encode(config) else { return }
+                guard let data = try? JSONEncoder().encode(CachedConfig(endpoint: origin, config: config))
+                else { return }
+                try? FileManager.default.createDirectory(
+                    at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? data.write(to: cacheURL, options: .atomic)
             },
             cacheLifetime: cacheLifetime
         )
     }
 
-    private static func cacheFileURL() -> URL {
+    /// A cached config plus the endpoint it was fetched from.
+    ///
+    /// The endpoint is what makes a cache refusable. Without it the file is just
+    /// a config, and a config is a verdict — so anything that could put one
+    /// there could block the app, including the previous build pointing at a
+    /// different URL.
+    private struct CachedConfig: Codable {
+        let endpoint: String
+        let config: KillswitchConfig
+    }
+
+    /// The subdirectory the cache lives in — the host bundle's identifier, or a
+    /// fixed fallback where there isn't one (a CLI tool, a test host).
+    ///
+    /// Internal so a test can assert the scoping rather than restate the path.
+    static var cacheScope: String {
+        Bundle.main.bundleIdentifier ?? "swidux-killswitch"
+    }
+
+    /// Where the cached config lives. Internal for the same reason as
+    /// ``cacheScope``.
+    static func cacheFileURL() -> URL {
         let cachesDirectory =
             FileManager.default.urls(
                 for: .cachesDirectory, in: .userDomainMask
             ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return cachesDirectory.appendingPathComponent("swidux-killswitch.json")
-    }
-
-    /// Streams the response body while enforcing `limit`, so the process never
-    /// buffers a hostile or misconfigured payload whole.
-    ///
-    /// The HTTP status is checked before the body is read (non-2xx throws
-    /// ``URLError/badServerResponse``); a declared `Content-Length` above the
-    /// cap is rejected immediately; otherwise bytes are accumulated chunk by
-    /// chunk and the transfer is aborted with
-    /// ``URLError/dataLengthExceedsMaximum`` once the accumulated count exceeds
-    /// `limit` — never holding more than the cap plus one chunk.
-    private static func boundedData(
-        for request: URLRequest,
-        session: URLSession,
-        limit: Int
-    ) async throws -> Data {
-        let (bytes, response) = try await session.bytes(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw URLError(.badServerResponse)
-        }
-        if response.expectedContentLength > Int64(limit) {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        var data = Data()
-        if response.expectedContentLength > 0 {
-            data.reserveCapacity(min(Int(response.expectedContentLength), limit))
-        }
-        let chunkSize = 65_536
-        var chunk = [UInt8]()
-        chunk.reserveCapacity(chunkSize)
-        for try await byte in bytes {
-            chunk.append(byte)
-            if chunk.count == chunkSize {
-                data.append(contentsOf: chunk)
-                chunk.removeAll(keepingCapacity: true)
-                if data.count > limit {
-                    throw URLError(.dataLengthExceedsMaximum)
-                }
-            }
-        }
-        data.append(contentsOf: chunk)
-        if data.count > limit {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        return data
+        return
+            cachesDirectory
+            .appendingPathComponent(cacheScope, isDirectory: true)
+            .appendingPathComponent("swidux-killswitch.json")
     }
 
     // MARK: - Mock

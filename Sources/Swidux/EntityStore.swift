@@ -117,6 +117,12 @@ public nonisolated struct EntityStore<
         set {
             if let value = newValue {
                 if let index = positions[id] {
+                    // Writing back an identical value is not a change, and
+                    // recording one is not free: an un-drained upsert makes the
+                    // ID locally-owned, so the next remote merge has no
+                    // authority over a row nobody actually touched. `modify`
+                    // has always compared; this is the same rule.
+                    guard entities[index] != value else { return }
                     // Update existing
                     entities[index] = value
                 } else {

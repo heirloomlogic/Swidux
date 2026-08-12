@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Swidux
 
 /// Provider-agnostic feature-flags backend.
 ///
@@ -71,55 +72,10 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = fetchTimeout
 
-        let data = try await Self.boundedData(
+        let data = try await BoundedResponse.data(
             for: request, session: session, limit: Self.maxResponseBytes
         )
 
         return try decoder.decode(FeatureFlagsConfig.self, from: data)
-    }
-
-    /// Streams the response body while enforcing `limit`, so the process never
-    /// buffers a hostile or misconfigured payload whole.
-    ///
-    /// The HTTP status is checked before the body is read (non-2xx throws
-    /// ``URLError/badServerResponse``); a declared `Content-Length` above the
-    /// cap is rejected immediately; otherwise bytes are accumulated chunk by
-    /// chunk and the transfer is aborted with
-    /// ``URLError/dataLengthExceedsMaximum`` once the accumulated count exceeds
-    /// `limit` — never holding more than the cap plus one chunk.
-    private static func boundedData(
-        for request: URLRequest,
-        session: URLSession,
-        limit: Int
-    ) async throws -> Data {
-        let (bytes, response) = try await session.bytes(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw URLError(.badServerResponse)
-        }
-        if response.expectedContentLength > Int64(limit) {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        var data = Data()
-        if response.expectedContentLength > 0 {
-            data.reserveCapacity(min(Int(response.expectedContentLength), limit))
-        }
-        let chunkSize = 65_536
-        var chunk = [UInt8]()
-        chunk.reserveCapacity(chunkSize)
-        for try await byte in bytes {
-            chunk.append(byte)
-            if chunk.count == chunkSize {
-                data.append(contentsOf: chunk)
-                chunk.removeAll(keepingCapacity: true)
-                if data.count > limit {
-                    throw URLError(.dataLengthExceedsMaximum)
-                }
-            }
-        }
-        data.append(contentsOf: chunk)
-        if data.count > limit {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        return data
     }
 }

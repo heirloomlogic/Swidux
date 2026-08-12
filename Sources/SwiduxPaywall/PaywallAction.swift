@@ -11,6 +11,9 @@ public enum PaywallAction: Sendable {
     case dismiss
     /// Begin a long-lived subscription to entitlement-status updates from the service.
     case observeCustomerInfo
+    /// The entitlement stream finished; clears the guard so observation can be
+    /// started again. Dispatched by ``PaywallPlugin``, not by app code.
+    case customerInfoStreamEnded
     /// Fetch the current entitlement snapshot once; sets `isLoading`.
     case refreshCustomerInfo
     /// A new entitlement snapshot arrived; updates `isPro` / `hasPermanentLicense`.

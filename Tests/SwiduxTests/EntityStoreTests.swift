@@ -331,6 +331,50 @@ struct EntityStoreTests {
         #expect(store.changes.upserts.contains(id))
     }
 
+    @Test("Subscript set of an identical value records nothing")
+    func subscriptNoOpWriteRecordsNothing() {
+        let id = UUID()
+        let entity = TestEntity(id: id, name: "Same")
+        var store = EntityStore<TestEntity>()
+        store[id] = entity
+        store.resetChanges()
+
+        store[id] = entity
+
+        // `modify` has always compared before recording; the subscript now
+        // agrees. An un-drained upsert is not inert — the merge folds
+        // `changes.upserts` into the locally-owned set, so a write that changed
+        // nothing would take a row out of storage's authority until the next
+        // drain, and cost a redundant flush on the way.
+        #expect(store.changes.isEmpty)
+        #expect(store[id] == entity)
+        #expect(store.count == 1)
+    }
+
+    @Test("A no-op write can't strand a remote-removal record")
+    func noOpWriteAfterRemoteRemovalKeepsTheIDLocal() {
+        let id = UUID()
+        let entity = TestEntity(id: id, name: "Same")
+        var store = EntityStore<TestEntity>()
+        store[id] = entity
+        store.resetChanges()
+
+        // Another device deletes it.
+        store.reconcile(with: EntityStore<TestEntity>(), preserving: [], removingMissing: true)
+        #expect(store.remotelyRemovedIDs.contains(id))
+
+        // Written back locally — the insert branch, which claims the ID back.
+        store[id] = entity
+        // And again, identically — the update branch, which now returns before
+        // reaching `clearRemoteRemoval`. That is only sound because an ID the
+        // store still holds is never in `remotelyRemovedIDs`; this pins the
+        // invariant the early return depends on.
+        store[id] = entity
+
+        #expect(!store.remotelyRemovedIDs.contains(id))
+        #expect(store[id] == entity)
+    }
+
     @Test("Subscript get returns nil for missing ID")
     func subscriptGetMissing() {
         let store = EntityStore<TestEntity>()

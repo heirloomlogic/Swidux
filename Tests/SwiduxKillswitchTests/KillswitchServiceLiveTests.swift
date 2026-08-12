@@ -90,16 +90,58 @@ struct KillswitchServiceLiveTests {
         #expect(service.loadCached() == config)
     }
 
-    /// The live cache path is fixed (Caches/swidux-killswitch.json); remove it
-    /// so the round-trip test leaves no residue for other tests or runs.
-    private static func removeCacheFile() {
+    @Test("a cache written for another endpoint is not read")
+    func cacheIsBoundToItsEndpoint() async throws {
+        defer { Self.removeCacheFile() }
+        let written = URL(static: "https://a.test/killswitch.json")
+        let read = URL(static: "https://b.test/killswitch.json")
+        let session = StubURLSession.with(data: Data(), response: .ok(url: written))
+
+        KillswitchService.live(endpoint: written, session: session)
+            .saveCached(KillswitchConfig(minimumSupportedVersion: "9.9.9"))
+
+        // Same file, different endpoint. The cache is the killswitch's second
+        // input path and carries the same authority as the endpoint, so a
+        // payload this build didn't ask for has to read as absent — not as a
+        // verdict. Fail-open means the tick then goes to the network.
+        #expect(KillswitchService.live(endpoint: read, session: session).loadCached() == nil)
+        #expect(KillswitchService.live(endpoint: written, session: session).loadCached() != nil)
+    }
+
+    @Test("a cache from an unreadable file reads as absent rather than throwing")
+    func corruptCacheReadsAsAbsent() async throws {
+        defer { Self.removeCacheFile() }
+        let url = URL(static: "https://example.test/killswitch.json")
+        let session = StubURLSession.with(data: Data(), response: .ok(url: url))
+        let service = KillswitchService.live(endpoint: url, session: session)
+        let cacheURL = KillswitchService.cacheFileURL()
+
+        try? FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: cacheURL, options: .atomic)
+
+        #expect(service.loadCached() == nil)
+    }
+
+    @Test("the cache is scoped to this bundle, not shared across every Swidux app")
+    func cacheIsScopedToTheBundle() {
         let cachesDirectory =
-            FileManager.default.urls(
-                for: .cachesDirectory, in: .userDomainMask
-            ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let cacheURL = KillswitchService.cacheFileURL()
+
+        // On a non-sandboxed macOS build `.cachesDirectory` is `~/Library/Caches`,
+        // shared by every process in the user account — so an unscoped filename
+        // means one Swidux app reads another's blocked verdict.
+        #expect(cacheURL.deletingLastPathComponent().standardizedFileURL != cachesDirectory.standardizedFileURL)
+        #expect(cacheURL.deletingLastPathComponent().lastPathComponent == KillswitchService.cacheScope)
+    }
+
+    /// Removes the whole scoped cache directory so a round-trip test leaves no
+    /// residue for other tests or runs.
+    private static func removeCacheFile() {
         try? FileManager.default.removeItem(
-            at: cachesDirectory.appendingPathComponent("swidux-killswitch.json")
-        )
+            at: KillswitchService.cacheFileURL().deletingLastPathComponent())
     }
 }
 

@@ -316,12 +316,13 @@ struct PaywallPluginTests {
         )
 
         let actions = try await collectActions(from: effect)
-        #expect(actions.count == snapshots.count)
         let received = actions.compactMap { action -> EntitlementSnapshot? in
             if case .customerInfoUpdated(let snapshot) = action { return snapshot }
             return nil
         }
         #expect(received == snapshots)
+        // Plus the end-of-stream action, which is what releases the guard.
+        #expect(actions.count == snapshots.count + 1)
     }
 
     @Test("observeCustomerInfo finishes cleanly when stream is empty")
@@ -334,7 +335,31 @@ struct PaywallPluginTests {
         )
 
         let actions = try await collectActions(from: effect)
-        #expect(actions.isEmpty)
+        #expect(actions.count == 1)
+        guard case .customerInfoStreamEnded = try #require(actions.first) else {
+            Issue.record("an empty stream must still report that it ended")
+            return
+        }
+    }
+
+    @Test("a finished stream releases the guard, so observation can restart")
+    func finishedStreamAllowsReobserving() async throws {
+        // `MockPaywallService` finishes immediately, which is also what a real
+        // service does on teardown. Latched, the guard would leave the app with
+        // no live entitlement updates and no way to ask for them again — the
+        // gate then reflects whatever the last snapshot said, forever.
+        let plugin = makePlugin(service: MockPaywallService())
+        var state = TestState()
+
+        let first = plugin.reduce(state: &state, action: .paywall(.observeCustomerInfo))
+        #expect(first != nil)
+        #expect(state.paywall.isObservingCustomerInfo)
+
+        _ = plugin.reduce(state: &state, action: .paywall(.customerInfoStreamEnded))
+        #expect(!state.paywall.isObservingCustomerInfo)
+
+        let second = plugin.reduce(state: &state, action: .paywall(.observeCustomerInfo))
+        #expect(second != nil, "a stream that ended must be startable again")
     }
 
     // MARK: - Effects: openManageSubscriptions

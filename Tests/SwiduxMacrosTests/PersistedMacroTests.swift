@@ -212,9 +212,8 @@ final class PersistedMacroTests: XCTestCase {
 
                     func update(from domain: Deck) {
                         self.title = domain.title
-                        self.cards = domain.cards.map {
-                            CardModel(from: $0)
-                        }
+                        self.cards = SwiduxRelationCodec.reconcile(
+                            self.cards, with: domain.cards, in: modelContext)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel> {
@@ -278,7 +277,8 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     func update(from domain: Pet) {
-                        self.owner = PersonModel(from: domain.owner)
+                        self.owner = SwiduxRelationCodec.reconcile(
+                            self.owner, with: domain.owner, in: modelContext)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel> {
@@ -351,9 +351,8 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     func update(from domain: Pet) {
-                        self.owner = domain.owner.map {
-                            PersonModel(from: $0)
-                        }
+                        self.owner = SwiduxRelationCodec.reconcile(
+                            self.owner, with: domain.owner, in: modelContext)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<PetModel> {
@@ -1238,9 +1237,8 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     func update(from domain: Deck) {
-                        self.cards = domain.cards.map {
-                            CardModel(from: $0)
-                        }
+                        self.cards = SwiduxRelationCodec.reconcile(
+                            self.cards, with: domain.cards, in: modelContext)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel> {

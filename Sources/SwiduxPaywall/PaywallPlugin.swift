@@ -85,7 +85,17 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
                 for await snapshot in service.customerInfoStream() {
                     await send(.customerInfoUpdated(snapshot))
                 }
+                // A finished stream is not an entitlement update, so nothing
+                // else would clear the guard — and the guard is what refuses
+                // the next `.observeCustomerInfo`. Left latched, a service that
+                // ends its stream (on teardown, or a base that finishes
+                // immediately) leaves the app with no live entitlement updates
+                // and no way to ask for them again.
+                await send(.customerInfoStreamEnded)
             }
+
+        case .customerInfoStreamEnded:
+            state.isObservingCustomerInfo = false
 
         case .refreshCustomerInfo:
             state.isLoading = true
