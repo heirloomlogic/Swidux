@@ -4,6 +4,35 @@ Generated from [GitHub Releases](https://github.com/heirloomlogic/Swidux/release
 `.github/workflows/changelog.yml`. Edits here are overwritten on the next
 release — write release notes on the release itself.
 
+## [1.9.0](https://github.com/heirloomlogic/Swidux/releases/tag/1.9.0) — 2026-08-12
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+### What's Changed
+#### Added
+* Macros: point the nested-type error at the property, not the expansion by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/70
+* Persistence: merge the rows history says changed, not every row by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/78
+* Persistence: read only the entities history says changed by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/81
+#### Fixed
+* Persistence: retry a failed flush instead of losing the write by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/62
+* Undo: don't resurrect an entity another device deleted by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/63
+* KeyValueStore: degrade on an unreachable Keychain instead of trapping by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/67
+* Plugins: annotate every state slice with @Swidux so @Slice compiles by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/68
+#### Other Changes
+* Persistence: a diagnostic channel for what isn't a failure by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/66
+* Persistence: an editing hold for the edit the store can't see by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/71
+* Persistence: preserve the identity of a deleted row by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/76
+* Persistence: read and merge only the rows that changed by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/77
+* Persistence: generate the by-identifier descriptor too by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/82
+* Sync: tell the observer which stores are its own by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/83
+* Persistence: carry a withheld row forward instead of freezing the anchor by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/84
+* Persistence: carry a withheld row forward on the mergeRemote path too by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/88
+* Persistence: a seam that makes a fetch throw, and the cover it unblocks by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/89
+* Persistence: count what a tick re-offered apart from what it merged by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/90
+* Audit: fix two data-loss paths and harden the killswitch cache by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/91
+
+**Full Changelog**: https://github.com/heirloomlogic/Swidux/compare/1.8.0...1.9.0
+
 ## [1.8.0](https://github.com/heirloomlogic/Swidux/releases/tag/1.8.0) — 2026-08-04
 
 Fixes six hazards a [Fallow](https://heirloomlogic.com) audit traced to these packages rather than to the app, plus two latent bugs the audit didn't name. Most of it concerns what happens when a `rehydrate` or a sync tick overlaps a user who is still typing.
