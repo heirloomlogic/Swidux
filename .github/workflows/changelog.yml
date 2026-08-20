@@ -28,6 +28,8 @@ permissions:
 jobs:
   regenerate:
     runs-on: ubuntu-24.04
+    # Observed 8s.
+    timeout-minutes: 5
     steps:
       - name: Mint an installation token
         id: app-token
@@ -37,9 +39,12 @@ jobs:
           private-key: ${{ secrets.CHANGELOG_APP_PRIVATE_KEY }}
 
       - name: Checkout main
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          # persist-credentials stays at its `true` default here, unlike the
+          # other workflows: the final step pushes the regenerated CHANGELOG.md
+          # back to main and needs these credentials to survive the checkout.
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Regenerate CHANGELOG.md

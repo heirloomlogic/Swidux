@@ -1,18 +1,36 @@
 name: Lint
 
+# PR-only. The `push: [main]` trigger was removed: it re-linted the exact source
+# the PR had already linted. swift-format is per-file and deterministic, so the
+# post-squash commit cannot fail a check the PR passed unless two PRs reformat
+# the same file, which the next PR's run catches.
+#
+# Stays on macos-26 deliberately. This repo is public, so Actions minutes are
+# free and there is no cost argument for moving to Linux; measured queue latency
+# is 2-3s, so there is no speed argument either. The lint step also shells out
+# to xcrun, which a Linux runner does not have.
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   swift-format-lint:
     runs-on: macos-26
+    # Observed 35s-52s.
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # swift package resolve fetches Persnicket and swift-syntax, and the
+          # Persnoop build-tool plugin runs in this job. Without this the
+          # GITHUB_TOKEN stays readable by every step after the checkout.
+          persist-credentials: false
 
       - name: Setup swift-format lint
         run: |

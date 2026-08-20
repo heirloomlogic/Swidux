@@ -6,14 +6,30 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A deploy, so runs serialise rather than cancel: killing a gh-pages publish
+# halfway leaves the branch in a half-written state.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
 jobs:
   documentation:
     runs-on: macos-26
+    # Observed 6m00s.
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The DocC build below resolves third-party packages and runs the
+          # Persnoop build-tool plugin. The deploy step does not need these
+          # credentials — it takes the token explicitly instead.
+          persist-credentials: false
 
       - name: Clean docs directory
         run: rm -rf ./docs
@@ -50,7 +66,12 @@ jobs:
         run: touch ./docs/.nojekyll
 
       - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@d92aa235d04922e8f08b40ce78cc5442fcfbfa2f # v4.8.0
+        uses: JamesIves/github-pages-deploy-action@fa24774553152dd7873cd16ebd8d959b010c5445 # v4.9.0
         with:
+          # Named explicitly because the checkout above sets
+          # persist-credentials: false. The action's `token` input already
+          # defaults to github.token, but relying on that default would make
+          # this deploy break silently if the default ever changed.
+          token: ${{ github.token }}
           branch: gh-pages
           folder: docs
