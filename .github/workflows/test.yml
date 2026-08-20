@@ -1,9 +1,12 @@
 name: Tests
 
+# PR-only. The `push: [main]` trigger was removed: it re-ran the same suite the
+# PR had already run. It did have one residual value — merges here are squashes,
+# so the commit that lands on main is a new commit no PR run tested, and the main
+# run caught a semantic conflict between two PRs merged in sequence. Nothing
+# catches that now until the next PR runs, or until the Documentation build fails
+# if the break is a compile error. Restore this trigger if one slips through.
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - "**"
@@ -11,12 +14,24 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-macos:
     runs-on: macos-26
+    # Observed 3m32s-3m46s. Without a cap the job inherits GitHub's six-hour
+    # default, so one hung test holds a runner and blocks the merge all day.
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # swift test resolves third-party packages and runs the Persnoop
+          # build-tool plugin in this job. Without this the GITHUB_TOKEN stays
+          # readable by every step after the checkout, including that plugin.
+          persist-credentials: false
 
       - name: Test (Debug, with coverage)
         run: swift test --enable-code-coverage
@@ -50,9 +65,14 @@ jobs:
   # functional coverage runs on macOS.
   build-ios:
     runs-on: macos-26
+    # Observed 1m32s-1m39s.
+    timeout-minutes: 6
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # See test-macos: xcodebuild runs the macro plugin in this job.
+          persist-credentials: false
 
       # -skipMacroValidation: SwiduxMacros is a compiler plugin and xcodebuild
       # otherwise blocks on the interactive fingerprint-trust prompt.
@@ -66,9 +86,14 @@ jobs:
   # against API drift so the tutorial always compiles.
   build-example:
     runs-on: macos-26
+    # Observed 2m45s-2m52s.
+    timeout-minutes: 8
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # See test-macos: xcodebuild runs the macro plugin in this job.
+          persist-credentials: false
 
       - name: Build Examples/Counter (macOS)
         run: |
