@@ -6,7 +6,7 @@ Tag an effect with an identity so it can be cancelled later — by another effec
 
 Every effect the store runs is already cancelled on teardown: ``Store/cancelEffects()`` and the store's `deinit` cancel all in-flight effect tasks. That is enough for cleanup, but it is *all-or-nothing* — you cannot cancel one specific effect while others keep running.
 
-Keyed cancellation adds that. You give an effect a **cancel id** with ``cancellable(id:cancelInFlight:_:)``, and later cancel every effect running under that id with the ``cancel(id:)`` effect or the imperative ``Store/cancel(id:)`` method. Identity lives outside the ``Effect`` type — it is still a plain closure — so nothing about reducer signatures changes.
+Keyed cancellation adds that. You give an effect a **cancel id** with ``cancellable(id:cancelInFlight:_:)``, and later cancel every effect running under that id with the ``cancel(id:)`` effect or the imperative ``Store/cancel(id:)`` method. ``Effect`` carries cancellation metadata alongside its async operation. The store registers declared cancellation scopes synchronously before starting background work, so an immediate cancellation cannot race registration.
 
 Reach for this when an effect outlives the action that started it: cancelling text-to-speech when the user skips, debouncing a search field, or tearing down a long-lived listener when a screen disappears.
 
@@ -15,8 +15,8 @@ Reach for this when an effect outlives the action that started it: cancelling te
 A cancel id is any `Hashable & Sendable` value. Distinct ids are independent; effects sharing an id are cancelled together. A dedicated empty type reads well and can't collide with another feature's id:
 
 ```swift
-private enum SearchID: Hashable, Sendable {}
-private enum SpeechID: Hashable, Sendable {}
+private struct SearchID: Hashable, Sendable {}
+private struct SpeechID: Hashable, Sendable {}
 ```
 
 Strings and enums work too — pick whatever is unambiguous in your domain.
@@ -38,7 +38,7 @@ case .skip:
     return cancel(id: SpeechID())
 ```
 
-When the speaking effect is cancelled, its `for await` loop ends at the next suspension point, exactly as it would on teardown.
+Cancellation is cooperative: a stream or service must observe cancellation to stop its work. Keyed effects also suppress sends after cancellation, so a service that returns a stale successful result cannot publish it.
 
 ## Debounce with `cancelInFlight`
 
@@ -69,6 +69,16 @@ Ids with nothing running are ignored, so it is always safe to call.
 
 ## What it does not replace
 
-Keyed cancellation is not a substitute for resource cleanup. An effect holding a file handle, a network connection, or an `AsyncStream` continuation should still release it — use `withTaskCancellationHandler` or a `defer`. Cancellation ends the task; it does not close what the task opened.
+Keyed cancellation is not a substitute for resource cleanup. An effect holding a file handle, a network connection, or an `AsyncStream` continuation should still release it — use `withTaskCancellationHandler` or a `defer`. Cancellation requests that the task stop; it does not close what the task opened.
 
 Effects that terminate on their own (a `for await` loop whose stream finishes) need no id at all. Only reach for a cancel id when something *else* has to stop the effect early.
+
+## Constructing and lifting effects
+
+Create ordinary work with `Effect { send in ... }`. When a feature returns an effect with its own action type, lift it with `map`:
+
+```swift
+return featureEffect.map(AppAction.feature)
+```
+
+`map` preserves cancellation metadata. Wrapping another effect inside a new operation hides that declaration from the store until the inner effect is invoked. Such dynamically invoked scopes become active on invocation; cancelling an ID does not prohibit future scopes with that ID. Scope registrations are removed when their operation finishes, including when it throws. Cancellation keys are not retained as a history of past commands.

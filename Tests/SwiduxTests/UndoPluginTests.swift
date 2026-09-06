@@ -18,7 +18,8 @@ struct UndoPluginTests {
         let undo = UndoPlugin<TestState, TestAction>()
         let s0 = TestState()
         var s1 = TestState()
-        s1.items[UUID()] = TestEntity(name: "added")
+        let s1Entity = TestEntity(name: "added")
+        s1.items[s1Entity.id] = s1Entity
 
         undo.willReduce(state: s0, action: .insert(TestEntity()))
 
@@ -32,7 +33,8 @@ struct UndoPluginTests {
         let undo = UndoPlugin<TestState, TestAction>()
         let s0 = TestState()
         var s1 = TestState()
-        s1.items[UUID()] = TestEntity(name: "added")
+        let s1Entity = TestEntity(name: "added")
+        s1.items[s1Entity.id] = s1Entity
 
         undo.willReduce(state: s0, action: .insert(TestEntity()))
 
@@ -68,7 +70,8 @@ struct UndoPluginTests {
         for i in 1...3 {
             undo.willReduce(state: states.last!, action: .insert(TestEntity(name: "step \(i)")))
             var next = states.last!
-            next.items[UUID()] = TestEntity(name: "step \(i)")
+            let nextEntity = TestEntity(name: "step \(i)")
+            next.items[nextEntity.id] = nextEntity
             states.append(next)
         }
 
@@ -91,7 +94,8 @@ struct UndoPluginTests {
         for i in 1...3 {
             undo.willReduce(state: states.last!, action: .insert(TestEntity(name: "step \(i)")))
             var next = states.last!
-            next.items[UUID()] = TestEntity(name: "step \(i)")
+            let nextEntity = TestEntity(name: "step \(i)")
+            next.items[nextEntity.id] = nextEntity
             states.append(next)
         }
 
@@ -118,7 +122,8 @@ struct UndoPluginTests {
         let undo = UndoPlugin<TestState, TestAction>()
         let s0 = TestState()
         var s1 = TestState()
-        s1.items[UUID()] = TestEntity(name: "first")
+        let s1Entity = TestEntity(name: "first")
+        s1.items[s1Entity.id] = s1Entity
 
         undo.willReduce(state: s0, action: .insert(TestEntity()))
         let _ = undo.undo(current: s1)
@@ -155,7 +160,8 @@ struct UndoPluginTests {
 
         for i in 0..<5 {
             var state = TestState()
-            state.items[UUID()] = TestEntity(name: "step \(i)")
+            let stateEntity = TestEntity(name: "step \(i)")
+            state.items[stateEntity.id] = stateEntity
             undo.willReduce(state: state, action: .noOp)
         }
 
@@ -198,9 +204,11 @@ struct UndoPluginTests {
         )
         let s0 = TestState()
         var s1 = TestState()
-        s1.items[UUID()] = TestEntity(name: "typed")
+        let s1Entity = TestEntity(name: "typed")
+        s1.items[s1Entity.id] = s1Entity
         var s2 = TestState()
-        s2.items[UUID()] = TestEntity(name: "incremented")
+        let s2Entity = TestEntity(name: "incremented")
+        s2.items[s2Entity.id] = s2Entity
 
         // Coalescing keystrokes
         undo.willReduce(state: s0, action: .rename(id, "a"))
@@ -225,7 +233,8 @@ struct UndoPluginTests {
         )
         let s0 = TestState()
         var s1 = TestState()
-        s1.items[UUID()] = TestEntity(name: "action")
+        let s1Entity = TestEntity(name: "action")
+        s1.items[s1Entity.id] = s1Entity
 
         undo.willReduce(state: s0, action: .insert(TestEntity()))
         undo.willReduce(state: s1, action: .rename(id, "a"))

@@ -247,7 +247,7 @@ func remoteWrite(
 @discardableResult
 func seedNotes(_ container: ModelContainer, _ notes: [Note]) throws -> [PersistentIdentifier] {
     let context = ModelContext(container)
-    let rows = notes.map { NoteModel(from: $0) }
+    let rows = try notes.map { try NoteModel(from: $0) }
     for row in rows { context.insert(row) }
     try context.save()
     return rows.map(\.persistentModelID)

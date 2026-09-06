@@ -108,12 +108,7 @@ public struct AnnouncementPlugin<RootState, RootAction>: SwiduxPlugin {
             action: local
         )
         guard let localEffect else { return nil }
-        let lift = toRootAction
-        return { send in
-            await localEffect { localAction in
-                send(lift(localAction))
-            }
-        }
+        return localEffect.map(toRootAction)
     }
 
     private func reduceLocal(
@@ -124,7 +119,7 @@ public struct AnnouncementPlugin<RootState, RootAction>: SwiduxPlugin {
         case .fetch:
             state.isLoading = true
             let service = self.service
-            return { send in
+            return Effect { send in
                 do {
                     let message = try await service.fetch()
                     await send(.messageReceived(message))
@@ -198,17 +193,10 @@ store.send(.announcements(.fetch))
 The lift pattern bridges `Effect<FeatureAction>` to `Effect<RootAction>`. It appears in every domain plugin's `reduce` method:
 
 ```swift
-let lift = toRootAction
-return { send in                        // send: Send<RootAction>
-    await localEffect { localAction in  // localAction: FeatureAction
-        send(lift(localAction))         // lift: (FeatureAction) -> RootAction
-    }
-}
+return localEffect.map(toRootAction)
 ```
 
-`localEffect` expects a `Send<FeatureAction>` callback, but ``PluginHost`` expects `Effect<RootAction>`. The lift closure wraps each local action in the root enum before dispatching.
-
-Capture `toRootAction` into a local `let` before the closure to avoid capturing `self`.
+`map` wraps each local action in the root enum and preserves the effect's cancellation metadata. Use it when lifting an effect so the store can register cancellation before starting its operation. Construct new work with `Effect { send in ... }`; invoke an effect directly in a test with `try await effect { action in ... }`.
 
 ## Testing Domain Plugins
 

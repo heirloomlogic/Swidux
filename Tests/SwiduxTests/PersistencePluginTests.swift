@@ -290,7 +290,8 @@ struct PersistencePluginTests {
         )
 
         var state = TestState()
-        state.items[UUID()] = TestEntity(name: "Doomed")
+        let stateEntity = TestEntity(name: "Doomed")
+        state.items[stateEntity.id] = stateEntity
         plugin.afterReduce(state: &state, action: .noOp)
 
         // While the doomed writer is burning its retry budget, the healthy one

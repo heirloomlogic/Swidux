@@ -12,7 +12,10 @@ import Foundation
 ///
 /// Behaves like a dictionary (`store[id]`) but preserves insertion order
 /// (`store.values`). Every insert, update, and delete is recorded in a
-/// `ChangeSet` that the persistence middleware drains after each reducer call.
+/// `ChangeSet` that the persistence plugin drains after each reducer call.
+/// Entity identities must remain stable while stored: subscript assignments
+/// must use the value's own ID, and ``modify(_:_:)`` must preserve it. To
+/// replace an identity, delete the old entity and insert the new one explicitly.
 ///
 /// Internally uses a single `[Entity]` array for storage with a lightweight
 /// `[UUID: Int]` index for O(1) keyed access — no duplicate entity copies.
@@ -104,6 +107,8 @@ public nonisolated struct EntityStore<
     /// O(1) keyed access.
     ///
     /// Setting a value records an upsert; setting `nil` records a deletion.
+    /// A non-`nil` value must have the same ID as the subscript key; a mismatch
+    /// is a programmer error and fails a precondition.
     ///
     /// Deleting via the subscript shifts the array tail and reindexes the
     /// shifted entries — O(tail) per delete, so k independent subscript
@@ -116,6 +121,7 @@ public nonisolated struct EntityStore<
         }
         set {
             if let value = newValue {
+                precondition(value.id == id, "EntityStore: the subscript key must match the entity's ID.")
                 if let index = positions[id] {
                     // Writing back an identical value is not a change, and
                     // recording one is not free: an un-drained upsert makes the
@@ -154,11 +160,15 @@ public nonisolated struct EntityStore<
     ///
     /// Records the change only if the value actually changed.
     /// No-op if the ID doesn't exist.
+    /// The transform must preserve the entity's ID. Changing it is a programmer
+    /// error and fails a precondition; delete and insert to replace an identity.
     public mutating func modify(_ id: UUID, _ transform: (inout Entity) -> Void) {
         guard let index = positions[id] else { return }
-        let old = entities[index]
-        transform(&entities[index])
-        if entities[index] != old {
+        var updated = entities[index]
+        transform(&updated)
+        precondition(updated.id == id, "EntityStore.modify: the entity's ID must remain unchanged.")
+        if updated != entities[index] {
+            entities[index] = updated
             changes.upserts.insert(id)
         }
     }

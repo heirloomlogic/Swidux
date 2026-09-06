@@ -37,7 +37,7 @@ struct CounterReducer: SwiduxReducer {
             // dispatch time is what this in-flight effect uses, even if the
             // slider moves before the effect completes.
             let delay = state.ui.asyncDelay
-            return { send in
+            return Effect { send in
                 try? await Task.sleep(for: .seconds(delay))
                 await send(.counter(.increment(id)))
             }

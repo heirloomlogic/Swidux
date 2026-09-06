@@ -118,7 +118,7 @@ typealias Send = Swidux.Send<AppAction>
 typealias Effect = Swidux.Effect<AppAction>
 ```
 
-`Send` is `@MainActor @Sendable (AppAction) -> Void`. `Effect` is a `@Sendable` async closure that takes a `Send`. Effects are returned from the reducer when an action needs to do async work.
+`Send` is `@MainActor @Sendable (AppAction) -> Void`. `Effect` is a `Sendable` value whose operation receives a `Send` callback. Construct one with `Effect { send in ... }`. Effects are returned from the reducer when an action needs to do async work.
 
 You'll also want an environment type to hold injected dependencies. The Counter demo has none, so it's a placeholder:
 
@@ -165,7 +165,7 @@ struct CounterReducer: SwiduxReducer {
             state.counters.modify(id) { $0.count = max(0, $0.count - 1) }
 
         case .incrementAsync(let id):
-            return { send in
+            return Effect { send in
                 try? await Task.sleep(for: .seconds(1))
                 await send(.counter(.increment(id)))
             }

@@ -18,11 +18,11 @@ State is a struct. Mutations go through `inout State`, which is predictable, sna
 
 Reducers take `inout State` and an `Action`, mutate state in place, and return an optional ``Effect``. They never `await`, never `throw`, and never call I/O directly.
 
-Why: pure synchronous mutations are trivially testable, deterministic, and snapshot-friendly. When you need async work (network, disk, timers), return an effect — a `@Sendable` async closure that runs off the MainActor and dispatches follow-up actions back through `send`.
+Why: pure synchronous mutations are trivially testable, deterministic, and snapshot-friendly. When you need async work (network, disk, timers), return an `Effect` containing a `@Sendable` async operation that runs off the MainActor and dispatches follow-up actions back through `send`.
 
 ## 3. Effects run off MainActor; sends hop back
 
-``Effect`` is `@Sendable (Send) async -> Void`. The `Store` runs effects in `Task { @concurrent in }` so they don't block UI. ``Send`` is `@MainActor @Sendable (Action) -> Void`, so dispatching from inside an effect always lands back on MainActor — no manual hops, no race conditions on state.
+``Effect`` is a `Sendable` value containing an async throwing operation and cancellation metadata. Construct it with `Effect { send in ... }`; use `map` to lift its actions without losing metadata. The `Store` runs effects in `Task { @concurrent in }` so they don't block UI. ``Send`` is `@MainActor @Sendable (Action) -> Void`, so dispatching from inside an effect always lands back on MainActor — no manual hops, no race conditions on state.
 
 The split is deliberate: effects own the work, the reducer owns the state.
 

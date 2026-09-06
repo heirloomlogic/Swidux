@@ -22,7 +22,7 @@ struct EffectThreadingTests {
         let store = TestDispatcher()
         let (dispatched, dispatchedIn) = AsyncStream<Void>.makeStream()
 
-        let effect: Effect<TestAction> = { send in
+        let effect: Effect<TestAction> = Effect { send in
             await send(.effectAction("from background"))
         }
 
@@ -48,7 +48,7 @@ struct EffectThreadingTests {
         let wasOnMainThread = Mutex(false)
         let (dispatched, dispatchedIn) = AsyncStream<Void>.makeStream()
 
-        let effect: Effect<TestAction> = { send in
+        let effect: Effect<TestAction> = Effect { send in
             wasOnMainThread.withLock { $0 = Thread.isMainThread }
             await send(.noOp)
         }

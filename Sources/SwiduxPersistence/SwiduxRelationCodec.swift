@@ -15,8 +15,8 @@ import SwiftData
 ///
 /// ## Why a converter can't just rebuild its children
 ///
-/// The obvious `update(from:)` body — `self.chapters = domain.chapters.map {
-/// ChapterModel(from: $0) }` — is a row leak. A relationship's `deleteRule`
+/// The obvious `update(from:)` body — `self.chapters = try domain.chapters.map {
+/// try ChapterModel(from: $0) }` — is a row leak. A relationship's `deleteRule`
 /// fires when the *parent* is deleted, never when a child is dropped from the
 /// relationship, so the previously-related rows are detached rather than
 /// removed: they stay in the store with no owner, and nothing ever collects
@@ -54,13 +54,14 @@ public enum SwiduxRelationCodec {
     ///     gone. `nil` for a model not yet inserted, where there is nothing on
     ///     disk to delete.
     /// - Returns: The rows to assign back to the relationship.
+    /// - Throws: A model conversion error. The caller must roll back the enclosing write.
     public static func reconcile<M: PersistableModel>(
         _ existing: [M]?,
         with domain: [M.Domain],
         in context: ModelContext?
-    ) -> [M] {
+    ) throws -> [M] {
         guard let existing, !existing.isEmpty else {
-            return domain.map { M(from: $0) }
+            return try domain.map { try M(from: $0) }
         }
 
         var byID: [UUID: [M]] = [:]
@@ -72,12 +73,12 @@ public enum SwiduxRelationCodec {
 
         for value in domain {
             guard let rows = byID[value.id], !rows.isEmpty else {
-                survivors.append(M(from: value))
+                survivors.append(try M(from: value))
                 continue
             }
             // Every row sharing the identity, so duplicates converge rather
             // than leaving a stale copy behind the one we happened to pick.
-            for row in rows { row.update(from: value) }
+            for row in rows { try row.update(from: value) }
             // Recorded once: a domain array naming the same id twice must not
             // append its rows twice.
             if keptIDs.insert(value.id).inserted {
@@ -100,18 +101,18 @@ public enum SwiduxRelationCodec {
         _ existing: M?,
         with domain: M.Domain?,
         in context: ModelContext?
-    ) -> M? {
+    ) throws -> M? {
         guard let domain else {
             if let existing { context?.delete(existing) }
             return nil
         }
         if let existing {
             if existing.id == domain.id {
-                existing.update(from: domain)
+                try existing.update(from: domain)
                 return existing
             }
             context?.delete(existing)
         }
-        return M(from: domain)
+        return try M(from: domain)
     }
 }

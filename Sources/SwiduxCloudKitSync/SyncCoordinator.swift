@@ -28,6 +28,7 @@ public final class SyncCoordinator<State, Action> {
     private let keyValue: any KeyValueStore
     private let makeContainer: ContainerBuilder
     private let logger: Logger
+    private var toggleRevision: UInt64 = 0
 
     /// The user's currently-chosen mode (persisted).
     public private(set) var mode: SyncMode
@@ -70,25 +71,35 @@ public final class SyncCoordinator<State, Action> {
 
     /// Resolves the current runtime status without changing anything.
     public func currentStatus() async -> SyncStatus {
-        await preflight.resolve(desired: mode)
+        while true {
+            let revision = toggleRevision
+            let desired = mode
+            let status = await preflight.resolve(desired: desired)
+            if revision == toggleRevision, desired == mode { return status }
+        }
     }
 
     /// The outcome of everything the toggle does before any state is touched.
     private enum TogglePreparation {
         case rebuildFailed
-        case ready(SyncStatus)
+        case superseded
+        case ready(SyncStatus, revision: UInt64)
     }
 
     /// Flush, preflight, container rebuild, preference write — the whole
     /// toggle except the re-hydration. Holds no state across its `await`s.
     private func prepareToggle(_ enabled: Bool) async -> TogglePreparation {
+        toggleRevision &+= 1
+        let revision = toggleRevision
         let target: SyncMode = enabled ? .iCloud : .localOnly
 
         // 1. Drain the debounce window so no buffered write is lost on rebuild.
         await persistence.corePlugin.flush()
+        guard revision == toggleRevision else { return .superseded }
 
         // 2. Resolve availability for the requested mode.
         let status = await preflight.resolve(desired: target)
+        guard revision == toggleRevision else { return .superseded }
 
         if status == .misconfiguredNoEntitlement {
             logger.error("iCloud sync requested but the app is not entitled; staying local-only.")
@@ -107,7 +118,7 @@ public final class SyncCoordinator<State, Action> {
         keyValue.setValue(target, for: .syncMode)
         mode = target
 
-        return .ready(enabled ? status : .localOnlyByChoice)
+        return .ready(enabled ? status : .localOnlyByChoice, revision: revision)
     }
 
     /// Swaps the active database to a freshly built container.
@@ -137,6 +148,8 @@ extension SyncCoordinator where State: SwiduxObservable {
     ///
     /// The flush, preflight, and rebuild all complete before any state is
     /// packed, so an edit made while the toggle is in flight survives it.
+    /// A newer toggle supersedes an older request still awaiting I/O. A
+    /// superseded call returns the current status without restoring its choice.
     ///
     /// Record the result with a normal dispatch afterwards — nothing can
     /// interleave on the main actor in between:
@@ -147,8 +160,16 @@ extension SyncCoordinator where State: SwiduxObservable {
     /// ```
     @discardableResult
     public func setSyncEnabled(_ enabled: Bool, into store: Store<State, Action>) async -> SyncStatus {
-        guard case .ready(let status) = await prepareToggle(enabled) else {
+        let status: SyncStatus
+        let revision: UInt64
+        switch await prepareToggle(enabled) {
+        case .rebuildFailed:
             return .unavailableRebuildFailed
+        case .superseded:
+            return await currentStatus()
+        case .ready(let preparedStatus, let preparedRevision):
+            status = preparedStatus
+            revision = preparedRevision
         }
 
         // Absorb anything the rebuilt store has without clobbering live edits.
@@ -157,7 +178,7 @@ extension SyncCoordinator where State: SwiduxObservable {
         // says nothing about whether the user deleted it. Without the override,
         // toggling sync would wipe every entity the new store hasn't got yet.
         await persistence.rehydrate(into: store, policy: .preferRemoteAdditive)
-
+        guard revision == toggleRevision else { return await currentStatus() }
         return status
     }
 }

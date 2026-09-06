@@ -32,7 +32,7 @@ func makeUnwritableNotesContainer(seeding seed: [Note] = []) throws -> ModelCont
         let writable = try ModelContainer(
             for: schema, configurations: [ModelConfiguration(schema: schema, url: url)])
         let context = ModelContext(writable)
-        for note in seed { context.insert(NoteModel(from: note)) }
+        for note in seed { context.insert(try NoteModel(from: note)) }
         try context.save()
     }
 

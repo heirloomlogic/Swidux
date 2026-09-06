@@ -28,9 +28,9 @@ So a device kept offline never blocks, and a device that has never once fetched 
 
 ## 2. The parental gate is an intent gate
 
-`ParentalGatePlugin` compares the submitted answer to `challenge.expected`, which lives in client state. The arithmetic challenge is small by design. And `ParentalGateAction` is a public enum, so `.answerAccepted(reason:)` can be dispatched directly by any code holding the store — landing straight in the handler that inserts into `passedReasons`, with no challenge involved.
+`ParentalGatePlugin` compares the submitted answer to `challenge.expected`, which lives in client state. The arithmetic challenge is small by design. Validation, attempt counting, and granting the reason happen synchronously during `.submitAnswer`; acceptance and rejection actions are notifications and cannot grant access on their own.
 
-There *is* real hardening around the honest path: reaching the attempt limit starts a cooldown, and during cooldown answers are refused even when correct, so the cooldown itself cannot be waited out by guessing. Two things it does not do. A wrong answer is counted through an effect, so `attempts` rises a main-actor turn later than the submission — a *synchronous burst* of `.submitAnswer` dispatches is therefore all evaluated against one challenge before the first rejection is counted. And none of it constrains a direct `.answerAccepted` dispatch. Both are bypasses available to your own code, not to a user tapping the screen, and code that can do either can do the simpler one.
+Reaching the attempt limit starts a cooldown that refuses all answers until its deadline. Dismissing or reopening the gate preserves attempts and cooldown. Delayed notifications cannot change a newer challenge or clear a newer cooldown. This protects the normal UI flow and rapid submissions; code that controls the process can still mutate client state or read the expected answer.
 
 **Why.** This gate exists to satisfy App Review's requirement that a child cannot casually stumble into an external link, a purchase flow, or an age-inappropriate destination. Apple's guidance is explicitly about intent, not cryptography: the barrier needs to be beyond a small child's ability, not beyond an adult's. Anything stronger — a server round trip, a real credential — makes the app worse for the parent it is meant to serve.
 
@@ -66,7 +66,7 @@ The store is built for anonymous device identity that should survive reinstall �
 
 Both remote-config channels — the killswitch and feature flags — are hardened in transit and against malformed or hostile payloads:
 
-- **HTTPS is enforced by precondition**, not by convention, regardless of the host app's ATS settings. Plain `http` is permitted only for `localhost` / `127.0.0.1` development servers.
+- **HTTPS is enforced by precondition**, not by convention, regardless of the host app's ATS settings. Redirects cannot downgrade HTTPS; development HTTP redirects cannot escape to external HTTP. Plain `http` is permitted only for `localhost` / `127.0.0.1` development servers.
 - **Responses are capped at 1 MB** (`1_000_000` bytes) and the cap is enforced *during* transfer: the status is checked before the body is read, a declared `Content-Length` over the cap is rejected outright, and otherwise bytes accumulate chunk by chunk with the transfer aborted the moment the count exceeds the limit. The process never buffers a hostile payload whole. Both channels share one implementation (`BoundedResponse`) rather than a copy each — a size guard that exists twice is one a fix can be applied to once.
 - **Config-side versions parse strictly** as full `major.minor.patch`, while the app's own `CFBundleShortVersionString` parses leniently — a deliberate asymmetry, since you control the config but not the shape of a marketing version string.
 - **Update URLs are scheme-allowlisted** to `https`, `itms-apps`, and `macappstore`. A config carrying any other scheme yields no openable URL, and the blocker renders without an Update button rather than with a dead one.

@@ -81,7 +81,7 @@ struct StateWriterTests {
 
         // Flush and execute to verify deletions were captured
         if let work = writer.flush() {
-            await work()
+            _ = await work()
         }
         #expect(box.value.contains(entity.id))
     }
@@ -103,7 +103,7 @@ struct StateWriterTests {
 
         _ = writer.drain(&state)
         if let work = writer.flush() {
-            await work()
+            _ = await work()
         }
 
         #expect(writesBox.value.isEmpty)
@@ -131,7 +131,7 @@ struct StateWriterTests {
         _ = writer.drain(&state)
 
         if let work = writer.flush() {
-            await work()
+            _ = await work()
         }
 
         // The reinsert must cancel the buffered deletion — otherwise the flush
@@ -163,7 +163,7 @@ struct StateWriterTests {
 
         let work = writer.flush()
         #expect(work != nil)
-        await work!()
+        _ = await work!()
 
         #expect(writesBox.value.count == 1)
         #expect(writesBox.value.first?.name == "Persisted")
@@ -201,7 +201,7 @@ struct StateWriterTests {
         _ = writer.drain(&state)
 
         if let work = writer.flush() {
-            await work()
+            _ = await work()
         }
 
         #expect(writesBox.value.count == 1)
@@ -260,7 +260,7 @@ struct StateWriterTests {
         let work = writer.flush()
         state.items[id] = TestEntity(id: id, name: "Second")
         _ = writer.drain(&state)
-        await work?()
+        _ = await work?()
 
         _ = await writer.flush()?()
 
@@ -289,7 +289,7 @@ struct StateWriterTests {
         let work = writer.flush()
         state.items[id] = nil
         _ = writer.drain(&state)
-        await work?()
+        _ = await work?()
 
         _ = await writer.flush()?()
 
@@ -320,7 +320,7 @@ struct StateWriterTests {
         let work = writer.flush()
         state.items[id] = restored
         _ = writer.drain(&state)
-        await work?()
+        _ = await work?()
 
         _ = await writer.flush()?()
 
@@ -349,7 +349,7 @@ struct StateWriterTests {
 
         #expect(writer.pendingIDs == [written, deleted], "drained but not yet on disk")
 
-        if let work = writer.flush() { await work() }
+        if let work = writer.flush() { _ = await work() }
         #expect(writer.pendingIDs.isEmpty, "flushing hands the batch off, so nothing is pending")
 
         // The window the merge actually cares about: a write drained *after* a

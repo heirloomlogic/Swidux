@@ -159,8 +159,8 @@ struct CoordinatorCollapseTests {
         let coordinator = try makeCoordinator()
         let id = UUID()
         let context = ModelContext(coordinator.handle.db.modelContainer)
-        context.insert(NoteModel(from: Note(id: id, title: "a", pinned: false)))
-        context.insert(NoteModel(from: Note(id: id, title: "b", pinned: false)))
+        context.insert(try NoteModel(from: Note(id: id, title: "a", pinned: false)))
+        context.insert(try NoteModel(from: Note(id: id, title: "b", pinned: false)))
         try context.save()
 
         var state = NotesState()
@@ -177,8 +177,8 @@ struct CoordinatorCollapseTests {
         let coordinator = try makeCoordinator(collapse: preferPinned)
         let id = UUID()
         let context = ModelContext(coordinator.handle.db.modelContainer)
-        context.insert(NoteModel(from: Note(id: id, title: "b", pinned: false)))
-        context.insert(NoteModel(from: Note(id: id, title: "a", pinned: true)))
+        context.insert(try NoteModel(from: Note(id: id, title: "b", pinned: false)))
+        context.insert(try NoteModel(from: Note(id: id, title: "a", pinned: true)))
         try context.save()
 
         var state = NotesState()

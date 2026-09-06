@@ -105,7 +105,7 @@ struct PluginHostTests {
     @Test("reduce collects non-nil effects")
     func reduceCollectsEffects() {
         let host = PluginHost<TestState, TestAction>()
-        let withEffect = SpyPlugin(label: "with", effect: { _ in })
+        let withEffect = SpyPlugin(label: "with", effect: Effect { _ in })
         let withoutEffect = SpyPlugin(label: "without", effect: nil)
 
         host.register(withEffect)

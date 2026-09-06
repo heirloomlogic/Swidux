@@ -229,7 +229,7 @@ Mutate state in the reducer, return an effect that writes the value:
 ```swift
 case .themeChanged(let theme):
     state.theme = theme
-    return { @Sendable _ in
+    return Effect { @Sendable _ in
         environment.keyValue.setValue(theme, for: .theme)
     }
 ```

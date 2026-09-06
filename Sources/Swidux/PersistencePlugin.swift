@@ -68,6 +68,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// or direct — awaits the previous one, so batches reach the database in
     /// order and ``flush()`` can deterministically wait for in-flight writes.
     private var flushTail: Task<Void, Never>?
+    private var flushID: UUID?
 
     /// Number of `afterReduce` calls since the last debounce flush.
     ///
@@ -194,31 +195,36 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         }
     }
 
-    /// Snapshots the writers' pending buffers and spawns the persistence work,
-    /// chained behind any flush already in flight.
+    /// Chains persistence work behind the active flush, taking the next batch
+    /// only after its predecessor has finished restoring any failed writes.
     ///
     /// Returns `nil` when there is nothing pending and nothing in flight.
     @discardableResult
     private func runFlushWork() -> Task<Void, Never>? {
-        let work = writers.indices.compactMap { index in
-            writers[index].flush().map { (index, $0) }
-        }
         let previous = flushTail
-        guard !work.isEmpty || previous != nil else { return nil }
-
-        if !work.isEmpty {
-            logger.debug("[PersistencePlugin] Flushing \(work.count) writer(s)")
-        }
+        guard writers.contains(where: { !$0.pendingIDs.isEmpty }) || previous != nil else { return nil }
+        let id = UUID()
         let task = Task {
             await previous?.value
+            // Keep newer intent in the writers while an older save is suspended.
+            // Snapshotting at enqueue time would hide it from failure recovery,
+            // which could then restore and later persist a superseded value.
+            let work = self.writers.indices.compactMap { index in
+                self.writers[index].flush().map { (index, $0) }
+            }
             var outcomes: [(index: Int, outcome: FlushOutcome)] = []
             outcomes.reserveCapacity(work.count)
             for (index, w) in work {
                 outcomes.append((index, await w()))
             }
             self.recordOutcomes(outcomes)
+            if self.flushID == id {
+                self.flushTail = nil
+                self.flushID = nil
+            }
         }
         flushTail = task
+        flushID = id
         return task
     }
 
@@ -282,7 +288,3 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         drainAndScheduleFlush(&state)
     }
 }
-
-/// Migration aid — use ``PersistencePlugin`` instead.
-@available(*, deprecated, renamed: "PersistencePlugin")
-public typealias PersistenceMiddleware<State> = PersistencePlugin<State, Never>

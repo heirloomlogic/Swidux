@@ -80,6 +80,11 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
         switch type {
         case "boolean":
             let rollout = try container.decode(Int.self, forKey: .rollout)
+            guard (0...100).contains(rollout) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .rollout, in: container,
+                    debugDescription: "boolean rollout must be in 0...100")
+            }
             self = .boolean(rollout: rollout)
         case "variant":
             let variants = try container.decode([Variant].self, forKey: .variants)
@@ -95,14 +100,16 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
                     debugDescription: "variant flag has no variants"
                 )
             }
-            guard variants.allSatisfy({ $0.weight >= 0 }) else {
+            guard variants.allSatisfy({ (0...100).contains($0.weight) }) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .variants,
                     in: container,
-                    debugDescription: "variant weights must be non-negative"
+                    debugDescription: "variant weights must be in 0...100"
                 )
             }
-            let total = variants.reduce(0) { $0 + $1.weight }
+            // Saturate at the first invalid total; even an arbitrarily large
+            // decoded array cannot overflow the accumulator.
+            let total = variants.reduce(0) { min(101, $0 + $1.weight) }
             guard total == 100 else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .variants,

@@ -63,7 +63,7 @@ public struct ParentalGateState: Sendable, Equatable {
 
 - `pendingReason` — non-`nil` while a challenge is active. Drives sheet presentation.
 - `challenge` — the currently-presented arithmetic problem.
-- `attempts` — count of incorrect submissions against the current challenge.
+- `attempts` — count of incorrect submissions since the last success or cooldown; preserved when reopening the gate.
 - `passedReasons` — reasons already cleared this session (see action semantics below).
 
 ### ParentalGateAction
@@ -123,12 +123,13 @@ public struct ParentalChallengeSource: Sendable {
 
 Each `ParentalGateAction` case mutates the state slice as follows:
 
-- **`.request(reason:)`** — If `passedReasons` already contains `reason`, the plugin returns an effect that immediately dispatches `.answerAccepted(reason:)` and leaves `pendingReason` unchanged. Otherwise, it sets `pendingReason`, generates a fresh `challenge`, and resets `attempts` to `0`.
-- **`.dismiss`** — Clears `pendingReason`, `challenge`, and `attempts`. Does not modify `passedReasons`.
+- **`.request(reason:)`** — If `passedReasons` already contains `reason`, the plugin returns an effect that immediately dispatches `.answerAccepted(reason:)` and leaves `pendingReason` unchanged. Otherwise, it sets `pendingReason`, generates a fresh `challenge`, and preserves the attempt count.
+- **`.dismiss`** — Clears `pendingReason` and `challenge`. Preserves attempts, cooldown, and `passedReasons`.
 - **`.regenerateChallenge`** — Replaces `challenge` with a freshly generated one. Useful for a "new question" button.
-- **`.submitAnswer(Int)`** — Compares against `challenge.expected`. Returns an effect that dispatches either `.answerAccepted(reason:)` (with the current `pendingReason`) or `.answerRejected`. No-op if `challenge` or `pendingReason` is `nil`.
-- **`.answerAccepted(reason:)`** — Inserts `reason` into `passedReasons`, clears `pendingReason`, `challenge`, and `attempts`.
-- **`.answerRejected`** — Increments `attempts` and regenerates `challenge` so the user faces a new problem.
+- **`.submitAnswer(Int)`** — Validates against `challenge.expected` synchronously. A correct answer grants the pending reason and clears the challenge and attempts. A wrong answer increments attempts, generates a new challenge, and starts a cooldown at the limit. The returned effect dispatches the corresponding notification. No-op during cooldown or when no challenge is pending.
+- **`.answerAccepted(reason:)`** — Notifies the host of an already-granted reason; does not mutate gate state.
+- **`.answerRejected`** — Notifies the host of an already-counted wrong answer; does not mutate gate state.
+- **`.cooldownExpired`** — Clears the cooldown only if its current deadline has elapsed.
 
 ### Session-pass behavior
 
@@ -155,7 +156,7 @@ let plugin = ParentalGatePlugin<AppState, AppAction>(
 )
 ```
 
-The generator runs synchronously each time the plugin needs a new challenge (on `.request`, `.regenerateChallenge`, and `.answerRejected`). Keep it cheap and pure — no I/O.
+The generator runs synchronously each time the plugin needs a new challenge (on `.request`, `.regenerateChallenge`, wrong submissions, and cooldown expiry). Keep it cheap and pure — no I/O.
 
 ## See Also
 

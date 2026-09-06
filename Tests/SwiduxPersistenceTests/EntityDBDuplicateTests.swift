@@ -121,8 +121,8 @@ struct EntityDBDuplicateTests {
         let ids = (0..<(EntityDB.batchFetchChunkSize + 20)).map { _ in UUID() }
         let context = ModelContext(container)
         for id in ids {
-            context.insert(NoteModel(from: Note(id: id, title: "old", pinned: false)))
-            context.insert(NoteModel(from: Note(id: id, title: "old", pinned: false)))
+            context.insert(try NoteModel(from: Note(id: id, title: "old", pinned: false)))
+            context.insert(try NoteModel(from: Note(id: id, title: "old", pinned: false)))
         }
         try context.save()
 

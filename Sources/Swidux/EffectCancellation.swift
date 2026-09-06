@@ -5,8 +5,8 @@
 //  Keyed effect cancellation. `cancellable(id:)` tags an effect with a
 //  caller-supplied identity; `cancel(id:)` (and `Store.cancel(id:)`) cancels
 //  every in-flight effect sharing that identity. Identity lives out of band —
-//  a task-local context plus the store's effect registry — so the `Effect`
-//  closure typealias and every reducer signature are untouched.
+//  static metadata plus a task-local context and the store registry keep
+//  effect bodies independent of the store type.
 //
 
 import Foundation
@@ -36,21 +36,12 @@ struct AnyHashableSendable: Hashable, Sendable {
     }
 }
 
-/// A store's effect registry, seen through the lens of cancellation.
-///
-/// `Store` is the only conformer. The protocol exists so the generic
-/// ``cancellable(id:cancelInFlight:_:)`` and ``cancel(id:)`` helpers can reach
-/// back into the store without knowing its `State`/`Action` types. Both members
-/// are MainActor-isolated; effect bodies (which run off the MainActor) reach
-/// them through an `await` hop.
+/// Store-owned scopes are registered synchronously at dispatch and removed on completion.
 @MainActor
 protocol EffectCancellationRegistrar: AnyObject, Sendable {
-    /// Tags the in-flight effect `taskID` with cancellation identity `id`. When
-    /// `cancelInFlight` is true, first cancels any effect already running under
-    /// `id`.
-    func register(_ taskID: UUID, id: AnyHashableSendable, cancelInFlight: Bool)
-    /// Cancels every in-flight effect currently running under `id`.
-    func cancelCancellable(id: AnyHashableSendable)
+    func register(_ taskID: UUID, scope: UUID, id: AnyHashableSendable, cancelInFlight: Bool)
+    func unregister(_ taskID: UUID, scope: UUID)
+    func cancelCancellable(id: AnyHashableSendable, excluding taskID: UUID?)
 }
 
 /// Ambient context a wrapped effect uses to register and cancel itself.
@@ -79,7 +70,10 @@ struct EffectContext: Sendable {
 ///
 /// Distinct ids are independent; two effects tagged with the same id are
 /// cancelled together. The tag is dropped automatically when the effect
-/// finishes. Outside a store-run effect (for example a direct call in a unit
+/// finishes. Top-level scopes register synchronously at dispatch; scopes
+/// invoked inside another effect become active only at invocation. Use
+/// `Effect.map` to preserve metadata when lifting actions.
+/// Outside a store-run effect (for example a direct call in a unit
 /// test) there is no context to register with, and the effect simply runs.
 ///
 /// - Parameters:
@@ -91,32 +85,13 @@ struct EffectContext: Sendable {
 public func cancellable<Action>(
     id: some Hashable & Sendable,
     cancelInFlight: Bool = false,
-    _ operation: @escaping Effect<Action>
+    _ operation: @escaping @Sendable (@escaping Send<Action>) async throws -> Void
 ) -> Effect<Action> {
-    let key = AnyHashableSendable(id)
-    return { send in
-        // No ambient context means this effect is running outside a store (for
-        // example a direct call in a unit test) — just run it, un-registered.
-        guard let context = EffectContext.current else {
-            try await operation(send)
-            return
-        }
-        await context.registrar?.register(context.taskID, id: key, cancelInFlight: cancelInFlight)
-        try await operation(send)
-    }
+    Effect(cancellation: .scope(AnyHashableSendable(id), cancelInFlight: cancelInFlight), operation: operation)
 }
 
-/// An effect that cancels every in-flight effect running under `id`.
-///
-/// ```swift
-/// case .stopSpeaking:
-///     return cancel(id: SpeechID())
-/// ```
-///
-/// A no-op when nothing is running under `id`.
+/// Cancels scopes active when the store dispatches this effect, or when it is
+/// invoked dynamically inside another effect. Undeclared future work is unaffected.
 public func cancel<Action>(id: some Hashable & Sendable) -> Effect<Action> {
-    let key = AnyHashableSendable(id)
-    return { _ in
-        await EffectContext.current?.registrar?.cancelCancellable(id: key)
-    }
+    Effect(cancellation: .cancel(AnyHashableSendable(id)), operation: { _ in })
 }

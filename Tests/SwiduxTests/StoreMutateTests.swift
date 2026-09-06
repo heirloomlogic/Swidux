@@ -73,6 +73,20 @@ private func makeRecordingPlugin() -> (
 @Suite("Store.mutate")
 @MainActor
 struct StoreMutateTests {
+    @Test("Nested mutations and sends commit in FIFO order without losing writes")
+    func nestedMutationsAreDeferred() {
+        let store = makeStore()
+        let outer = TestEntity(name: "outer")
+        let nested = TestEntity(name: "nested")
+        store.mutate { state in
+            state.items[outer.id] = outer
+            store.mutate { $0.items[nested.id] = nested }
+            store.send(.rename(nested.id, "renamed"))
+        }
+        #expect(store.items[outer.id] == outer)
+        #expect(store.items[nested.id]?.name == "renamed")
+    }
+
     @Test("a dispatch landing during the awaited phase survives the merge")
     func concurrentDispatchSurvives() async throws {
         let store = makeStore()
@@ -109,7 +123,8 @@ struct StoreMutateTests {
             // The broken shape: snapshot packed BEFORE the await.
             var snapshot = TestState(observer: store.observer)
             await gate.wait()
-            snapshot.items[TestEntity(name: "from await").id] = TestEntity(name: "from await")
+            let awaitedEntity = TestEntity(name: "from await")
+            snapshot.items[awaitedEntity.id] = awaitedEntity
             TestState.apply(snapshot, to: store.observer)
         }
 
@@ -232,9 +247,9 @@ struct StoreMutateTests {
         let store = makeStore(initialState: initial)
 
         await #expect(throws: Boom.self) {
-            try await store.mutate {
+            try await store.mutate { () throws -> TestEntity in
                 throw Boom()
-            } merging: { (_: Never, state: inout TestState) in
+            } merging: { (_: TestEntity, state: inout TestState) in
                 Issue.record("merging must not run when produce throws")
             }
         }

@@ -117,6 +117,6 @@ func remoteWriteTags(
 @MainActor
 func seedTags(_ container: ModelContainer, _ tags: [Tag]) throws {
     let context = ModelContext(container)
-    for tag in tags { context.insert(TagModel(from: tag)) }
+    for tag in tags { context.insert(try TagModel(from: tag)) }
     try context.save()
 }

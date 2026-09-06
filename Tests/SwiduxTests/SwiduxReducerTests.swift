@@ -36,7 +36,7 @@ struct TestReducer: SwiduxReducer {
 
         // Return an effect only for .insert (to test the effect path)
         if case .insert(let entity) = action {
-            return { send in
+            return Effect { send in
                 await send(.effectAction("inserted \(entity.name)"))
             }
         }

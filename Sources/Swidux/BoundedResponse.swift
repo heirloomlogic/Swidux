@@ -53,8 +53,12 @@ public enum BoundedResponse {
         session: URLSession,
         limit: Int
     ) async throws -> Data {
-        let (bytes, response) = try await session.bytes(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+        guard limit >= 0 else { throw URLError(.dataLengthExceedsMaximum) }
+        let (bytes, response) = try await session.bytes(for: request, delegate: SecureConfigRedirects())
+        // Dropping the iterator does not promise transport cancellation.
+        // Close the transfer on every early rejection as well as normal EOF.
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
         if response.expectedContentLength > Int64(limit) {
@@ -69,6 +73,9 @@ public enum BoundedResponse {
         var chunk = [UInt8]()
         chunk.reserveCapacity(chunkSize)
         for try await byte in bytes {
+            guard data.count + chunk.count < limit else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
             chunk.append(byte)
             if chunk.count == chunkSize {
                 data.append(contentsOf: chunk)
@@ -83,5 +90,25 @@ public enum BoundedResponse {
             throw URLError(.dataLengthExceedsMaximum)
         }
         return data
+    }
+}
+
+/// HTTPS requests cannot acquire an insecure hop through a redirect, even when
+/// the host app permits insecure loads. Local HTTP stays local for development.
+final class SecureConfigRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard let url = request.url else { return completionHandler(nil) }
+        let isHTTPS = url.scheme?.lowercased() == "https"
+        let isLocalHTTP =
+            response.url?.scheme?.lowercased() == "http"
+            && url.scheme?.lowercased() == "http"
+            && ["localhost", "127.0.0.1"].contains(url.host()?.lowercased())
+        completionHandler(isHTTPS || isLocalHTTP ? request : nil)
     }
 }

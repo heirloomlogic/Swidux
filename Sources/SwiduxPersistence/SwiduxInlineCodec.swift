@@ -14,14 +14,10 @@ private let logger = Logger(subsystem: "swidux.persistence", category: "inline")
 /// Decoding support the `@Persisted` macro emits into generated `{Type}Model`
 /// accessors for `@Inline` blob columns. Not meant to be called directly.
 public enum SwiduxInlineCodec {
-    /// Decodes an `@Inline` blob, returning `nil` (so the generated accessor
-    /// falls back to the domain default) instead of throwing.
-    ///
-    /// Empty data stays quiet — it's the CloudKit-safe column default, hit
-    /// whenever a row materializes before its blob syncs. A non-empty blob
-    /// that fails to decode logs an error first: it means schema drift or
-    /// corruption, and the next save will overwrite the old payload with the
-    /// fallback, so the log line is the only trace the data ever existed.
+    /// Decodes an `@Inline` blob. Empty data returns `nil` so generated
+    /// accessors can use the domain default while a CloudKit blob is pending.
+    /// Corrupt non-empty data is logged and thrown, preserving the original
+    /// payload instead of replacing it with a fallback on the next save.
     ///
     /// - Parameters:
     ///   - type: The domain type stored in the blob.
@@ -29,14 +25,15 @@ public enum SwiduxInlineCodec {
     ///   - decoder: The model's shared blob decoder.
     ///   - model: The generated model's name, for the log line.
     ///   - property: The blob property's name, for the log line.
-    /// - Returns: The decoded value, or `nil` when empty or undecodable.
+    /// - Returns: The decoded value, or `nil` when the column is empty.
+    /// - Throws: The decoding error for a non-empty invalid payload.
     public static func decode<T: Decodable>(
         _ type: T.Type,
         from data: Data,
         decoder: JSONDecoder,
         model: StaticString,
         property: StaticString
-    ) -> T? {
+    ) throws -> T? {
         guard !data.isEmpty else { return nil }
         do {
             return try decoder.decode(type, from: data)
@@ -44,11 +41,11 @@ public enum SwiduxInlineCodec {
             logger.error(
                 """
                 @Inline decode failed for \(model, privacy: .public).\(property, privacy: .public) \
-                (\(data.count) bytes) — falling back to the default value. \
-                \(String(describing: error), privacy: .public)
+                (\(data.count) bytes). \
+                \(String(describing: error), privacy: .private)
                 """
             )
-            return nil
+            throw error
         }
     }
 }

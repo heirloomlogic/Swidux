@@ -63,7 +63,7 @@ public struct KVKey<Value: Codable>: Sendable, Hashable {
 /// // Reducer + effect
 /// case .themeChanged(let theme):
 ///     state.theme = theme
-///     return { @Sendable _ in
+///     return Effect { @Sendable _ in
 ///         environment.keyValue.setValue(theme, for: .theme)
 ///     }
 /// ```
