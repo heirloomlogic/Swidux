@@ -424,7 +424,8 @@ struct PersistenceCoordinatorTests {
         try await coordinator.database.apply(writes: [disk], deletions: [], as: NoteModel.self)
 
         var initial = NotesState()
-        initial.notes[UUID()] = Note(id: UUID(), title: "stale", pinned: false)
+        let initialEntity = Note(id: UUID(), title: "stale", pinned: false)
+        initial.notes[initialEntity.id] = initialEntity
         initial.notes.resetChanges()
         let store = makeNotesStore(coordinator, initialState: initial)
 

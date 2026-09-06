@@ -23,6 +23,7 @@ struct ResilientPaywallServiceTests {
         let snapshot = try await service.customerInfo()
 
         #expect(snapshot == EntitlementSnapshot(isPro: true))
+        #expect(snapshot.source == .live)
         #expect(store.value(.lastKnownEntitlement) == CachedEntitlement(isPro: true, hasPermanentLicense: false))
     }
 
@@ -37,6 +38,7 @@ struct ResilientPaywallServiceTests {
 
         #expect(snapshot.hasPermanentLicense == true)
         #expect(snapshot.isPro == false)
+        #expect(snapshot.source == .cache)
     }
 
     @Test("subscriber falls back to last-known-good on transient failure")
@@ -266,7 +268,7 @@ struct ResilientPaywallServiceTests {
 
         let received = await collect(service.customerInfoStream())
 
-        #expect(received.first == EntitlementSnapshot(isPro: true))
+        #expect(received.first == EntitlementSnapshot(isPro: true, source: .cacheSeed))
     }
 
     @Test("stream does not seed from cache when seedsFromCache is off")

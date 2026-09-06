@@ -219,7 +219,7 @@ struct KeyValueStoreIntegrationTests {
         func reducer(state: inout TestState, action: TestAction) -> Effect<TestAction>? {
             switch action {
             case .effectAction(let name):
-                return { @Sendable _ in
+                return Effect { @Sendable _ in
                     prefs.setValue(name, for: .greeting)
                 }
             default:

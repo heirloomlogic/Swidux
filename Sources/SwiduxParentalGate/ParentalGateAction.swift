@@ -14,10 +14,10 @@ public enum ParentalGateAction: Sendable {
     case regenerateChallenge
     /// Validate the supplied answer against the current challenge.
     case submitAnswer(Int)
-    /// The challenge was passed for the given reason; reason is added to `passedReasons`.
+    /// Notification that the reason has already been validated and added to `passedReasons`.
     case answerAccepted(reason: String)
-    /// The submitted answer was wrong; `attempts` increments and a new challenge generates.
-    /// Reaching the plugin's attempt limit starts a cooldown instead.
+    /// Notification that a wrong answer has already been counted.
+    /// Reaching the attempt limit starts a cooldown synchronously on submission.
     case answerRejected
     /// The cooldown window elapsed; answers are accepted again.
     case cooldownExpired

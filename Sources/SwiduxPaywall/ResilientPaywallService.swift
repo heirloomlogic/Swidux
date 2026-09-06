@@ -5,6 +5,7 @@
 
 import Foundation
 import Swidux
+import Synchronization
 
 /// `Codable` mirror of ``EntitlementSnapshot`` (which is not `Codable`) so the
 /// last-known-good entitlement can be persisted through a ``KeyValueStore``.
@@ -40,9 +41,9 @@ public struct CachedEntitlement: Codable, Sendable, Equatable {
         self.cachedAt = cachedAt
     }
 
-    /// The equivalent ``EntitlementSnapshot``.
+    /// The equivalent ``EntitlementSnapshot``, identified as a cached read.
     public var snapshot: EntitlementSnapshot {
-        EntitlementSnapshot(isPro: isPro, hasPermanentLicense: hasPermanentLicense)
+        EntitlementSnapshot(isPro: isPro, hasPermanentLicense: hasPermanentLicense, source: .cache)
     }
 
     /// Equality compares entitlement content only — `cachedAt` is transient
@@ -124,6 +125,8 @@ public struct ResilientPaywallService: PaywallService {
     private let retryBaseDelay: Duration
     /// Clock read used for `cachedAt` stamping and staleness checks.
     private let now: @Sendable () -> Date
+    // Copies of the decorator share ordering, just as they share their cache.
+    private let ordering = EntitlementCacheOrdering()
 
     /// Creates a resilient decorator around `base`, persisting last-known-good
     /// through `store`.
@@ -163,9 +166,10 @@ public struct ResilientPaywallService: PaywallService {
     /// path is preserved for a genuinely-unknown user). Cancellation stops
     /// retrying immediately and falls through to the cache.
     public func customerInfo() async throws -> EntitlementSnapshot {
+        let generation = beginRequest()
         var lastError: (any Error)?
         attempts: for attempt in 1...max(1, maxAttempts) {
-            if Task.isCancelled { break }
+            if Task.isCancelled || !isCurrent(generation) { break }
             if attempt > 1 {
                 do {
                     try await Task.sleep(for: backoffDelay(beforeAttempt: attempt))
@@ -173,11 +177,15 @@ public struct ResilientPaywallService: PaywallService {
                     break  // Cancelled during backoff — fall through to cache.
                 }
             }
+            if Task.isCancelled || !isCurrent(generation) { break }
             do {
                 let snapshot = try await base.customerInfo()
-                persist(snapshot)
+                // A newer successful read or stream event owns the cache now. Serve
+                // its value below instead of publishing this older response.
+                guard persist(snapshot, for: generation) else { break attempts }
                 return snapshot
-            } catch is CancellationError {
+            } catch let error as CancellationError {
+                lastError = error
                 break attempts
             } catch {
                 lastError = error
@@ -189,13 +197,15 @@ public struct ResilientPaywallService: PaywallService {
         if let cached = readCache(), let usable = usableSnapshot(from: cached) {
             return usable
         }
-        throw lastError ?? CancellationError()
+        if Task.isCancelled { throw CancellationError() }
+        throw lastError ?? EntitlementReadError.superseded
     }
 
     /// Long-lived stream of entitlement updates. Yields the persisted
     /// last-known-good first (when ``seedsFromCache`` is on and the cache is
     /// still usable), then forwards and persists every snapshot the base
-    /// stream emits.
+    /// stream emits. The seed has source `.cacheSeed`, so it can bootstrap the
+    /// plugin's gate without superseding a pending or completed live read.
     public func customerInfoStream() -> AsyncStream<EntitlementSnapshot> {
         let base = self.base
         let seedsFromCache = self.seedsFromCache
@@ -204,13 +214,13 @@ public struct ResilientPaywallService: PaywallService {
             // Seed with the last-known-good so a flaky launch never leaves a paid
             // user gated as free before the live snapshot arrives.
             if seedsFromCache, let cached = service.readCache(),
-                let usable = service.usableSnapshot(from: cached)
+                let usable = service.usableSnapshot(from: cached, source: .cacheSeed)
             {
                 continuation.yield(usable)
             }
             let task = Task {
                 for await snapshot in base.customerInfoStream() {
-                    service.persist(snapshot)
+                    guard service.persist(snapshot) else { break }
                     continuation.yield(snapshot)
                 }
                 continuation.finish()
@@ -223,8 +233,16 @@ public struct ResilientPaywallService: PaywallService {
     /// Persists on success; rethrows on failure (a restore is an explicit user
     /// action, so the plugin keeps the prior state).
     public func restorePurchases() async throws -> EntitlementSnapshot {
+        try Task.checkCancellation()
+        let generation = beginRequest()
         let snapshot = try await base.restorePurchases()
-        persist(snapshot)
+        try Task.checkCancellation()
+        guard persist(snapshot, for: generation) else {
+            if let cached = readCache(), let usable = usableSnapshot(from: cached) {
+                return usable
+            }
+            throw EntitlementReadError.superseded
+        }
         return snapshot
     }
 
@@ -237,13 +255,45 @@ public struct ResilientPaywallService: PaywallService {
 
     // MARK: - Cache
 
-    private func persist(_ snapshot: EntitlementSnapshot) {
-        store.setValue(CachedEntitlement(snapshot, cachedAt: now()), for: .lastKnownEntitlement)
+    private func beginRequest() -> UInt64 {
+        ordering.state.withLock { state in
+            state.sequence += 1
+            return state.sequence
+        }
+    }
+
+    private func isCurrent(_ generation: UInt64) -> Bool {
+        ordering.state.withLock { generation >= $0.accepted }
+    }
+
+    /// Requests carry their start sequence; only accepted live results advance
+    /// the supersession boundary. A failed independent read must not discard
+    /// another caller's successful in-flight read.
+    /// Validation and persistence share one lock so superseded writes cannot
+    /// race a newer event's cache commit.
+    private func persist(_ snapshot: EntitlementSnapshot, for generation: UInt64? = nil) -> Bool {
+        ordering.state.withLock { state in
+            guard !Task.isCancelled else { return false }
+            if let generation {
+                guard generation >= state.accepted else { return false }
+            }
+            // Forward cached values without granting them new authority or
+            // renewing their original freshness window in nested decorators.
+            guard snapshot.source == .live else { return true }
+            if let generation {
+                state.accepted = generation
+            } else {
+                state.sequence += 1
+                state.accepted = state.sequence
+            }
+            store.setValue(CachedEntitlement(snapshot, cachedAt: now()), for: .lastKnownEntitlement)
+            return true
+        }
     }
 
     /// Reads the persisted last-known-good, or `nil` when nothing is cached.
     private func readCache() -> CachedEntitlement? {
-        store.value(.lastKnownEntitlement)
+        ordering.state.withLock { _ in store.value(.lastKnownEntitlement) }
     }
 
     /// Applies the staleness policy. Fresh cache: full snapshot. Stale cache
@@ -251,13 +301,17 @@ public struct ResilientPaywallService: PaywallService {
     /// subscription-only cache: `nil` (treated as a cache miss). The age is
     /// compared as `abs(age)` so a wall clock rolled backward can't keep a
     /// cache fresh forever.
-    private func usableSnapshot(from cached: CachedEntitlement) -> EntitlementSnapshot? {
+    private func usableSnapshot(
+        from cached: CachedEntitlement,
+        source: EntitlementSnapshot.Source = .cache
+    ) -> EntitlementSnapshot? {
         let age = now().timeIntervalSince(cached.cachedAt)
         if abs(age) <= maxCacheAgeInterval {
-            return cached.snapshot
+            return EntitlementSnapshot(
+                isPro: cached.isPro, hasPermanentLicense: cached.hasPermanentLicense, source: source)
         }
         guard cached.hasPermanentLicense else { return nil }
-        return EntitlementSnapshot(isPro: false, hasPermanentLicense: true)
+        return EntitlementSnapshot(isPro: false, hasPermanentLicense: true, source: source)
     }
 
     // MARK: - Retry
@@ -274,4 +328,19 @@ public struct ResilientPaywallService: PaywallService {
         TimeInterval(duration.components.seconds)
             + TimeInterval(duration.components.attoseconds) * 1e-18
     }
+}
+
+private final class EntitlementCacheOrdering: Sendable {
+    struct State {
+        var sequence: UInt64 = 0
+        var accepted: UInt64 = 0
+    }
+
+    let state = Mutex(State())
+}
+
+private enum EntitlementReadError: LocalizedError {
+    case superseded
+
+    var errorDescription: String? { "A newer entitlement result superseded this read." }
 }

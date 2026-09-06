@@ -217,7 +217,7 @@ public macro Persisted()
 
 For an entity `Card`, the macro emits:
 
-1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the relationships and blob columns described below, and the converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`).
+1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the relationships and blob columns described below, and the throwing converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`). Encoding and decoding errors propagate to the caller; `EntityDB` rolls back failed writes.
 2. **An extension `Card: PersistableEntity`** — providing `typealias Model = CardModel`.
 
 One attribute *is* generated, on `id` alone: `@Attribute(.preserveValueOnDeletion)`. SwiftData drops a deleted row's values from persistent history unless they are marked to survive it, and without the identity a delete transaction records that *something* was deleted without recording what — which is all a peer device has to go on when a deletion arrives over CloudKit. Nothing else is preserved, deliberately: a tombstone outlives the row, so any column added to that list is data that deletion does not actually delete. The attribute is transparent to existing stores — it does not change the entity's version hash, so a store written before it was introduced reopens without a migration. It is not retroactive, though: rows deleted *before* it shipped left empty tombstones, and those deletions stay unidentifiable forever. `mergeChanges(into:)` is the one thing that reads deletions out of history, and it covers this from both ends — its watermark lasts a single session, so every launch starts from a full read, and a tombstone that yields no identity escalates that tick to a full read too.
@@ -229,7 +229,7 @@ The generated model is **CloudKit-safe by construction**, which is what lets the
 - **Non-optional mirrored attributes get a default** — the default written on the domain property (`var count: Int = 0`) if present, else a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). The default is inert locally; `init(from:)` overwrites it on load.
 - **A non-optional, non-primitive mirrored property** with no default and no `@Inline` is a diagnostic (`mirrorRequiresDefault`): add a default, make it optional, or mark it `@Inline`.
 - **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a diagnostic (`relationRequiresOptional`). `update(from:)` reconciles related rows by `id` through `SwiduxRelationCodec` rather than rebuilding them, so a re-saved parent keeps its children's `persistentModelID`s instead of orphaning a fresh copy of the set on every write.
-- **`@Inline` blob columns** default to `Data()`. A non-optional `@Inline` property must carry a domain default (`= …`) — the generated getter falls back to it when the blob is missing or undecodable instead of trapping; omitting it is a diagnostic (`inlineRequiresDefault`). Optional `@Inline` properties fall back to `nil`.
+- **`@Inline` blob columns** default to `Data()`. A non-optional `@Inline` property must carry a domain default (`= …`) — the generated getter uses it only when the blob is empty; omitting it is a diagnostic (`inlineRequiresDefault`). Optional properties use `nil` for empty blobs. A non-empty blob that cannot be decoded throws instead of replacing the stored value with a default.
 
 ### Requirements on the annotated struct
 
@@ -243,7 +243,7 @@ By default every stored property is mirrored directly onto the model — SwiftDa
 | Marker | Effect |
 |---|---|
 | *(none)* | Mirror directly as `var name: T = <default>` — see the CloudKit-safe default rules above. |
-| `@Inline` | Store a `Codable` value as one opaque JSON `Data` column (defaulting to `Data()`), exposed through a computed accessor of the original type. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
+| `@Inline` | Store a `Codable` value as one opaque JSON `Data` column (defaulting to `Data()`), exposed through a read-only `get throws` accessor of the original type. Write through the domain value and `update(from:)`. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
 | `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar. |
 | `@Relation(deleteRule:inverse:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow (always **optional** for CloudKit safety, `= nil`) and the converters map element-by-element. A non-optional to-one `@Relation` is a diagnostic. `deleteRule` is a `SwiduxDeleteRule`; `inverse` is a key path on the generated model (`\TagModel.card`). |
 | `@Ignored` | Exclude a derived field. Must be **optional** so `toDomain()` can reconstruct it as `nil` — a diagnostic fires on a non-optional `@Ignored` property. |
@@ -272,17 +272,17 @@ final class CardModel: PersistableModel {
     var quote: String = ""
     var count: Int = 0
 
-    init(from domain: Card) {
+    init(from domain: Card) throws {
         self.id = domain.id
         self.quote = domain.quote
         self.count = domain.count
     }
 
-    func toDomain() -> Card {
+    func toDomain() throws -> Card {
         Card(id: id, quote: quote, count: count)
     }
 
-    func update(from domain: Card) {
+    func update(from domain: Card) throws {
         self.quote = domain.quote
         self.count = domain.count
     }

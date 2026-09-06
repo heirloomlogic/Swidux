@@ -66,6 +66,11 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// awaits this before running, so service calls reach the service
     /// in submission order even when scheduled on a concurrent executor.
     private var lastSpawnedTask: Task<Void, Never>?
+    /// Consent has its own FIFO so a blocked event cannot defer withdrawal.
+    private var lastConsentTask: Task<Void, Never>?
+    /// Invalidates unsent events when consent is withdrawn, even if the user
+    /// opts back in before the queue reaches them.
+    private var consentGeneration = UUID()
 
     /// Creates an analytics plugin wired into the host app.
     ///
@@ -114,12 +119,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         guard let local = extractAction(action) else { return nil }
         let localEffect = reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
         guard let localEffect else { return nil }
-        let lift = toRootAction
-        return { send in
-            try await localEffect { localAction in
-                send(lift(localAction))
-            }
-        }
+        return localEffect.map(toRootAction)
     }
 
     private func reduceLocal(
@@ -131,7 +131,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
             guard !state.isOptedOut else { return nil }
             let enriched = enrich(event, currentScreen: state.currentScreen)
             let service = self.service
-            return { _ in await service.track(enriched) }
+            return enqueue { await service.track(enriched) }
 
         case .screenView(let name, let extraProperties):
             state.currentScreen = name
@@ -140,7 +140,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
             properties["screen_name"] = .string(name)
             let event = AnalyticsEvent("screen_view", properties)
             let service = self.service
-            return { _ in await service.track(event) }
+            return enqueue { await service.track(event) }
 
         case .identify(let userID, let properties):
             // Record only when the identify actually reaches the service —
@@ -149,35 +149,33 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
             guard !state.isOptedOut else { return nil }
             state.recordIdentified(userID: userID, properties: properties)
             let service = self.service
-            return { _ in
+            return enqueue {
                 await service.identify(userID: userID, properties: properties)
             }
 
         case .alias(let newID, let previousID):
             guard !state.isOptedOut else { return nil }
             let service = self.service
-            return { _ in await service.alias(newID: newID, previousID: previousID) }
+            return enqueue { await service.alias(newID: newID, previousID: previousID) }
 
         case .reset:
             state.clearIdentified()
             let service = self.service
-            return { _ in await service.reset() }
+            return enqueue(requiresConsent: false) { await service.reset() }
 
         case .setOptedOut(let optedOut):
             state.isOptedOut = optedOut
-            if optedOut { state.clearIdentified() }
-            let onConsentChange = self.onConsentChange
-            // Opting in with no consent hook configured has nothing to do.
-            guard optedOut || onConsentChange != nil else { return nil }
-            let service = self.service
-            return { _ in
-                // Consent first: the SDK's own opt-out closes the tap and
-                // purges whatever it has already queued. Resetting first
-                // would hand it an identity change that is still eligible
-                // to be sent.
-                await onConsentChange?(optedOut)
-                if optedOut { await service.reset() }
+            if optedOut {
+                state.clearIdentified()
+                consentGeneration = UUID()
             }
+            guard optedOut || onConsentChange != nil else { return nil }
+            let consent = enqueueConsent(optedOut)
+            let service = self.service
+            if optedOut {
+                return enqueue(requiresConsent: false) { await service.reset() }
+            }
+            return Effect { _ in await consent.value }
         }
     }
 
@@ -202,7 +200,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         guard let userID = identity.userID(state) else {
             guard analyticsState.lastIdentifiedUserID != nil else { return }
             state[keyPath: stateKeyPath].clearIdentified()
-            spawn { await service.reset() }
+            spawn(requiresConsent: false) { await service.reset() }
             return
         }
 
@@ -226,19 +224,14 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         let currentScreen = analyticsState.currentScreen
         let service = self.service
         let enrichedEvents = events.map { enrich($0, currentScreen: currentScreen) }
-        // Single task iterates in order so events from one afterReduce
-        // reach the service in mapper-declared sequence (otherwise N
-        // racing tasks deliver them non-deterministically).
-        spawn {
-            for event in enrichedEvents {
-                await service.track(event)
-            }
+        for event in enrichedEvents {
+            spawn { await service.track(event) }
         }
     }
 
     // MARK: - Flush
 
-    /// Awaits any pending service calls spawned by `afterReduce`, then
+    /// Awaits all pending explicit and mapped service calls, then
     /// drains the service's own buffers via `service.flush()`.
     ///
     /// Call during app shutdown (`scenePhase == .background`,
@@ -285,24 +278,59 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     ///
     /// Each new task awaits ``lastSpawnedTask`` before running, chaining
     /// spawns into a single FIFO so concurrent dispatch can't reorder
-    /// service calls. The chain holds at most one task at a time: once
-    /// a task finishes its predecessor, the local `previous` reference
-    /// drops, and ``markCompleted()`` clears the tail on drain.
-    private func spawn(_ work: @escaping @Sendable () async -> Void) {
+    /// service calls. Consent hooks have their own FIFO; service work waits
+    /// for the consent transition in effect at submission. Completed tails
+    /// are released when all tracked work drains.
+    private func enqueue(
+        requiresConsent: Bool = true,
+        _ work: @escaping @Sendable () async -> Void
+    ) -> Effect<AnalyticsAction> {
+        let task = spawn(requiresConsent: requiresConsent, work)
+        return Effect { _ in await task.value }
+    }
+
+    @discardableResult
+    private func spawn(
+        requiresConsent: Bool = true,
+        _ work: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
         inflightCount += 1
         let previous = lastSpawnedTask
+        let generation = consentGeneration
+        let consent = lastConsentTask
         let next = Task { @concurrent in
             await previous?.value
-            await work()
+            await consent?.value
+            let permitted = await self.permits(generation)
+            if !requiresConsent || permitted {
+                await work()
+            }
             await self.markCompleted()
         }
         lastSpawnedTask = next
+        return next
     }
+
+    private func enqueueConsent(_ optedOut: Bool) -> Task<Void, Never> {
+        inflightCount += 1
+        let previous = lastConsentTask
+        let hook = onConsentChange
+        let next = Task { @concurrent in
+            await previous?.value
+            await hook?(optedOut)
+            await self.markCompleted()
+        }
+        lastConsentTask = next
+        return next
+    }
+
+    private func permits(_ generation: UUID) -> Bool { generation == consentGeneration }
 
     private func markCompleted() {
         inflightCount -= 1
         guard inflightCount == 0 else { return }
         lastSpawnedTask = nil
+        lastConsentTask = nil
         let waiters = flushWaiters
         flushWaiters.removeAll()
         for waiter in waiters.values {

@@ -13,7 +13,6 @@ import SwiftData
 import Testing
 
 @testable import SwiduxCloudKitSync
-
 // @testable for the `duringReadPhase` seam used by the lost-write test.
 @testable import SwiduxPersistence
 
@@ -136,6 +135,73 @@ struct SyncModePreferenceTests {
 
 @Suite("SyncCoordinator")
 struct SyncCoordinatorTests {
+    @MainActor
+    @Test("an older enable cannot reverse a completed opt-out")
+    func olderEnableCannotReverseNewerOptOut() async throws {
+        let local = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: local)
+        let preferences = InMemoryKeyValueStore()
+        let gate = SyncToggleGate()
+        var builtModes: [SyncMode] = []
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .localOnly,
+            preflight: SyncPreflightService(
+                ubiquityTokenAvailable: { true },
+                accountState: {
+                    await gate.pauseFirstCall()
+                    return .available
+                }),
+            keyValue: preferences,
+            makeContainer: { mode in
+                builtModes.append(mode)
+                return local
+            })
+        let appStore = makeItemsStore(persistence)
+        let older = Task { await sync.setSyncEnabled(true, into: appStore) }
+        await gate.waitUntilPaused()
+        let newerStatus = await sync.setSyncEnabled(false, into: appStore)
+        await gate.release()
+        let olderStatus = await older.value
+
+        #expect(newerStatus == .localOnlyByChoice)
+        #expect(olderStatus == .localOnlyByChoice)
+        #expect(sync.mode == .localOnly)
+        #expect(preferences.value(.syncMode) == .localOnly)
+        #expect(builtModes == [.localOnly])
+    }
+
+    @MainActor
+    @Test("an enable overtaken during hydration returns the newer opt-out status")
+    func optOutSupersedesOlderHydration() async throws {
+        let local = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let cloud = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let cloudID = UUID()
+        try await EntityDB(modelContainer: cloud).upsert(
+            Item(id: cloudID, label: "old cloud read"), as: ItemModel.self)
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: local)
+        let preferences = InMemoryKeyValueStore()
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .localOnly,
+            preflight: .mock(ubiquityToken: true, account: .available),
+            keyValue: preferences, makeContainer: { $0 == .iCloud ? cloud : local })
+        let gate = SyncToggleGate()
+        persistence.duringReadPhase = { await gate.pauseFirstCall() }
+        let appStore = makeItemsStore(persistence)
+        let older = Task { await sync.setSyncEnabled(true, into: appStore) }
+        await gate.waitUntilPaused()
+        let newerStatus = await sync.setSyncEnabled(false, into: appStore)
+        await gate.release()
+        let olderStatus = await older.value
+
+        #expect(newerStatus == .localOnlyByChoice)
+        #expect(olderStatus == .localOnlyByChoice)
+        #expect(sync.mode == .localOnly)
+        #expect(preferences.value(.syncMode) == .localOnly)
+        #expect(appStore.items[cloudID] == nil)
+    }
+
     @MainActor
     @Test("opting out keeps local data and persists the choice")
     func optOutKeepsData() async throws {
@@ -273,5 +339,31 @@ struct SyncCoordinatorTests {
         #expect(store.value(.syncMode) == nil)
         // Rebuild threw, was caught; the original database and its data are intact.
         #expect(appStore.items[id]?.label == "local")
+    }
+}
+
+private actor SyncToggleGate {
+    private var hasPaused = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var arrival: CheckedContinuation<Void, Never>?
+
+    func pauseFirstCall() async {
+        guard !hasPaused else { return }
+        hasPaused = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            arrival?.resume()
+            arrival = nil
+        }
+    }
+
+    func waitUntilPaused() async {
+        if hasPaused { return }
+        await withCheckedContinuation { arrival = $0 }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
     }
 }

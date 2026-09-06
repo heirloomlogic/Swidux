@@ -22,7 +22,7 @@ struct StoreEffectLifecycleTests {
         { state, action in
             switch action {
             case .noOp:
-                return { _ in
+                return Effect { _ in
                     await withTaskCancellationHandler {
                         started.yield()
                         while !Task.isCancelled {
@@ -103,7 +103,7 @@ struct StoreEffectLifecycleTests {
             reducer: { state, action in
                 switch action {
                 case .noOp:
-                    return { send in
+                    return Effect { send in
                         started.yield()
                         do {
                             try await Task.sleep(for: .seconds(60))
@@ -146,7 +146,7 @@ struct StoreEffectLifecycleTests {
             initialState: TestState(),
             reducer: { _, action in
                 guard case .noOp = action else { return nil }
-                return { _ in finished.yield() }
+                return Effect { _ in finished.yield() }
             }
         )
         store.send(.noOp)
@@ -173,7 +173,7 @@ struct StoreEffectLifecycleTests {
             reducer: { state, action in
                 switch action {
                 case .noOp:
-                    return { _ in
+                    return Effect { _ in
                         ran.yield()
                         throw EffectError()
                     }

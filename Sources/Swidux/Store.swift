@@ -72,13 +72,13 @@ public final class Store<State: SwiduxObservable, Action> {
 
     /// Actions dispatched re-entrantly, run as full cycles after the current one.
     @ObservationIgnored
-    private var pendingActions: [Action] = []
+    private var pendingOperations: [@MainActor () -> Void] = []
 
     // MARK: - Effect Lifecycle
 
-    /// In-flight effect tasks, keyed by an internal UUID. Each entry carries an
-    /// optional caller-supplied cancellation id (see
-    /// ``cancellable(id:cancelInFlight:_:)``). Entries remove themselves on
+    /// In-flight effect tasks, keyed by an internal UUID. Each entry tracks its
+    /// active cancellation scopes (see ``cancellable(id:cancelInFlight:_:)``).
+    /// Entries remove themselves on
     /// completion via `effectFinished`; all are cancelled by `cancelEffects()`
     /// and on deinit.
     @ObservationIgnored
@@ -153,37 +153,28 @@ public final class Store<State: SwiduxObservable, Action> {
     /// follow-up actions from an `Effect`; deferral is a safety net, and each
     /// occurrence logs a fault.
     public func send(_ action: Action) {
+        if isDispatching {
+            dispatchLogger.fault("Re-entrant Store.send — deferring until the current mutation completes.")
+        }
+        perform { self.dispatch(action) }
+    }
+
+    /// Every mutation path uses the same FIFO. A nested mutation must pack its
+    /// snapshot after the outer one commits, just like a re-entrant action.
+    private func perform(_ operation: @escaping @MainActor () -> Void) {
         guard !isDispatching else {
-            dispatchLogger.fault(
-                """
-                Re-entrant Store.send(\(String(describing: action))) — deferring until the \
-                current dispatch completes. Dispatch follow-up actions from an Effect instead.
-                """
-            )
-            pendingActions.append(action)
+            pendingOperations.append(operation)
             return
         }
         isDispatching = true
         defer { isDispatching = false }
-
-        dispatch(action)
-        drainPending()
-    }
-
-    /// Runs every action deferred by a re-entrant `send`. Callers must hold
-    /// `isDispatching`.
-    ///
-    /// Index-based drain rather than repeated `removeFirst()` (each O(k), so
-    /// the loop was O(k²)). Re-reads `count` every iteration: an action
-    /// dispatched mid-drain may append further pending actions, which must
-    /// still drain FIFO in this same pass.
-    private func drainPending() {
+        operation()
         var index = 0
-        while index < pendingActions.count {
-            dispatch(pendingActions[index])
+        while index < pendingOperations.count {
+            pendingOperations[index]()
             index += 1
         }
-        pendingActions.removeAll()
+        pendingOperations.removeAll()
     }
 
     /// Runs async work that must not hold state across its suspensions, then
@@ -219,7 +210,7 @@ public final class Store<State: SwiduxObservable, Action> {
     /// ``send(_:)``.
     public func mutate<Value>(
         awaiting produce: @MainActor () async throws -> Value,
-        merging apply: @MainActor (Value, inout State) -> Void
+        merging apply: @escaping @MainActor (Value, inout State) -> Void
     ) async rethrows {
         let value = try await produce()
         mutate { apply(value, &$0) }
@@ -235,24 +226,13 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Entity changes recorded by `apply` are drained and scheduled for
     /// persistence exactly as after a dispatch, and a `send(_:)` issued from
     /// inside `apply` is deferred and runs after the merge commits.
-    public func mutate(_ apply: @MainActor (inout State) -> Void) {
-        // Restored, not cleared. A synchronous `mutate` from inside a reducer or
-        // plugin hook is already re-entrant; forcing the flag back to `false` on
-        // the way out would disarm the guard for the *rest* of the outer
-        // dispatch, so a later `send` would run inline and the outer `apply`
-        // would then clobber it — the exact failure the guard exists to stop.
-        let wasDispatching = isDispatching
-        isDispatching = true
-        defer { isDispatching = wasDispatching }
-        var state = State(observer: observer)
-        apply(&state)
-        persistencePlugin?.drainAndScheduleFlush(&state)
-        State.apply(state, to: observer)
-        // Only the outermost caller drains. Nested, the enclosing cycle has an
-        // `apply` of its own still to come, so anything run here would be
-        // overwritten by it; left queued, the same actions run after that apply
-        // lands and against fresh state.
-        if !wasDispatching { drainPending() }
+    public func mutate(_ apply: @escaping @MainActor (inout State) -> Void) {
+        perform {
+            var state = State(observer: self.observer)
+            apply(&state)
+            self.persistencePlugin?.drainAndScheduleFlush(&state)
+            State.apply(state, to: self.observer)
+        }
     }
 
     /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.
@@ -276,15 +256,23 @@ public final class Store<State: SwiduxObservable, Action> {
         }
         let allEffects = [effect].compactMap { $0 } + pluginEffects
         for eff in allEffects {
+            if case .cancel(let key) = eff.cancellation {
+                cancelCancellable(id: key)
+                continue
+            }
             // `send` is synchronous on the MainActor, so the task is registered
             // before the completion hop below can possibly run.
             let id = UUID()
+            let scope = UUID()
+            if case .scope(let key, true) = eff.cancellation {
+                cancelCancellable(id: key)
+            }
             // Weak `registrar`, so binding the context does not retain the store.
             let context = EffectContext(registrar: self, taskID: id)
             let task = Task { @concurrent [weak self] in
                 await EffectContext.$current.withValue(context) {
                     do {
-                        try await eff(send)
+                        try await eff.run(send, registeredScope: scope)
                     } catch is CancellationError {
                         // Expected on teardown / cancelEffects() / cancel(id:) — not an error.
                     } catch {
@@ -293,7 +281,9 @@ public final class Store<State: SwiduxObservable, Action> {
                 }
                 await self?.effectFinished(id)
             }
-            effectTasks[id] = EffectHandle(task: task)
+            var handle = EffectHandle(task: task)
+            if case .scope(let key, _) = eff.cancellation { handle.scopes[scope] = key }
+            effectTasks[id] = handle
         }
     }
 
@@ -329,20 +319,24 @@ public final class Store<State: SwiduxObservable, Action> {
 
     /// Restores the previous state from the undo stack.
     public func undo() {
-        guard let undoPlugin else { return }
-        let current = State(observer: observer)
-        guard let restored = undoPlugin.undo(current: current) else { return }
-        applySnapshot(restored)
-        undoManager?.registerUndo(withTarget: self) { $0.redo() }
+        perform {
+            guard let undoPlugin = self.undoPlugin else { return }
+            let current = State(observer: self.observer)
+            guard let restored = undoPlugin.undo(current: current) else { return }
+            self.applySnapshot(restored)
+            self.undoManager?.registerUndo(withTarget: self) { $0.redo() }
+        }
     }
 
     /// Re-applies a previously undone state from the redo stack.
     public func redo() {
-        guard let undoPlugin else { return }
-        let current = State(observer: observer)
-        guard let restored = undoPlugin.redo(current: current) else { return }
-        applySnapshot(restored)
-        undoManager?.registerUndo(withTarget: self) { $0.undo() }
+        perform {
+            guard let undoPlugin = self.undoPlugin else { return }
+            let current = State(observer: self.observer)
+            guard let restored = undoPlugin.redo(current: current) else { return }
+            self.applySnapshot(restored)
+            self.undoManager?.registerUndo(withTarget: self) { $0.undo() }
+        }
     }
 
     private func applySnapshot(_ restored: State) {
@@ -370,23 +364,25 @@ extension Store: @MainActor SwiduxDispatcher {}
 
 // MARK: - Effect Cancellation Registry
 
-/// A running effect task plus its optional caller-supplied cancellation id.
+/// Only active scopes are retained. UUID tokens distinguish nested same-key scopes.
 private struct EffectHandle {
     let task: Task<Void, Never>
-    var cancelID: AnyHashableSendable?
+    var scopes: [UUID: AnyHashableSendable] = [:]
 }
 
 extension Store: EffectCancellationRegistrar {
-    func register(_ taskID: UUID, id: AnyHashableSendable, cancelInFlight: Bool) {
-        // The new task is still untagged, so cancelling `id` here can't hit it.
-        if cancelInFlight { cancelCancellable(id: id) }
-        effectTasks[taskID]?.cancelID = id
+    func register(_ taskID: UUID, scope: UUID, id: AnyHashableSendable, cancelInFlight: Bool) {
+        guard let handle = effectTasks[taskID], !handle.task.isCancelled else { return }
+        if cancelInFlight { cancelCancellable(id: id, excluding: taskID) }
+        effectTasks[taskID]?.scopes[scope] = id
     }
 
-    func cancelCancellable(id: AnyHashableSendable) {
-        // Cancelled tasks remove themselves from `effectTasks` via their own
-        // completion hop (`effectFinished`).
-        for handle in effectTasks.values where handle.cancelID == id {
+    func unregister(_ taskID: UUID, scope: UUID) {
+        effectTasks[taskID]?.scopes.removeValue(forKey: scope)
+    }
+
+    func cancelCancellable(id: AnyHashableSendable, excluding taskID: UUID? = nil) {
+        for (key, handle) in effectTasks where key != taskID && handle.scopes.values.contains(id) {
             handle.task.cancel()
         }
     }

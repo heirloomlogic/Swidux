@@ -12,6 +12,16 @@ import Testing
 @Suite("FeatureFlagsPlugin")
 @MainActor
 struct FeatureFlagsPluginTests {
+    @Test("Repeated refreshes share the in-flight request", arguments: [RefreshPolicy.manual, .automatic])
+    func refreshDoesNotOverlap(_ policy: RefreshPolicy) {
+        let plugin = makePlugin(refreshPolicy: policy)
+        var state = TestState()
+        #expect(plugin.reduce(state: &state, action: .featureFlags(.refresh)) != nil)
+        #expect(plugin.reduce(state: &state, action: .featureFlags(.refresh)) == nil)
+        _ = plugin.reduce(state: &state, action: .featureFlags(.refreshFailed("offline")))
+        #expect(plugin.reduce(state: &state, action: .featureFlags(.refresh)) != nil)
+    }
+
     // MARK: - Test fixtures
 
     struct TestState: Sendable, Equatable {

@@ -45,7 +45,8 @@ struct CoordinatorReadAPITests {
     func fetchAllCanSkipTheFlush() async throws {
         let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         var state = NotesState()
-        state.notes[UUID()] = Note(id: UUID(), title: "just typed", pinned: false)
+        let stateEntity = Note(id: UUID(), title: "just typed", pinned: false)
+        state.notes[stateEntity.id] = stateEntity
         coordinator.corePlugin.drainAndScheduleFlush(&state)
 
         let rows = try await coordinator.fetchAll(of: Note.self, flushPending: false)

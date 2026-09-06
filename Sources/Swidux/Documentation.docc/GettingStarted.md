@@ -46,7 +46,7 @@ typealias Effect = Swidux.Effect<AppAction>
 ```
 
 - ``Send`` is `@MainActor @Sendable (Action) -> Void` — dispatched actions hop back to the MainActor.
-- ``Effect`` is a `@Sendable` async closure. Run with `Task { @concurrent in }` to stay off the MainActor.
+- ``Effect`` holds a `@Sendable` async operation and cancellation metadata. Construct it with `Effect { send in ... }`; the store runs its operation off the MainActor.
 
 Define your action tree and root reducer:
 
@@ -106,8 +106,8 @@ extension Store where State == AppState, Action == AppAction {
         let persistencePlugin = PersistencePlugin<AppState, AppAction>(
             writers: [
                 StateWriter(keyPath: \.items) { writes, deletes in
-                    for item in writes { try? await db.upsert(item) }
-                    for id in deletes  { try? await db.delete(id: id) }
+                    for item in writes { try await db.upsert(item) }
+                    for id in deletes  { try await db.delete(id: id) }
                 },
             ]
         )

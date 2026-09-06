@@ -51,8 +51,8 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
         self.toRootAction = toRootAction
         self.extractAction = extractAction
         self.challengeSource = challengeSource
-        self.attemptLimit = attemptLimit
-        self.cooldown = cooldown
+        self.attemptLimit = max(1, attemptLimit)
+        self.cooldown = max(.zero, cooldown)
         self.now = now
     }
 
@@ -61,12 +61,7 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
         guard let local = extractAction(action) else { return nil }
         let localEffect = reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
         guard let localEffect else { return nil }
-        let lift = toRootAction
-        return { send in
-            try await localEffect { localAction in
-                send(lift(localAction))
-            }
-        }
+        return localEffect.map(toRootAction)
     }
 
     private func reduceLocal(
@@ -76,18 +71,17 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
         switch action {
         case .request(let reason):
             if state.passedReasons.contains(reason) {
-                return { send in await send(.answerAccepted(reason: reason)) }
+                return Effect { send in await send(.answerAccepted(reason: reason)) }
             }
             state.pendingReason = reason
             state.challenge = challengeSource.generate()
-            state.attempts = 0
 
         case .dismiss:
             state.pendingReason = nil
             state.challenge = nil
-            state.attempts = 0
 
         case .regenerateChallenge:
+            guard state.pendingReason != nil else { return nil }
             state.challenge = challengeSource.generate()
 
         case .submitAnswer(let answer):
@@ -98,33 +92,41 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
                 state.cooldownUntil = nil
             }
             guard let challenge = state.challenge, let reason = state.pendingReason else { return nil }
-            guard answer == challenge.expected else {
-                return { send in await send(.answerRejected) }
+            if answer == challenge.expected {
+                state.passedReasons.insert(reason)
+                state.pendingReason = nil
+                state.challenge = nil
+                state.attempts = 0
+                return Effect { send in await send(.answerAccepted(reason: reason)) }
             }
-            return { send in await send(.answerAccepted(reason: reason)) }
 
-        case .answerAccepted(let reason):
-            state.passedReasons.insert(reason)
-            state.pendingReason = nil
-            state.challenge = nil
-            state.attempts = 0
-
-        case .answerRejected:
+            // Commit the attempt synchronously. A delayed notification must
+            // neither validate a different challenge nor bypass the limit.
             state.attempts += 1
-            if state.attempts >= attemptLimit {
+            state.challenge = challengeSource.generate()
+            let reachedLimit = state.attempts >= attemptLimit
+            if reachedLimit {
                 state.attempts = 0
                 state.cooldownUntil = now().addingTimeInterval(cooldownInterval)
-                let cooldown = self.cooldown
-                return { send in
+            }
+            let cooldown = self.cooldown
+            return Effect { send in
+                await send(.answerRejected)
+                if reachedLimit {
                     try await Task.sleep(for: cooldown)
                     await send(.cooldownExpired)
                 }
             }
-            state.challenge = challengeSource.generate()
+
+        case .answerAccepted, .answerRejected:
+            // Notifications for the host, not commands that can mutate a newer
+            // challenge or grant a reason that was never validated.
+            break
 
         case .cooldownExpired:
+            guard let until = state.cooldownUntil, now() >= until else { return nil }
             state.cooldownUntil = nil
-            state.challenge = challengeSource.generate()
+            if state.pendingReason != nil { state.challenge = challengeSource.generate() }
         }
         return nil
     }

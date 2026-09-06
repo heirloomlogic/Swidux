@@ -27,14 +27,17 @@ public protocol PersistableModel: PersistentModel {
     associatedtype Domain: PersistableEntity
 
     /// Creates a fresh model from a domain value (used for inserts).
-    init(from domain: Domain)
+    /// Throws if inline values or relationships cannot be encoded.
+    init(from domain: Domain) throws
 
     /// Reconstructs the domain value from the persisted model.
-    func toDomain() -> Domain
+    /// Throws when non-empty inline data cannot be decoded.
+    func toDomain() throws -> Domain
 
     /// Updates an existing model in place from a domain value (used for upserts),
     /// preserving SwiftData identity. Does not reassign `id`.
-    func update(from domain: Domain)
+    /// Throws on conversion failure. `EntityDB` rolls back the whole write batch.
+    func update(from domain: Domain) throws
 
     /// The entity's stable identity.
     var id: UUID { get }

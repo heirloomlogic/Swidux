@@ -1,5 +1,5 @@
 {
-  "originHash" : "7905da14ad1b41f74acad54b177387844ee0089ff0be96d40cbad627ac29fe4f",
+  "originHash" : "5583d994196a57db83bd5adc3ce3a2620da681cbbab249c79f24f6f71e204277",
   "pins" : [
     {
       "identity" : "persnicket",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax",
       "state" : {
-        "revision" : "9de99a78f099e59caf2b2beec65a4c45d54b2081",
-        "version" : "603.0.1"
+        "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
+        "version" : "603.0.2"
       }
     }
   ],

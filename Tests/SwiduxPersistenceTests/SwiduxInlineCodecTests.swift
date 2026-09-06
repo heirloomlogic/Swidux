@@ -17,26 +17,26 @@ struct SwiduxInlineCodecTests {
     @Test("decodes a valid blob")
     func decodesValidBlob() throws {
         let data = try JSONEncoder().encode(Payload(value: 7))
-        let decoded = SwiduxInlineCodec.decode(
+        let decoded = try SwiduxInlineCodec.decode(
             Payload.self, from: data, decoder: JSONDecoder(), model: "TestModel", property: "payload"
         )
         #expect(decoded == Payload(value: 7))
     }
 
     @Test("empty data is a quiet nil — the CloudKit column default")
-    func emptyDataIsNil() {
-        let decoded = SwiduxInlineCodec.decode(
+    func emptyDataIsNil() throws {
+        let decoded = try SwiduxInlineCodec.decode(
             Payload.self, from: Data(), decoder: JSONDecoder(), model: "TestModel", property: "payload"
         )
         #expect(decoded == nil)
     }
 
-    @Test("an undecodable blob returns nil so the accessor falls back")
-    func undecodableBlobFallsBack() {
-        let decoded = SwiduxInlineCodec.decode(
-            Payload.self, from: Data("garbage".utf8), decoder: JSONDecoder(),
-            model: "TestModel", property: "payload"
-        )
-        #expect(decoded == nil)
+    @Test("an undecodable non-empty blob throws instead of replacing data with a default")
+    func undecodableBlobThrows() {
+        #expect(throws: DecodingError.self) {
+            try SwiduxInlineCodec.decode(
+                Payload.self, from: Data("garbage".utf8), decoder: JSONDecoder(),
+                model: "TestModel", property: "payload")
+        }
     }
 }

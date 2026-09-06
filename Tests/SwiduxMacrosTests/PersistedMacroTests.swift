@@ -44,13 +44,13 @@ final class PersistedMacroTests: XCTestCase {
                     var name: String = ""
                     var count: Int = 0
 
-                    init(from domain: Counter) {
+                    init(from domain: Counter) throws {
                         self.id = domain.id
                         self.name = domain.name
                         self.count = domain.count
                     }
 
-                    func toDomain() -> Counter {
+                    func toDomain() throws -> Counter {
                         Counter(
                             id: id,
                             name: name,
@@ -58,7 +58,7 @@ final class PersistedMacroTests: XCTestCase {
                         )
                     }
 
-                    func update(from domain: Counter) {
+                    func update(from domain: Counter) throws {
                         self.name = domain.name
                         self.count = domain.count
                     }
@@ -114,33 +114,30 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) public var id: UUID = UUID()
                     private var settingsData: Data = Data()
                     public var settings: Settings {
-                        get {
-                            SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
+                        get throws {
+                            try SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
                 Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
-                        }
-                        set {
-                            settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
                         }
                     }
                     public var ownerID: UUID = UUID()
 
-                    public init(from domain: Profile) {
+                    public init(from domain: Profile) throws {
                         self.id = domain.id
-                        self.settingsData = (try? Self.swiduxInlineEncoder.encode(domain.settings)) ?? Data()
+                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                         self.ownerID = domain.ownerID
                     }
 
-                    public func toDomain() -> Profile {
+                    public func toDomain() throws -> Profile {
                         Profile(
                             id: id,
-                            settings: settings,
+                            settings: try settings,
                             ownerID: ownerID,
                             badge: nil
                         )
                     }
 
-                    public func update(from domain: Profile) {
-                        self.settings = domain.settings
+                    public func update(from domain: Profile) throws {
+                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                         self.ownerID = domain.ownerID
                     }
 
@@ -192,27 +189,27 @@ final class PersistedMacroTests: XCTestCase {
                     var title: String = ""
                     @Relationship(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [CardModel]? = nil
 
-                    init(from domain: Deck) {
+                    init(from domain: Deck) throws {
                         self.id = domain.id
                         self.title = domain.title
-                        self.cards = domain.cards.map {
-                            CardModel(from: $0)
+                        self.cards = try domain.cards.map {
+                            try CardModel(from: $0)
                         }
                     }
 
-                    func toDomain() -> Deck {
+                    func toDomain() throws -> Deck {
                         Deck(
                             id: id,
                             title: title,
-                            cards: (cards ?? []).map {
-                                $0.toDomain()
+                            cards: try (cards ?? []).map {
+                                try $0.toDomain()
                             }
                         )
                     }
 
-                    func update(from domain: Deck) {
+                    func update(from domain: Deck) throws {
                         self.title = domain.title
-                        self.cards = SwiduxRelationCodec.reconcile(
+                        self.cards = try SwiduxRelationCodec.reconcile(
                             self.cards, with: domain.cards, in: modelContext)
                     }
 
@@ -264,20 +261,20 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
 
-                    init(from domain: Pet) {
+                    init(from domain: Pet) throws {
                         self.id = domain.id
-                        self.owner = PersonModel(from: domain.owner)
+                        self.owner = try PersonModel(from: domain.owner)
                     }
 
-                    func toDomain() -> Pet {
+                    func toDomain() throws -> Pet {
                         Pet(
                             id: id,
-                            owner: owner!.toDomain()
+                            owner: try owner!.toDomain()
                         )
                     }
 
-                    func update(from domain: Pet) {
-                        self.owner = SwiduxRelationCodec.reconcile(
+                    func update(from domain: Pet) throws {
+                        self.owner = try SwiduxRelationCodec.reconcile(
                             self.owner, with: domain.owner, in: modelContext)
                     }
 
@@ -334,24 +331,24 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
 
-                    init(from domain: Pet) {
+                    init(from domain: Pet) throws {
                         self.id = domain.id
-                        self.owner = domain.owner.map {
-                            PersonModel(from: $0)
+                        self.owner = try domain.owner.map {
+                            try PersonModel(from: $0)
                         }
                     }
 
-                    func toDomain() -> Pet {
+                    func toDomain() throws -> Pet {
                         Pet(
                             id: id,
-                            owner: owner.map {
-                                $0.toDomain()
+                            owner: try owner.map {
+                                try $0.toDomain()
                             }
                         )
                     }
 
-                    func update(from domain: Pet) {
-                        self.owner = SwiduxRelationCodec.reconcile(
+                    func update(from domain: Pet) throws {
+                        self.owner = try SwiduxRelationCodec.reconcile(
                             self.owner, with: domain.owner, in: modelContext)
                     }
 
@@ -402,29 +399,27 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     private var metaData: Data = Data()
                     var meta: Meta? {
-                        get {
-                            SwiduxInlineCodec.decode(Meta?.self, from: metaData, decoder: Self.swiduxInlineDecoder, \
+                        get throws {
+                            try SwiduxInlineCodec.decode(Meta?.self, from: metaData, decoder: \
+                Self.swiduxInlineDecoder, \
                 model: "DocModel", property: "meta") ?? nil
                         }
-                        set {
-                            metaData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
-                        }
                     }
 
-                    init(from domain: Doc) {
+                    init(from domain: Doc) throws {
                         self.id = domain.id
-                        self.metaData = (try? Self.swiduxInlineEncoder.encode(domain.meta)) ?? Data()
+                        self.metaData = try Self.swiduxInlineEncoder.encode(domain.meta)
                     }
 
-                    func toDomain() -> Doc {
+                    func toDomain() throws -> Doc {
                         Doc(
                             id: id,
-                            meta: meta
+                            meta: try meta
                         )
                     }
 
-                    func update(from domain: Doc) {
-                        self.meta = domain.meta
+                    func update(from domain: Doc) throws {
+                        self.metaData = try Self.swiduxInlineEncoder.encode(domain.meta)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DocModel> {
@@ -491,17 +486,17 @@ final class PersistedMacroTests: XCTestCase {
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
-                    init(from domain: Note) {
+                    init(from domain: Note) throws {
                         self.id = domain.id
                     }
 
-                    func toDomain() -> Note {
+                    func toDomain() throws -> Note {
                         Note(
                             id: id
                         )
                     }
 
-                    func update(from domain: Note) {
+                    func update(from domain: Note) throws {
 
                     }
 
@@ -557,18 +552,18 @@ final class PersistedMacroTests: XCTestCase {
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
-                    init(from domain: Foo) {
+                    init(from domain: Foo) throws {
                         self.id = domain.id
                     }
 
-                    func toDomain() -> Foo {
+                    func toDomain() throws -> Foo {
                         Foo(
                             id: id,
                             tag: nil
                         )
                     }
 
-                    func update(from domain: Foo) {
+                    func update(from domain: Foo) throws {
 
                     }
 
@@ -629,19 +624,19 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var count: Int = 5
 
-                    init(from domain: Counter) {
+                    init(from domain: Counter) throws {
                         self.id = domain.id
                         self.count = domain.count
                     }
 
-                    func toDomain() -> Counter {
+                    func toDomain() throws -> Counter {
                         Counter(
                             id: id,
                             count: count
                         )
                     }
 
-                    func update(from domain: Counter) {
+                    func update(from domain: Counter) throws {
                         self.count = domain.count
                     }
 
@@ -691,19 +686,19 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var nickname: String?
 
-                    init(from domain: Person) {
+                    init(from domain: Person) throws {
                         self.id = domain.id
                         self.nickname = domain.nickname
                     }
 
-                    func toDomain() -> Person {
+                    func toDomain() throws -> Person {
                         Person(
                             id: id,
                             nickname: nickname
                         )
                     }
 
-                    func update(from domain: Person) {
+                    func update(from domain: Person) throws {
                         self.nickname = domain.nickname
                     }
 
@@ -754,19 +749,19 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var status: Status
 
-                    init(from domain: Task) {
+                    init(from domain: Task) throws {
                         self.id = domain.id
                         self.status = domain.status
                     }
 
-                    func toDomain() -> Task {
+                    func toDomain() throws -> Task {
                         Task(
                             id: id,
                             status: status
                         )
                     }
 
-                    func update(from domain: Task) {
+                    func update(from domain: Task) throws {
                         self.status = domain.status
                     }
 
@@ -827,33 +822,25 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     private var settingsData: Data = Data()
                     var settings: Settings {
-                        get {
-                            do {
-                                return try Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)
-                            }
-                            catch {
-                                fatalError("Swidux @Inline: failed to decode settings: \\(error)")
-                            }
-                        }
-                        set {
-                            settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
+                        get throws {
+                            try Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)
                         }
                     }
 
-                    init(from domain: Profile) {
+                    init(from domain: Profile) throws {
                         self.id = domain.id
-                        self.settingsData = (try? Self.swiduxInlineEncoder.encode(domain.settings)) ?? Data()
+                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
-                    func toDomain() -> Profile {
+                    func toDomain() throws -> Profile {
                         Profile(
                             id: id,
-                            settings: settings
+                            settings: try settings
                         )
                     }
 
-                    func update(from domain: Profile) {
-                        self.settings = domain.settings
+                    func update(from domain: Profile) throws {
+                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
@@ -917,19 +904,19 @@ final class PersistedMacroTests: XCTestCase {
                     var label: String = ""
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
-                    init(from domain: Tag) {
+                    init(from domain: Tag) throws {
                         self.label = domain.label
                         self.id = domain.id
                     }
 
-                    func toDomain() -> Tag {
+                    func toDomain() throws -> Tag {
                         Tag(
                             label: label,
                             id: id
                         )
                     }
 
-                    func update(from domain: Tag) {
+                    func update(from domain: Tag) throws {
                         self.label = domain.label
                     }
 
@@ -990,19 +977,19 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var kind: Kind = .note
 
-                    init(from domain: Entry) {
+                    init(from domain: Entry) throws {
                         self.id = domain.id
                         self.kind = domain.kind
                     }
 
-                    func toDomain() -> Entry {
+                    func toDomain() throws -> Entry {
                         Entry(
                             id: id,
                             kind: kind
                         )
                     }
 
-                    func update(from domain: Entry) {
+                    func update(from domain: Entry) throws {
                         self.kind = domain.kind
                     }
 
@@ -1065,19 +1052,19 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var kind: Entry.Kind = .note
 
-                    init(from domain: Entry) {
+                    init(from domain: Entry) throws {
                         self.id = domain.id
                         self.kind = domain.kind
                     }
 
-                    func toDomain() -> Entry {
+                    func toDomain() throws -> Entry {
                         Entry(
                             id: id,
                             kind: kind
                         )
                     }
 
-                    func update(from domain: Entry) {
+                    func update(from domain: Entry) throws {
                         self.kind = domain.kind
                     }
 
@@ -1134,29 +1121,26 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     private var settingsData: Data = Data()
                     var settings: Settings {
-                        get {
-                            SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
+                        get throws {
+                            try SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
                 Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
                         }
-                        set {
-                            settingsData = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data()
-                        }
                     }
 
-                    init(from domain: Profile) {
+                    init(from domain: Profile) throws {
                         self.id = domain.id
-                        self.settingsData = (try? Self.swiduxInlineEncoder.encode(domain.settings)) ?? Data()
+                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
-                    func toDomain() -> Profile {
+                    func toDomain() throws -> Profile {
                         Profile(
                             id: id,
-                            settings: settings
+                            settings: try settings
                         )
                     }
 
-                    func update(from domain: Profile) {
-                        self.settings = domain.settings
+                    func update(from domain: Profile) throws {
+                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
@@ -1220,24 +1204,24 @@ final class PersistedMacroTests: XCTestCase {
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     @Relationship var cards: [CardModel]? = nil
 
-                    init(from domain: Deck) {
+                    init(from domain: Deck) throws {
                         self.id = domain.id
-                        self.cards = domain.cards.map {
-                            CardModel(from: $0)
+                        self.cards = try domain.cards.map {
+                            try CardModel(from: $0)
                         }
                     }
 
-                    func toDomain() -> Deck {
+                    func toDomain() throws -> Deck {
                         Deck(
                             id: id,
-                            cards: (cards ?? []).map {
-                                $0.toDomain()
+                            cards: try (cards ?? []).map {
+                                try $0.toDomain()
                             }
                         )
                     }
 
-                    func update(from domain: Deck) {
-                        self.cards = SwiduxRelationCodec.reconcile(
+                    func update(from domain: Deck) throws {
+                        self.cards = try SwiduxRelationCodec.reconcile(
                             self.cards, with: domain.cards, in: modelContext)
                     }
 
@@ -1301,18 +1285,18 @@ final class PersistedMacroTests: XCTestCase {
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
 
-                    init(from domain: Badge) {
+                    init(from domain: Badge) throws {
                         self.id = domain.id
                     }
 
-                    func toDomain() -> Badge {
+                    func toDomain() throws -> Badge {
                         Badge(
                             id: id,
                             detail: nil
                         )
                     }
 
-                    func update(from domain: Badge) {
+                    func update(from domain: Badge) throws {
 
                     }
 

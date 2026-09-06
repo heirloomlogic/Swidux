@@ -37,17 +37,17 @@ func generatePersistedModelClass(
 
         \(codecMembers)\(memberLines)
 
-            \(accessPrefix)init(from domain: \(structName)) {
+            \(accessPrefix)init(from domain: \(structName)) throws {
         \(initLines)
             }
 
-            \(accessPrefix)func toDomain() -> \(structName) {
+            \(accessPrefix)func toDomain() throws -> \(structName) {
                 \(structName)(
         \(toDomainArgs)
                 )
             }
 
-            \(accessPrefix)func update(from domain: \(structName)) {
+            \(accessPrefix)func update(from domain: \(structName)) throws {
         \(updateLines)
             }
 
@@ -168,35 +168,18 @@ private func modelMemberLines(
         }
         return "    \(identityAttribute(for: prop))\(accessPrefix)var \(prop.name): \(type)\(suffix)"
     case .inlineBlob:
-        // The backing column defaults to `Data()` (CloudKit-safe), which is
-        // never decodable — a row materialized with defaults (e.g. created by
-        // CloudKit before the blob syncs) hits the fallback, so it must never
-        // trap. Non-optional blobs fall back to the domain default the macro
-        // requires (`inlineRequiresDefault`); optional blobs fall back to nil.
-        guard let fallback = prop.isOptional ? "nil" : prop.defaultExpr else {
-            // No recoverable fallback exists; `inlineRequiresDefault` is
-            // diagnosed as an error, so this expansion never compiles.
-            return """
-                    private var \(prop.name)Data: Data = Data()
-                    \(accessPrefix)var \(prop.name): \(type) {
-                        get {
-                            do { return try Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data) }
-                            catch { fatalError("Swidux @Inline: failed to decode \(prop.name): \\(error)") }
-                        }
-                        set { \(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data() }
-                    }
-                """
-        }
-        // Decode through SwiduxInlineCodec so an undecodable blob (schema
-        // drift, corruption) logs before falling back — a silent `try?` here
-        // would let the next save overwrite the old payload with the default.
+        // Empty columns are CloudKit defaults. Non-empty invalid payloads
+        // throw so a read cannot turn corruption into a successful default.
+        let fallback = prop.isOptional ? "nil" : prop.defaultExpr
+        let decode =
+            "try SwiduxInlineCodec.decode(\(type).self, from: \(prop.name)Data, decoder: Self.swiduxInlineDecoder, model: \"\(modelName)\", property: \"\(prop.name)\")"
         let getter =
-            "SwiduxInlineCodec.decode(\(type).self, from: \(prop.name)Data, decoder: Self.swiduxInlineDecoder, model: \"\(modelName)\", property: \"\(prop.name)\") ?? \(fallback)"
+            fallback.map { "\(decode) ?? \($0)" }
+            ?? "try Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)"
         return """
                 private var \(prop.name)Data: Data = Data()
                 \(accessPrefix)var \(prop.name): \(type) {
-                    get { \(getter) }
-                    set { \(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(newValue)) ?? Data() }
+                    get throws { \(getter) }
                 }
             """
     case .relation(let rule, let inverse, let cardinality, let element):
@@ -213,13 +196,13 @@ private func initLine(for prop: PersistedProperty) -> String? {
     case .mirror:
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
-        return "        self.\(prop.name)Data = (try? Self.swiduxInlineEncoder.encode(domain.\(prop.name))) ?? Data()"
+        return "        self.\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
     case .relation(_, _, let cardinality, let element):
         switch cardinality {
         case .toMany, .toOneOptional:
-            return "        self.\(prop.name) = domain.\(prop.name).map { \(element)Model(from: $0) }"
+            return "        self.\(prop.name) = try domain.\(prop.name).map { try \(element)Model(from: $0) }"
         case .toOne:
-            return "        self.\(prop.name) = \(element)Model(from: domain.\(prop.name))"
+            return "        self.\(prop.name) = try \(element)Model(from: domain.\(prop.name))"
         }
     case .ignored:
         return nil
@@ -228,18 +211,20 @@ private func initLine(for prop: PersistedProperty) -> String? {
 
 private func toDomainArgument(for prop: PersistedProperty) -> String {
     switch prop.kind {
-    case .mirror, .inlineBlob:
+    case .mirror:
         return "            \(prop.name): \(prop.name)"
+    case .inlineBlob:
+        return "            \(prop.name): try \(prop.name)"
     case .relation(_, _, let cardinality, _):
         // The model stores relationships optionally (CloudKit requirement), so
         // reconstruct the domain shape from the optional.
         switch cardinality {
         case .toMany:
-            return "            \(prop.name): (\(prop.name) ?? []).map { $0.toDomain() }"
+            return "            \(prop.name): try (\(prop.name) ?? []).map { try $0.toDomain() }"
         case .toOneOptional:
-            return "            \(prop.name): \(prop.name).map { $0.toDomain() }"
+            return "            \(prop.name): try \(prop.name).map { try $0.toDomain() }"
         case .toOne:
-            return "            \(prop.name): \(prop.name)!.toDomain()"
+            return "            \(prop.name): try \(prop.name)!.toDomain()"
         }
     case .ignored:
         return "            \(prop.name): nil"
@@ -250,8 +235,10 @@ private func updateLine(for prop: PersistedProperty) -> String? {
     // Identity is stable; never reassign it on update.
     if prop.isIdentity { return nil }
     switch prop.kind {
-    case .mirror, .inlineBlob:
+    case .mirror:
         return "        self.\(prop.name) = domain.\(prop.name)"
+    case .inlineBlob:
+        return "        self.\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
     case .relation:
         // Reconciled by id rather than rebuilt. Rebuilding detaches the previous
         // rows instead of removing them — a delete rule fires when the *parent*
@@ -262,7 +249,7 @@ private func updateLine(for prop: PersistedProperty) -> String? {
         // array and optional forms, and a non-optional to-one is diagnosed
         // (`relationRequiresOptional`) before this expansion is ever compiled.
         return """
-                    self.\(prop.name) = SwiduxRelationCodec.reconcile(
+                    self.\(prop.name) = try SwiduxRelationCodec.reconcile(
                         self.\(prop.name), with: domain.\(prop.name), in: modelContext)
             """
     case .ignored:

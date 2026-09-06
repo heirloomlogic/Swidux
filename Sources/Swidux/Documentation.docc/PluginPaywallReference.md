@@ -43,7 +43,7 @@ let resilient = ResilientPaywallService(
 )
 ```
 
-Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: any successful snapshot overwrites the cache. See the type's own documentation for the staleness policy and threat model.
+Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: successful live snapshots overwrite the cache unless a newer successful read or live stream update has superseded them. Starting or failing an independent read does not discard another caller's successful response. Cached values preserve their original freshness window. See the type's own documentation for the staleness policy and threat model.
 
 ## Types
 
@@ -105,6 +105,7 @@ public enum PaywallAction: Sendable {
     case refreshCustomerInfo
     case customerInfoUpdated(EntitlementSnapshot)
     case refreshFailed(String)
+    case refreshCancelled(requestID: UUID)
     case restorePurchases
     case presentCustomerCenter
     case dismissCustomerCenter
@@ -112,18 +113,29 @@ public enum PaywallAction: Sendable {
 }
 ```
 
+The plugin emits `refreshCancelled(requestID:)` when a refresh or restore task is cancelled. It clears that request's loading state without changing entitlements or reporting an error, even if the provider remains suspended. The reducer checks the request ID so delayed cancellation cannot finish a newer request. App code starts refreshes and restores; it does not construct cancellation-completion actions.
+
 ### `EntitlementSnapshot`
 
 Provider-agnostic value the service emits to describe the user's current entitlement.
 
 ```swift
 public struct EntitlementSnapshot: Sendable, Equatable {
+    public enum Source: Sendable, Equatable {
+        case live
+        case cache
+        case cacheSeed
+    }
+
     public let isPro: Bool
     public let hasPermanentLicense: Bool
+    public let source: Source
 
-    public init(isPro: Bool = false, hasPermanentLicense: Bool = false)
+    public init(isPro: Bool = false, hasPermanentLicense: Bool = false, source: Source = .live)
 }
 ```
+
+Providers use `.live` for their responses and updates. `ResilientPaywallService` labels a one-shot cached fallback `.cache` and its initial stream bootstrap `.cacheSeed`. A seed can populate initial entitlement state, but it neither finishes a pending refresh nor supersedes a resolved snapshot. A cached fallback completes the read normally. Equality includes `source`, so identical entitlement flags with different provenance are distinct snapshots.
 
 ### `PaywallService` (protocol)
 

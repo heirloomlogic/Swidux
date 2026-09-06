@@ -3,6 +3,8 @@
 //  SwiduxPaywall
 //
 
+import Foundation
+
 /// Actions that drive paywall presentation, customer-info observation, and purchases.
 public enum PaywallAction: Sendable {
     /// Present the paywall sheet, tagging the request with a feature reason.
@@ -20,6 +22,10 @@ public enum PaywallAction: Sendable {
     case customerInfoUpdated(EntitlementSnapshot)
     /// A refresh or restore failed; sets `error`.
     case refreshFailed(String)
+    /// The current refresh or restore was cancelled. Clears loading without
+    /// changing entitlements or reporting an error. Dispatched by the plugin;
+    /// the request ID prevents delayed cleanup from ending a newer request.
+    case refreshCancelled(requestID: UUID)
     /// Restore previously completed purchases via the service.
     case restorePurchases
     /// Present the customer-center sheet.

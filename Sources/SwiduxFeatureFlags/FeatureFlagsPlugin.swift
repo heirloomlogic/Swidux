@@ -102,11 +102,11 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     ) -> Effect<RootAction>? {
         switch action {
         case .refresh:
-            if shouldDebounce(state: state) { return nil }
+            if state.isFetching || shouldDebounce(state: state) { return nil }
             state.isFetching = true
             let service = self.service
             let lift = self.toRootAction
-            return { send in
+            return Effect { send in
                 do {
                     let config = try await service.fetch()
                     await send(lift(.refreshSucceeded(config, fetchedAt: Date())))
@@ -129,7 +129,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             state.lastFetchError = nil
             state.isFetching = false
             let store = self.keyValueStore
-            return { _ in
+            return Effect { _ in
                 store.setValue(config, for: .featureFlagsConfig)
             }
 
@@ -157,7 +157,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             }
             state.exposedKeys.insert(key)
             let callback = self.onExposure
-            return { _ in
+            return Effect { _ in
                 callback?(key, evaluation)
             }
         }

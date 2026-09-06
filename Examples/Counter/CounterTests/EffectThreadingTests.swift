@@ -11,7 +11,7 @@ struct EffectThreadingTests {
     func effectRunsOffMainActor() async throws {
         let wasOnMainThread = Mutex(false)
 
-        let effect: Effect = { send in
+        let effect: Effect = Effect { send in
             wasOnMainThread.withLock { $0 = Thread.isMainThread }
             await send(.counter(.increment(UUID())))
         }
@@ -31,7 +31,7 @@ struct EffectThreadingTests {
     func sendHopsToMainActor() async throws {
         let sendWasOnMain = Mutex(false)
 
-        let effect: Effect = { send in
+        let effect: Effect = Effect { send in
             await send(.counter(.increment(UUID())))
         }
 

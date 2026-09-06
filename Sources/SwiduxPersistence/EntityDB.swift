@@ -96,12 +96,12 @@ public actor EntityDB {
     /// - Returns: The domain values, and how many rows were collapsed away. The
     ///   count goes back to the caller as well as to the log: only the main
     ///   actor holds the app's diagnostic handler.
-    private func collapse<M: PersistableModel>(_ rows: [M]) -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+    private func collapse<M: PersistableModel>(_ rows: [M]) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
         var seen = Set<UUID>(minimumCapacity: rows.count)
         var domains: [M.Domain] = []
         domains.reserveCapacity(rows.count)
         for row in rows where seen.insert(row.id).inserted {
-            domains.append(row.toDomain())
+            domains.append(try row.toDomain())
         }
         let duplicates = rows.count - domains.count
         if duplicates > 0 {
@@ -127,7 +127,7 @@ public actor EntityDB {
         _ type: M.Type
     ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
         try consumeInjectedFetchFailure()
-        return collapse(try modelContext.fetch(FetchDescriptor<M>()))
+        return try collapse(try modelContext.fetch(FetchDescriptor<M>()))
     }
 
     /// Loads every persisted row of the **domain** type `E`.
@@ -178,7 +178,7 @@ public actor EntityDB {
         as type: M.Type
     ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
         try consumeInjectedFetchFailure()
-        return collapse(try rows(ids: ids, as: M.self))
+        return try collapse(try rows(ids: ids, as: M.self))
     }
 
     /// Inserts or updates the row for `domain.id`, then saves.
@@ -225,14 +225,14 @@ public actor EntityDB {
             for domain in writes {
                 let existing = existingByID[domain.id] ?? []
                 if existing.isEmpty {
-                    let inserted = M(from: domain)
+                    let inserted = try M(from: domain)
                     modelContext.insert(inserted)
                     // Keep the map faithful to context state: a later
                     // deletion of the same ID must see the pending row,
                     // exactly as a per-ID fetch would.
                     existingByID[domain.id] = [inserted]
                 } else {
-                    for row in existing { row.update(from: domain) }
+                    for row in existing { try row.update(from: domain) }
                 }
             }
             for id in deletions {
@@ -291,7 +291,7 @@ public actor EntityDB {
             var domains: [M.Domain] = []
             domains.reserveCapacity(rows.count)
             for row in rows {
-                let domain = row.toDomain()
+                let domain = try row.toDomain()
                 domains.append(domain)
                 byID[row.id, default: []].append((row, domain))
             }
@@ -318,10 +318,10 @@ public actor EntityDB {
                 if existing.isEmpty {
                     // A survivor the collapse synthesized under an ID that was
                     // not on disk. Insert it rather than dropping it silently.
-                    modelContext.insert(M(from: survivor))
+                    modelContext.insert(try M(from: survivor))
                 } else {
                     for entry in existing where entry.domain != survivor {
-                        entry.row.update(from: survivor)
+                        try entry.row.update(from: survivor)
                     }
                 }
             }

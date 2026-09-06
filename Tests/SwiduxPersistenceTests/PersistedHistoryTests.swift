@@ -66,7 +66,7 @@ struct PersistedHistoryTests {
     func tombstoneCarriesTheIdentity() throws {
         let context = ModelContext(try makeOnDiskContainer(NoteModel.self))
         let id = UUID()
-        let row = NoteModel(from: Note(id: id, title: "doomed", pinned: false))
+        let row = try NoteModel(from: Note(id: id, title: "doomed", pinned: false))
 
         // Two saves, not one: an insert and a delete in the same transaction
         // collapse, and no deletion reaches history at all.
@@ -89,7 +89,7 @@ struct PersistedHistoryTests {
     @Test("only the identity is preserved — other columns stay out of the tombstone")
     func tombstonePreservesNothingElse() throws {
         let context = ModelContext(try makeOnDiskContainer(NoteModel.self))
-        let row = NoteModel(from: Note(id: UUID(), title: "secret", pinned: true))
+        let row = try NoteModel(from: Note(id: UUID(), title: "secret", pinned: true))
 
         context.insert(row)
         try context.save()

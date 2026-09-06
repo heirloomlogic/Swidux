@@ -165,7 +165,7 @@ struct StoreTests {
         func reducer(state: inout TestState, action: TestAction) -> Effect<TestAction>? {
             switch action {
             case .noOp:
-                return { send in
+                return Effect { send in
                     await send(.insert(effectEntity))
                 }
             case .insert(let entity):

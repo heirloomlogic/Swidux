@@ -73,7 +73,7 @@ struct ParentalGatePluginTests {
         #expect(effect == nil)
         #expect(state.parental.pendingReason == nil)
         #expect(state.parental.challenge == nil)
-        #expect(state.parental.attempts == 0)
+        #expect(state.parental.attempts == 2)
     }
 
     @Test("correct answer returns answerAccepted effect")
@@ -104,8 +104,8 @@ struct ParentalGatePluginTests {
         #expect(effect != nil)
     }
 
-    @Test("answerAccepted marks reason as passed")
-    func answerAcceptedMarksReasonPassed() {
+    @Test("a correct submission marks the reason as passed synchronously")
+    func correctSubmissionMarksReasonPassed() {
         let plugin = makePlugin()
         var state = TestState()
         state.parental.pendingReason = "settings"
@@ -113,9 +113,9 @@ struct ParentalGatePluginTests {
 
         let effect = plugin.reduce(
             state: &state,
-            action: .parental(.answerAccepted(reason: "settings"))
+            action: .parental(.submitAnswer(5))
         )
-        #expect(effect == nil)
+        #expect(effect != nil)
         #expect(state.parental.passedReasons.contains("settings"))
         #expect(state.parental.pendingReason == nil)
         #expect(state.parental.challenge == nil)
@@ -147,7 +147,7 @@ struct ParentalGatePluginTests {
         state.parental.challenge = fixedChallenge
         state.parental.attempts = 2
 
-        let effect = plugin.reduce(state: &state, action: .parental(.answerRejected))
+        let effect = plugin.reduce(state: &state, action: .parental(.submitAnswer(99)))
 
         #expect(state.parental.cooldownUntil == fixedNow.addingTimeInterval(30))
         #expect(state.parental.attempts == 0)
@@ -161,11 +161,11 @@ struct ParentalGatePluginTests {
         state.parental.pendingReason = "settings"
         state.parental.challenge = fixedChallenge
 
-        let effect = plugin.reduce(state: &state, action: .parental(.answerRejected))
+        let effect = plugin.reduce(state: &state, action: .parental(.submitAnswer(99)))
 
         #expect(state.parental.cooldownUntil == nil)
         #expect(state.parental.attempts == 1)
-        #expect(effect == nil)
+        #expect(effect != nil)
     }
 
     @Test("answers are refused during cooldown — even correct ones")
@@ -236,13 +236,13 @@ struct ParentalGatePluginTests {
         state.parental.pendingReason = "settings"
         state.parental.challenge = fixedChallenge
 
-        let effect = plugin.reduce(state: &state, action: .parental(.answerRejected))
+        let effect = plugin.reduce(state: &state, action: .parental(.submitAnswer(99)))
         let effectValue = try #require(effect)
 
         var dispatched: [TestAction] = []
         try await effectValue { action in dispatched.append(action) }
 
-        guard case .parental(.cooldownExpired) = dispatched.first else {
+        guard case .parental(.cooldownExpired) = dispatched.last else {
             Issue.record("expected cooldownExpired, got \(dispatched)")
             return
         }

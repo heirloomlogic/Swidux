@@ -108,7 +108,7 @@ func reduce(
 ) -> Effect? {
     switch action {
     case .parentalGate(.answerAccepted(let reason)) where reason == "purchase":
-        return { send in await send(.shop(.buyGems)) }
+        return Effect { send in await send(.shop(.buyGems)) }
     // …
     }
 }
@@ -210,7 +210,7 @@ For deterministic tests, swap the standard generator for `ParentalChallengeSourc
     let effect = try #require(effect)
 
     var dispatched: [AppAction] = []
-    await effect { dispatched.append($0) }
+    try await effect { dispatched.append($0) }
 
     if case .parentalGate(.answerAccepted(let reason)) = dispatched.first {
         #expect(reason == "settings")

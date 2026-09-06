@@ -115,7 +115,3 @@ public final class UndoPlugin<State: Equatable & Sendable, Action>: SwiduxPlugin
         return next
     }
 }
-
-/// Migration aid — use ``UndoPlugin`` instead.
-@available(*, deprecated, renamed: "UndoPlugin")
-public typealias UndoMiddleware<State: Equatable & Sendable> = UndoPlugin<State, Never>
