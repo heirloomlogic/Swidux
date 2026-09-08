@@ -4,6 +4,18 @@ Generated from [GitHub Releases](https://github.com/heirloomlogic/Swidux/release
 `.github/workflows/changelog.yml`. Edits here are overwritten on the next
 release — write release notes on the release itself.
 
+## [1.10.0](https://github.com/heirloomlogic/Swidux/releases/tag/1.10.0) — 2026-09-08
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+### What's Changed
+#### Other Changes
+* Manifest: apply the dev-tooling gate after the package is built by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/92
+* CI: drop duplicate triggers, bump checkout off EOL node20, harden workflows by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/93
+* Harden Swidux state management and persistence for production by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/94
+
+**Full Changelog**: https://github.com/heirloomlogic/Swidux/compare/1.9.0...1.10.0
+
 ## [1.9.0](https://github.com/heirloomlogic/Swidux/releases/tag/1.9.0) — 2026-08-12
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
