@@ -495,6 +495,28 @@ struct StoreTests {
         #expect(store.items[b.id] == b)
     }
 
+    @Test("one undo does not also revert an earlier edit to a different item")
+    @MainActor
+    func coalescingRunEndsAtNonUndoableAction() {
+        let a = TestEntity(name: "a")
+        let b = TestEntity(name: "b")
+        let isRename: @Sendable (TestAction) -> Bool = { if case .rename = $0 { true } else { false } }
+        let undoPlugin = UndoPlugin<TestState, TestAction>(isUndoable: isRename, coalescing: isRename)
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(undoPlugin)
+        var initial = TestState()
+        initial.items = EntityStore([a, b])
+        let store = Store(initialState: initial, reducer: testReducer, plugins: plugins, undoPlugin: undoPlugin)
+
+        store.send(.rename(a.id, "a2"))  // type into A's field
+        store.send(.noOp)  // e.g. `.selectItem(b)` — not undoable, not coalescing
+        store.send(.rename(b.id, "b2"))  // type into B's field
+        store.undo()
+
+        #expect(store.items[b.id]?.name == "b")
+        #expect(store.items[a.id]?.name == "a2", "one undo also reverted the edit to A")
+    }
+
     @Test("multiple send calls accumulate state")
     @MainActor
     func multipleSends() {

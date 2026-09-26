@@ -50,8 +50,10 @@ public final class UndoPlugin<State: Equatable & Sendable, Action>: SwiduxPlugin
     ///   - isUndoable: Predicate that decides which actions trigger a snapshot.
     ///     Defaults to all actions.
     ///   - coalescing: Predicate that decides which actions coalesce with the
-    ///     previous snapshot. Consecutive coalescing actions share one undo entry.
-    ///     Defaults to no coalescing.
+    ///     previous snapshot. Consecutive coalescing actions share one undo entry;
+    ///     any action it doesn't match ends the run, including a non-undoable
+    ///     one. Match a non-undoable action here to let it pass through a run
+    ///     without ending it. Defaults to no coalescing.
     public init(
         maxDepth: Int = 100,
         isUndoable: @escaping @Sendable (Action) -> Bool = { _ in true },
@@ -71,9 +73,17 @@ public final class UndoPlugin<State: Equatable & Sendable, Action>: SwiduxPlugin
     // MARK: - SwiduxPlugin
 
     /// Snapshots state when `isUndoable(action)` returns `true`.
+    ///
+    /// Any action the `coalescing` predicate doesn't match ends a coalescing
+    /// run, undoable or not. Selecting another item between two edits is what
+    /// tells the edits apart, so letting a non-undoable action through would
+    /// merge edits to different items into one undo step.
     public func willReduce(state: State, action: Action) {
-        guard isUndoable(action) else { return }
         let coalescing = isCoalescing(action)
+        guard isUndoable(action) else {
+            if !coalescing { lastWasCoalescing = false }
+            return
+        }
 
         if coalescing && lastWasCoalescing {
             // Skip — keep the original pre-coalesce snapshot

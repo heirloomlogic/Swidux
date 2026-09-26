@@ -86,6 +86,10 @@ WindowGroup { ... }
 
 The `coalescing` predicate groups consecutive matching actions into a single undo step. The first coalescing action captures a snapshot; subsequent consecutive coalescing actions share that snapshot. A non-coalescing action or undo/redo resets the flag. Typing "hello" produces one undo entry, not five.
 
+"Non-coalescing" includes actions that aren't undoable. With the predicates above, renaming item A, selecting item B, then renaming item B is two undo steps: `.selectItem` isn't undoable, but it still ends the run, so one undo can't revert both renames.
+
+That also means an action dispatched *between* keystrokes splits the run — for example an effect that sends `.nameValidated` after every `.rename`. If such an action should pass through a run without ending it, match it in the `coalescing` predicate as well. For an action that isn't undoable, that has no effect beyond keeping the run open.
+
 ## Undo and sync
 
 Undo is scoped to changes the local user made. If another device deletes an entity and the merge surfaces that mid-session, `restore(from:)` will not bring the row back, even though older undo snapshots still contain it.
