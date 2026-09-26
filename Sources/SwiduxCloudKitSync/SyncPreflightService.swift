@@ -62,12 +62,16 @@ public struct SyncPreflightService: Sendable {
     }
 
     /// Resolves the live `SyncStatus` for the desired mode.
+    ///
+    /// Consults a probe only when its answer can change the result: not at all
+    /// for `.localOnly`, and not the account for a build that isn't entitled.
+    /// That is a safety property, not an optimisation — the live account probe
+    /// builds a `CKContainer`, which raises an exception or traps in a process
+    /// without the iCloud entitlement rather than returning an error.
     public func resolve(desired: SyncMode) async -> SyncStatus {
-        SyncStatus.resolve(
-            desired: desired,
-            entitled: ubiquityTokenAvailable(),
-            account: await accountState()
-        )
+        guard desired == .iCloud else { return .localOnlyByChoice }
+        guard ubiquityTokenAvailable() else { return .misconfiguredNoEntitlement }
+        return SyncStatus.resolve(desired: desired, entitled: true, account: await accountState())
     }
 
     /// Live probe backed by `FileManager` + `CKContainer`.

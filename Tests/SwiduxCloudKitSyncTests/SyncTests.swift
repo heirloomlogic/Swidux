@@ -10,6 +10,7 @@
 import Foundation
 import Swidux
 import SwiftData
+import Synchronization
 import Testing
 
 @testable import SwiduxCloudKitSync
@@ -232,6 +233,41 @@ struct SyncCoordinatorTests {
         #expect(store.value(.syncMode) == .localOnly)
         // Data survives the toggle (merge-based rehydrate, never replace).
         #expect(appStore.items[id]?.label == "kept")
+    }
+
+    @MainActor
+    @Test("opting out consults no probe, so the mirrored container isn't held open on one")
+    func optOutSkipsPreflight() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: container)
+        let probes = Mutex(0)
+        var builtModes: [SyncMode] = []
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .iCloud,
+            preflight: SyncPreflightService(
+                ubiquityTokenAvailable: {
+                    probes.withLock { $0 += 1 }
+                    return false
+                },
+                accountState: {
+                    probes.withLock { $0 += 1 }
+                    return .couldNotDetermine
+                }),
+            keyValue: InMemoryKeyValueStore(),
+            makeContainer: { mode in
+                builtModes.append(mode)
+                return container
+            })
+
+        let status = await sync.setSyncEnabled(false, into: makeItemsStore(persistence))
+
+        #expect(status == .localOnlyByChoice)
+        #expect(builtModes == [.localOnly])
+        // Neither probe can change an opt-out's outcome. The account probe is a
+        // CloudKit round trip the mirrored container would stay live across, and
+        // in an unentitled build it doesn't return at all.
+        #expect(probes.withLock { $0 } == 0)
     }
 
     @MainActor

@@ -74,6 +74,44 @@ struct SyncPreflightServiceResolveTests {
         #expect(tokenCalls.withLock { $0 } == 2)
         #expect(accountCalls.withLock { $0 } == 2)
     }
+
+    /// The live account probe builds a `CKContainer`, and in a process without
+    /// the iCloud entitlement that construction raises an exception or traps —
+    /// it doesn't return an error. So a probe whose answer can't change the
+    /// outcome must not run at all: this is what keeps an unentitled build, or
+    /// a user who opted out, from ever reaching it.
+    @Test("local-only consults neither probe")
+    func localOnlySkipsProbes() async {
+        let calls = Mutex(0)
+        let service = SyncPreflightService(
+            ubiquityTokenAvailable: {
+                calls.withLock { $0 += 1 }
+                return true
+            },
+            accountState: {
+                calls.withLock { $0 += 1 }
+                return .available
+            }
+        )
+
+        #expect(await service.resolve(desired: .localOnly) == .localOnlyByChoice)
+        #expect(calls.withLock { $0 } == 0)
+    }
+
+    @Test("an unentitled build never reaches the account probe")
+    func unentitledSkipsAccountProbe() async {
+        let accountCalls = Mutex(0)
+        let service = SyncPreflightService(
+            ubiquityTokenAvailable: { false },
+            accountState: {
+                accountCalls.withLock { $0 += 1 }
+                return .available
+            }
+        )
+
+        #expect(await service.resolve(desired: .iCloud) == .misconfiguredNoEntitlement)
+        #expect(accountCalls.withLock { $0 } == 0)
+    }
 }
 
 // MARK: - CKAccountStatus translation

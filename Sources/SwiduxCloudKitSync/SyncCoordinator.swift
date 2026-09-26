@@ -97,7 +97,9 @@ public final class SyncCoordinator<State, Action> {
         await persistence.corePlugin.flush()
         guard revision == toggleRevision else { return .superseded }
 
-        // 2. Resolve availability for the requested mode.
+        // 2. Resolve availability for the requested mode. An opt-out consults no
+        //    probe, so it never waits on a CloudKit round trip with the mirrored
+        //    container still live.
         let status = await preflight.resolve(desired: target)
         guard revision == toggleRevision else { return .superseded }
 
