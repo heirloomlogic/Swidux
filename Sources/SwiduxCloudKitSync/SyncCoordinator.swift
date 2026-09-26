@@ -110,9 +110,13 @@ public final class SyncCoordinator<State, Action> {
             assertionFailure("SwiduxCloudKitSync: iCloud requested but no iCloud entitlement is present.")
         }
 
-        // 3. Use CloudKit only when it is actually usable; otherwise local.
-        let effectiveMode: SyncMode = (target == .iCloud && status == .syncing) ? .iCloud : .localOnly
-        guard rebuildDatabase(mode: effectiveMode) else {
+        // 3. Attach the mirror for `.iCloud` unless the build can't have one —
+        //    the same container launch builds from the same preference. A
+        //    mirrored container tolerates a missing account and starts syncing
+        //    on sign-in; a local fallback would stay local until relaunch while
+        //    `currentStatus()` reported `.syncing` over it.
+        let mirrored = target == .iCloud && status != .misconfiguredNoEntitlement
+        guard rebuildDatabase(mode: mirrored ? .iCloud : .localOnly) else {
             // The old database stays active. Don't persist the choice or
             // report the preflight status — the toggle did not take effect.
             return .rebuildFailed
@@ -145,10 +149,11 @@ public final class SyncCoordinator<State, Action> {
 extension SyncCoordinator where State: SwiduxObservable {
     /// Turns iCloud sync on or off.
     ///
-    /// Flushes pending writes, rebuilds the container in the effective mode
-    /// (CloudKit only when actually available, else a local fallback), swaps the
-    /// active database, persists the preference, and re-hydrates via `merge`
-    /// (never replace). Returns the resolved ``SyncStatus``.
+    /// Flushes pending writes, rebuilds the container — CloudKit-mirrored for
+    /// `true` unless the build isn't entitled, so a signed-out user starts
+    /// syncing on sign-in without another toggle — swaps the active database,
+    /// persists the preference, and re-hydrates via `merge` (never replace).
+    /// Returns the resolved ``SyncStatus``.
     ///
     /// The flush, preflight, and rebuild all complete before any state is
     /// packed, so an edit made while the toggle is in flight survives it.

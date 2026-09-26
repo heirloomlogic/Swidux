@@ -279,6 +279,41 @@ struct SyncCoordinatorTests {
     }
 
     @MainActor
+    @Test("enabling while signed out still attaches the mirror, so signing in later syncs")
+    func enableWhileSignedOutAttachesMirror() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: container)
+        let account = Mutex<ICloudAccountState>(.noAccount)
+        var builtModes: [SyncMode] = []
+        let preferences = InMemoryKeyValueStore()
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .localOnly,
+            preflight: SyncPreflightService(
+                isEntitled: { true },
+                accountState: { account.withLock { $0 } }),
+            keyValue: preferences,
+            makeContainer: { mode in
+                builtModes.append(mode)
+                return container
+            })
+
+        let first = await sync.setSyncEnabled(true, into: makeItemsStore(persistence))
+        #expect(first == .unavailableNotSignedIn)
+        #expect(sync.mode == .iCloud)
+        #expect(preferences.value(.syncMode) == .iCloud)
+        // The same container launch would build from that preference. A mirrored
+        // container tolerates a signed-out account and starts on sign-in; a
+        // local one would stay local until the next launch.
+        #expect(builtModes == [.iCloud])
+
+        // The user signs in and comes back. The status now describes the
+        // container that is actually active.
+        account.withLock { $0 = .available }
+        #expect(await sync.currentStatus() == .syncing)
+    }
+
+    @MainActor
     @Test("opting in swaps to the rebuilt container and merges its rows")
     func optInRebuildsAndMerges() async throws {
         let local = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
