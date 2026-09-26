@@ -26,7 +26,7 @@ For production RevenueCat integrations, the [`SwiduxRevenueCatPaywall`](https://
 
 - `RevenueCatPaywallService` — a `PaywallService` conformer that bridges RevenueCat's `CustomerInfo` stream and `restorePurchases()` API.
 - `MockRevenueCatPaywallService` — a RevenueCat-flavored mock for previews.
-- `SwiduxRevenueCatPaywallUI` — a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin.
+- `SwiduxRevenueCatPaywallUI` — a SwiftUI sheet built on RevenueCatUI. It dispatches only presentation actions (`.dismiss`, `.dismissCustomerCenter`); purchase results reach the plugin through `RevenueCatPaywallService.customerInfoStream()`, so start `.observeCustomerInfo`.
 
 Full API documentation lives in the package's own [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/).
 

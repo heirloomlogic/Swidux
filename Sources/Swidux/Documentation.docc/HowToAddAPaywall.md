@@ -79,10 +79,10 @@ Add the [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxReven
 ```swift
 import SwiduxRevenueCatPaywall
 
-let service = RevenueCatPaywallService()
+let service = RevenueCatPaywallService(entitlementID: "pro")
 ```
 
-The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin. See its [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) for configuration (API key, entitlement identifiers).
+`entitlementID` is the RevenueCat entitlement identifier that grants pro; pass `permanentLicenseEntitlementID:` too if you sell a lifetime unlock. The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI. The sheet only dispatches presentation actions (`.dismiss`, `.dismissCustomerCenter`); a completed purchase reaches the plugin through `customerInfoStream()`, which is why you start `.observeCustomerInfo` in Step 5. See its [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) for configuration (API key, entitlement identifiers).
 
 ### Path B: StoreKit or custom backend
 
@@ -134,7 +134,7 @@ let paywallPlugin = PaywallPlugin<AppState, AppAction>(
     state: \.paywall,
     action: AppAction.paywall,
     extractAction: { if case .paywall(let a) = $0 { return a }; return nil },
-    service: RevenueCatPaywallService()
+    service: RevenueCatPaywallService(entitlementID: "pro")
 )
 plugins.register(paywallPlugin)
 ```
@@ -143,7 +143,7 @@ plugins.register(paywallPlugin)
 >
 > ```swift
 > service: ResilientPaywallService(
->     base: RevenueCatPaywallService(),
+>     base: RevenueCatPaywallService(entitlementID: "pro"),
 >     store: KeychainKeyValueStore(service: "com.example.myapp")
 > )
 > ```
