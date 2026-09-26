@@ -103,6 +103,8 @@ public final class SyncCoordinator<State, Action> {
         let status = await preflight.resolve(desired: target)
         guard revision == toggleRevision else { return .superseded }
 
+        // Only a definitive signal gets here — the process's own entitlements,
+        // or CloudKit rejecting them — never a user's device settings.
         if status == .misconfiguredNoEntitlement {
             logger.error("iCloud sync requested but the app is not entitled; staying local-only.")
             assertionFailure("SwiduxCloudKitSync: iCloud requested but no iCloud entitlement is present.")

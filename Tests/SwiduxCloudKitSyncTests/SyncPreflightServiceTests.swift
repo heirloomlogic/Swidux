@@ -36,7 +36,7 @@ struct SyncPreflightServiceResolveTests {
             (SyncMode.localOnly, true, ICloudAccountState.available, SyncStatus.localOnlyByChoice),
             // The happy path.
             (.iCloud, true, .available, .syncing),
-            // `ubiquityTokenAvailable()` is threaded into `entitled`.
+            // `isEntitled()` is threaded into `entitled`.
             (.iCloud, false, .available, .misconfiguredNoEntitlement),
             // `await accountState()` is threaded into `account`.
             (.iCloud, true, .noAccount, .unavailableNotSignedIn),
@@ -48,7 +48,7 @@ struct SyncPreflightServiceResolveTests {
         account: ICloudAccountState,
         expected: SyncStatus
     ) async {
-        let service = SyncPreflightService.mock(ubiquityToken: entitled, account: account)
+        let service = SyncPreflightService.mock(entitled: entitled, account: account)
         #expect(await service.resolve(desired: desired) == expected)
     }
 
@@ -56,11 +56,11 @@ struct SyncPreflightServiceResolveTests {
     func probesAreCalled() async {
         // `.mock` returns constants, so drive the memberwise init directly to
         // observe that resolve reads each closure on every call.
-        let tokenCalls = Mutex(0)
+        let entitlementCalls = Mutex(0)
         let accountCalls = Mutex(0)
         let service = SyncPreflightService(
-            ubiquityTokenAvailable: {
-                tokenCalls.withLock { $0 += 1 }
+            isEntitled: {
+                entitlementCalls.withLock { $0 += 1 }
                 return true
             },
             accountState: {
@@ -71,7 +71,7 @@ struct SyncPreflightServiceResolveTests {
 
         #expect(await service.resolve(desired: .iCloud) == .syncing)
         #expect(await service.resolve(desired: .iCloud) == .syncing)
-        #expect(tokenCalls.withLock { $0 } == 2)
+        #expect(entitlementCalls.withLock { $0 } == 2)
         #expect(accountCalls.withLock { $0 } == 2)
     }
 
@@ -84,7 +84,7 @@ struct SyncPreflightServiceResolveTests {
     func localOnlySkipsProbes() async {
         let calls = Mutex(0)
         let service = SyncPreflightService(
-            ubiquityTokenAvailable: {
+            isEntitled: {
                 calls.withLock { $0 += 1 }
                 return true
             },
@@ -102,7 +102,7 @@ struct SyncPreflightServiceResolveTests {
     func unentitledSkipsAccountProbe() async {
         let accountCalls = Mutex(0)
         let service = SyncPreflightService(
-            ubiquityTokenAvailable: { false },
+            isEntitled: { false },
             accountState: {
                 accountCalls.withLock { $0 += 1 }
                 return .available
@@ -111,6 +111,68 @@ struct SyncPreflightServiceResolveTests {
 
         #expect(await service.resolve(desired: .iCloud) == .misconfiguredNoEntitlement)
         #expect(accountCalls.withLock { $0 } == 0)
+    }
+}
+
+// MARK: - The entitlement check
+
+@Suite("SyncPreflightService entitlement")
+struct SyncPreflightServiceEntitlementTests {
+    static let services = "com.apple.developer.icloud-services"
+    static let containers = "com.apple.developer.icloud-container-identifiers"
+    static let id = "iCloud.com.example.app"
+
+    private func grants(_ entitlements: [String: Any], containerID: String? = nil) -> Bool {
+        SyncPreflightService.grantsCloudKit(containerID: containerID) { entitlements[$0] }
+    }
+
+    /// The one fact the old probe got wrong. It read the ubiquity identity
+    /// token — the iCloud *Drive* identity, `nil` whenever the user has iCloud
+    /// Drive switched off — so a correctly built app reported itself
+    /// misconfigured on those devices. The check is now a function of the
+    /// entitlements alone: nothing about the user's account or settings is an
+    /// input to it.
+    @Test("an app entitled to CloudKit is entitled, whatever the user's iCloud Drive setting")
+    func cloudKitEntitlementGrants() {
+        #expect(grants([Self.services: ["CloudKit"], Self.containers: [Self.id]]))
+        #expect(grants([Self.services: ["CloudKit"], Self.containers: [Self.id]], containerID: Self.id))
+        // Documents alongside CloudKit changes nothing.
+        #expect(grants([Self.services: ["CloudDocuments", "CloudKit"], Self.containers: [Self.id]]))
+        // The wildcard a development profile may carry.
+        #expect(grants([Self.services: "*", Self.containers: [Self.id]]))
+    }
+
+    @Test("a missing or partial CloudKit entitlement is not entitled")
+    func partialEntitlementDoesNotGrant() {
+        // No iCloud capability at all — the unsigned test host is this case.
+        #expect(!grants([:]))
+        // iCloud Documents only.
+        #expect(!grants([Self.services: ["CloudDocuments"], Self.containers: [Self.id]]))
+        // CloudKit with an empty container list: CloudKit has no default
+        // container to hand out, and raises rather than failing.
+        #expect(!grants([Self.services: ["CloudKit"], Self.containers: [String]()]))
+        #expect(!grants([Self.services: ["CloudKit"]]))
+        // A container the app asks for but isn't entitled to.
+        #expect(!grants([Self.services: ["CloudKit"], Self.containers: ["iCloud.other"]], containerID: Self.id))
+    }
+
+    #if os(macOS)
+    /// Reads this process's real entitlements. A `swift test` host carries no
+    /// iCloud entitlement — which is exactly the process the audit crashed — so
+    /// the live check must say so without constructing a `CKContainer`. Only
+    /// the probe is called here, never `resolve`: if this ever regressed to
+    /// `true`, `resolve(.iCloud)` would take the whole test process down.
+    @Test("the live check reports an unentitled process as unentitled")
+    func liveCheckReadsTheProcess() {
+        #expect(!SyncPreflightService.live().isEntitled())
+        #expect(!SyncPreflightService.live(containerID: Self.id).isEntitled())
+    }
+    #endif
+
+    @Test("an app-supplied entitlement check replaces the built-in one")
+    func appSuppliedCheckWins() {
+        #expect(SyncPreflightService.live(isEntitled: { true }).isEntitled())
+        #expect(!SyncPreflightService.live(isEntitled: { false }).isEntitled())
     }
 }
 
@@ -144,6 +206,24 @@ struct ICloudAccountStateTests {
             "expected an unrecognised CKAccountStatus to be constructible"
         )
         #expect(ICloudAccountState(future) == .couldNotDetermine)
+    }
+
+    @Test(
+        "an account-status error naming the build is a misconfiguration; any other is unknown",
+        arguments: [
+            (CKError.Code.missingEntitlement, ICloudAccountState.misconfigured),
+            (.badContainer, .misconfigured),
+            (.networkFailure, .couldNotDetermine),
+            (.notAuthenticated, .couldNotDetermine),
+        ]
+    )
+    func accountStatusErrors(code: CKError.Code, expected: ICloudAccountState) {
+        #expect(ICloudAccountState(accountStatusError: CKError(code)) == expected)
+    }
+
+    @Test("a non-CloudKit account-status error is unknown")
+    func foreignErrorIsUnknown() {
+        #expect(ICloudAccountState(accountStatusError: CocoaError(.fileReadUnknown)) == .couldNotDetermine)
     }
 }
 #endif

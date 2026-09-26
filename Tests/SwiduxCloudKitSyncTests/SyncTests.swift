@@ -98,6 +98,14 @@ struct SyncStatusResolveTests {
             SyncStatus.resolve(desired: .iCloud, entitled: false, account: .available) == .misconfiguredNoEntitlement)
     }
 
+    @Test("CloudKit rejecting the build's entitlements is a build misconfiguration too")
+    func rejectedByCloudKit() {
+        // Not "sign in to iCloud": nothing the user does fixes a bad container.
+        #expect(
+            SyncStatus.resolve(desired: .iCloud, entitled: true, account: .misconfigured) == .misconfiguredNoEntitlement
+        )
+    }
+
     @Test("iCloud, entitled, account state maps to status")
     func entitledAccounts() {
         #expect(SyncStatus.resolve(desired: .iCloud, entitled: true, account: .available) == .syncing)
@@ -148,7 +156,7 @@ struct SyncCoordinatorTests {
         let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence, models: [ItemModel.self], mode: .localOnly,
             preflight: SyncPreflightService(
-                ubiquityTokenAvailable: { true },
+                isEntitled: { true },
                 accountState: {
                     await gate.pauseFirstCall()
                     return .available
@@ -185,7 +193,7 @@ struct SyncCoordinatorTests {
         let preferences = InMemoryKeyValueStore()
         let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence, models: [ItemModel.self], mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: preferences, makeContainer: { $0 == .iCloud ? cloud : local })
         let gate = SyncToggleGate()
         persistence.duringReadPhase = { await gate.pauseFirstCall() }
@@ -216,7 +224,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .iCloud,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store
         )
 
@@ -246,7 +254,7 @@ struct SyncCoordinatorTests {
         let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence, models: [ItemModel.self], mode: .iCloud,
             preflight: SyncPreflightService(
-                ubiquityTokenAvailable: {
+                isEntitled: {
                     probes.withLock { $0 += 1 }
                     return false
                 },
@@ -290,7 +298,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store,
             makeContainer: { _ in rebuilt }
         )
@@ -324,7 +332,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store,
             makeContainer: { _ in rebuilt }
         )
@@ -362,7 +370,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store,
             makeContainer: { _ in throw BuildFailed() }
         )
