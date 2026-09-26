@@ -138,6 +138,19 @@ struct SyncModePreferenceTests {
         store.setValue(SyncMode.localOnly, for: .syncMode)
         #expect(resolveDesiredSyncMode(from: store) == .localOnly)
     }
+    @Test("a stored choice that can't be decoded fails closed to local-only")
+    func undecodableFailsClosed() {
+        // Something is stored under the key, but not a `SyncMode` — an older
+        // build's `Bool`, say. That is not a fresh install: someone made a
+        // choice, and the one that can't upload their data is the safe reading.
+        let store = InMemoryKeyValueStore()
+        store.setValue(false, for: KVKey<Bool>(KVKey<SyncMode>.syncMode.name))
+        #expect(store.contains(.syncMode))
+        #expect(store.value(.syncMode) == nil)
+
+        #expect(resolveDesiredSyncMode(from: store) == .localOnly)
+        #expect(resolveDesiredSyncMode(from: store, default: .iCloud) == .localOnly)
+    }
 }
 
 // MARK: - Toggle
