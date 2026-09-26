@@ -138,6 +138,7 @@ struct SyncModePreferenceTests {
         store.setValue(SyncMode.localOnly, for: .syncMode)
         #expect(resolveDesiredSyncMode(from: store) == .localOnly)
     }
+
     @Test("a stored choice that can't be decoded fails closed to local-only")
     func undecodableFailsClosed() {
         // Something is stored under the key, but not a `SyncMode` — an older
@@ -324,6 +325,36 @@ struct SyncCoordinatorTests {
         // container that is actually active.
         account.withLock { $0 = .available }
         #expect(await sync.currentStatus() == .syncing)
+    }
+
+    @MainActor
+    @Test("the default rebuild opens the store the app launched with")
+    func defaultRebuildReusesLaunchStore() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("swidux-sync-store-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("group.store")
+
+        let launch = try CloudContainerFactory.makeContainer(models: [ItemModel.self], mode: .localOnly, url: url)
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: launch)
+        let id = UUID()
+        try await persistence.database.upsert(Item(id: id, label: "on disk"), as: ItemModel.self)
+        // No `storeURL:` and no builder — the shape an app-group app gets wrong
+        // by omission. Opting out rebuilds through `CloudContainerFactory`,
+        // which stays hermetic in `.localOnly`.
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .iCloud,
+            preflight: .mock(entitled: true, account: .available),
+            keyValue: InMemoryKeyValueStore())
+
+        #expect(await sync.setSyncEnabled(false, into: makeItemsStore(persistence)) == .localOnlyByChoice)
+
+        // Not SwiftData's `default.store`: that would be a second, empty store,
+        // and everything written after the toggle would be missing next launch.
+        #expect(persistence.handle.storeURLs == [url.standardizedFileURL])
+        #expect(try await persistence.fetchAll(of: Item.self).map(\.id) == [id])
     }
 
     @MainActor

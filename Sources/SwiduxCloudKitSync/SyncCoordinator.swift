@@ -41,7 +41,9 @@ public final class SyncCoordinator<State, Action> {
     ///   - mode: The mode resolved at launch (see `resolveDesiredSyncMode`).
     ///   - preflight: iCloud availability probe.
     ///   - keyValue: Store for persisting the user's sync choice.
-    ///   - storeURL: Shared on-disk store URL for both modes.
+    ///   - storeURL: Shared on-disk store URL for both modes. Only needed when
+    ///     the running container isn't a single on-disk store; otherwise its
+    ///     URL is used, and a different one here is a programmer error.
     ///   - cloudKitContainerID: Explicit CloudKit container id, or `nil` for `.automatic`.
     ///   - makeContainer: Custom container builder. Defaults to `CloudContainerFactory`.
     ///   - logger: Logger for rebuild failures.
@@ -60,13 +62,31 @@ public final class SyncCoordinator<State, Action> {
         self.mode = mode
         self.preflight = preflight
         self.keyValue = keyValue
+        // Toggling keeps every row only because both modes open one file, so
+        // the rebuild follows the store the app is running on rather than
+        // trusting a second copy of its URL. A mismatch would fork the store:
+        // everything written after the toggle would be gone next launch.
+        let runningStore = Self.onDiskStoreURL(of: persistence.handle.db.modelContainer)
+        if let storeURL, let runningStore, storeURL.standardizedFileURL != runningStore.standardizedFileURL {
+            logger.fault("storeURL doesn't match the running store; rebuilding over the running store instead.")
+            assertionFailure("SwiduxCloudKitSync: storeURL \(storeURL) is not the running store \(runningStore).")
+        }
+        let rebuildURL = runningStore ?? storeURL
         self.makeContainer =
             makeContainer
             ?? { mode in
                 try CloudContainerFactory.makeContainer(
-                    models: models, mode: mode, url: storeURL, cloudKitContainerID: cloudKitContainerID)
+                    models: models, mode: mode, url: rebuildURL, cloudKitContainerID: cloudKitContainerID)
             }
         self.logger = logger
+    }
+
+    /// The file behind `container`, when it is exactly one on-disk store.
+    private static func onDiskStoreURL(of container: ModelContainer) -> URL? {
+        guard container.configurations.count == 1, let only = container.configurations.first,
+            !only.isStoredInMemoryOnly
+        else { return nil }
+        return only.url
     }
 
     /// Resolves the current runtime status without changing anything.
