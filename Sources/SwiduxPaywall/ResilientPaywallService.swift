@@ -110,6 +110,11 @@ extension KVKey where Value == CachedEntitlement {
 /// cache, so a genuine lapse or downgrade is honoured on the next successful
 /// read. `hasPermanentLicense` deliberately never expires — a lifetime purchase
 /// must keep working offline indefinitely.
+///
+/// The cache holds one entitlement, not one per account. An app with sign-in
+/// must call ``clearCache()`` on sign-out and account switch; otherwise the
+/// next user inherits the previous user's entitlement whenever the live read
+/// fails.
 public struct ResilientPaywallService: PaywallService {
     private let base: any PaywallService
     private let store: any KeyValueStore
@@ -232,17 +237,19 @@ public struct ResilientPaywallService: PaywallService {
     /// Restores previously completed purchases, forwarding to the base service.
     /// Persists on success; rethrows on failure (a restore is an explicit user
     /// action, so the plugin keeps the prior state).
+    ///
+    /// A restore is a write: its result is the account's state as of its
+    /// completion, newer than any read that resolved while it ran — even one
+    /// that started later. So it is persisted like a stream event, superseding
+    /// every read still in flight, rather than ordered by when it started.
     public func restorePurchases() async throws -> EntitlementSnapshot {
         try Task.checkCancellation()
-        let generation = beginRequest()
+        let epoch = ordering.state.withLock { $0.epoch }
         let snapshot = try await base.restorePurchases()
         try Task.checkCancellation()
-        guard persist(snapshot, for: generation) else {
-            if let cached = readCache(), let usable = usableSnapshot(from: cached) {
-                return usable
-            }
-            throw EntitlementReadError.superseded
-        }
+        // Only ``clearCache()`` rejects a restore: it began for an account
+        // the app has since signed out of.
+        guard persist(snapshot, since: epoch) else { throw EntitlementReadError.superseded }
         return snapshot
     }
 
@@ -251,6 +258,28 @@ public struct ResilientPaywallService: PaywallService {
     /// per-request monetization context off the main actor.
     public func currentSnapshot() async -> EntitlementSnapshot {
         (try? await customerInfo()) ?? EntitlementSnapshot()
+    }
+
+    /// Forgets the persisted last-known-good entitlement.
+    ///
+    /// The cache is not scoped to an account. Call this when the user signs
+    /// out or switches accounts, or an offline launch keeps vouching for the
+    /// previous user's entitlement (for up to `maxCacheAge`, or indefinitely
+    /// for a permanent license). Reads and restores still in flight are
+    /// superseded, so one begun for the previous account cannot write its
+    /// result back. ``PaywallState`` is not touched: dispatch
+    /// `.refreshCustomerInfo` afterwards to re-read the new account.
+    ///
+    /// - Returns: `true` if the cache is now empty. A Keychain-backed store
+    ///   returns `false` when the keychain is unreachable.
+    @discardableResult
+    public func clearCache() -> Bool {
+        ordering.state.withLock { state in
+            state.sequence += 1
+            state.accepted = state.sequence
+            state.epoch += 1
+            return store.removeValue(for: .lastKnownEntitlement)
+        }
     }
 
     // MARK: - Cache
@@ -271,11 +300,19 @@ public struct ResilientPaywallService: PaywallService {
     /// another caller's successful in-flight read.
     /// Validation and persistence share one lock so superseded writes cannot
     /// race a newer event's cache commit.
-    private func persist(_ snapshot: EntitlementSnapshot, for generation: UInt64? = nil) -> Bool {
+    /// A restore passes the cache epoch it began in instead of a generation.
+    private func persist(
+        _ snapshot: EntitlementSnapshot,
+        for generation: UInt64? = nil,
+        since epoch: UInt64? = nil
+    ) -> Bool {
         ordering.state.withLock { state in
             guard !Task.isCancelled else { return false }
             if let generation {
                 guard generation >= state.accepted else { return false }
+            }
+            if let epoch {
+                guard epoch == state.epoch else { return false }
             }
             // Forward cached values without granting them new authority or
             // renewing their original freshness window in nested decorators.
@@ -334,6 +371,9 @@ private final class EntitlementCacheOrdering: Sendable {
     struct State {
         var sequence: UInt64 = 0
         var accepted: UInt64 = 0
+        /// Advanced by `clearCache()`, so a restore begun before a clear
+        /// cannot write back the previous account's entitlement.
+        var epoch: UInt64 = 0
     }
 
     let state = Mutex(State())
