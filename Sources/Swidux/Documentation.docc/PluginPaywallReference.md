@@ -45,6 +45,14 @@ let resilient = ResilientPaywallService(
 
 Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: successful live snapshots overwrite the cache unless a newer successful read, restore, or live stream update has superseded them. A restore is ordered by when it completes, not when it started, so a read that began during a restore cannot discard the restored entitlement. Starting or failing an independent read does not discard another caller's successful response. Cached values preserve their original freshness window. See the type's own documentation for the staleness policy and threat model.
 
+The cache holds a single entitlement and is not scoped to an account. If your app signs users in and out, call `clearCache()` when the user signs out or switches accounts, then dispatch `.refreshCustomerInfo`; otherwise an offline launch hands the previous user's entitlement to the next one. Clearing also discards any read or restore still in flight, so a result for the previous account cannot write itself back:
+
+```swift
+try await RevenueCatPaywall.logOut()   // or your backend's sign-out
+resilient.clearCache()
+store.send(.paywall(.refreshCustomerInfo))
+```
+
 ## Types
 
 ### `PaywallPlugin<RootState, RootAction>`

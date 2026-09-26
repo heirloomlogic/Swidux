@@ -340,6 +340,24 @@ struct PaywallOrderingTests {
         #expect(store.value(.lastKnownEntitlement)?.isPro == true)
     }
 
+    @Test("a read or restore begun before clearCache cannot write the previous account back")
+    func clearCacheSupersedesInFlightRequests() async throws {
+        let store = InMemoryKeyValueStore()
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 1)
+        let read = Task { try await service.customerInfo() }
+        await base.waitForRead()
+        let restore = Task { try await service.restorePurchases() }
+        await base.waitForRestore()
+
+        service.clearCache()
+        await base.finishRead(snapshot: .init(isPro: true))
+        await base.finishRestore(snapshot: .init(isPro: true))
+        await #expect(throws: (any Error).self) { try await read.value }
+        await #expect(throws: (any Error).self) { try await restore.value }
+        #expect(store.value(.lastKnownEntitlement) == nil)
+    }
+
     @Test("cancellation preserves the cache when a provider ignores cancellation")
     func cancelledReadDoesNotPersist() async throws {
         let store = InMemoryKeyValueStore()

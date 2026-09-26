@@ -139,10 +139,7 @@ let paywallPlugin = PaywallPlugin<AppState, AppAction>(
 plugins.register(paywallPlugin)
 ```
 
-> Tip: In production, wrap the service in `ResilientPaywallService` so a
-> transient entitlement-read failure at cold launch never gates a paid user as
-> free. Back its cache with `KeychainKeyValueStore` (not `UserDefaults`, whose
-> plist a user can edit to spoof entitlements):
+> Tip: In production, wrap the service in `ResilientPaywallService` so a transient entitlement-read failure at cold launch never gates a paid user as free. Back its cache with `KeychainKeyValueStore` (not `UserDefaults`, whose plist a user can edit to spoof entitlements):
 >
 > ```swift
 > service: ResilientPaywallService(
@@ -151,8 +148,7 @@ plugins.register(paywallPlugin)
 > )
 > ```
 >
-> See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the
-> staleness policy and threat model.
+> The cache is not scoped to an account: if your app signs users in and out, call `clearCache()` on the resilient service at sign-out and account switch. See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the staleness policy, threat model, and sign-out sequence.
 
 ## Step 5: Observe customer info on launch
 

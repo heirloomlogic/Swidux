@@ -322,6 +322,24 @@ struct ResilientPaywallServiceTests {
         #expect(snapshot.isPro == true)
     }
 
+    // MARK: clearCache
+
+    @Test("clearing the cache forgets the previous account's entitlement")
+    func clearCacheForgetsPreviousAccount() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: true), for: .lastKnownEntitlement)
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 1)
+
+        #expect(service.clearCache())
+
+        #expect(store.value(.lastKnownEntitlement) == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await service.customerInfo()
+        }
+        #expect(await collect(service.customerInfoStream()).isEmpty)
+    }
+
     // MARK: restorePurchases
 
     @Test("a successful restore persists the snapshot")
