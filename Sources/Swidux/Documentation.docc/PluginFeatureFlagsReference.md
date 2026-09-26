@@ -89,7 +89,7 @@ For each read, in priority:
 - **Device ID** is app-owned and minted once via `KeyValueStore.deviceIdentity()` (Keychain-backed). Seeded into the slice at `FeatureFlagsState.hydrated(from:deviceID:)` and kept in sync from `deviceIDKeyPath`. The plugin no longer mints its own bucketing identity.
 - **Last-known config** persisted after every successful refresh. Hydrates as fallback before first network success.
 - **Local overrides** *not* persisted by default. Restart = clean state.
-- **`exposedKeys`** *not* persisted. New session = fresh exposure events.
+- **`exposedValues`** *not* persisted. New session = fresh exposure events.
 
 ## Governance: no forever flags
 
@@ -120,7 +120,7 @@ When a flag passes its expiry, the test fails and the report names the flag, its
 A/B testing is only analytically valid if you know which users actually saw each variant — bucketing alone is insufficient because the code path branching on the flag might never execute.
 
 ```swift
-store.send(.featureFlags(.recordExposure(key: "checkout_layout")))
+store.send(.featureFlags(.recordExposure(of: .checkoutLayout)))
 ```
 
 Or via the SwiftUI sugar:
@@ -130,7 +130,15 @@ WizardView()
     .recordsExposure(of: .checkoutLayout, store: store, action: AppAction.featureFlags)
 ```
 
-The plugin dedupes per session and fires the optional `onExposure` callback (passed at plugin init). Wire that callback to your analytics plugin to forward exposures as events.
+Pass the typed flag, not its key. The plugin evaluates the exposure through the same path as the read, so the recorded value is the one the user saw:
+
+- A local override the read ignores (the wrong type for the flag) is ignored by the exposure too.
+- A remote variant your enum can't parse makes the read return the Swift default, and records **no** exposure. The user was assigned an arm they weren't shown — typically an arm added server-side before the app version that knows it — so counting them in either arm would skew the experiment.
+- If the read passed an explicit `bucketingID:`, pass the same one to `recordExposure(of:bucketingID:)` or the modifier.
+
+The plugin records each distinct value once per session and fires the optional `onExposure` callback (passed at plugin init). A flag is recorded again when the value it renders changes — sign-in switching the bucketing identity, or a refresh changing the rollout — so exposure analytics follow the treatment the user actually has. Wire the callback to your analytics plugin to forward exposures as events.
+
+The key-only `recordExposure(key:)` is deprecated: without the flag's type it records overrides and remote variants verbatim and always buckets by the default identity.
 
 ## Refresh policy
 

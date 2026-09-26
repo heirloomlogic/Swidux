@@ -211,7 +211,7 @@ struct FeatureFlagsPluginTests {
 
     // MARK: - Exposure
 
-    @Test("recordExposure inserts key and fires onExposure once")
+    @Test("recordExposure records the value and fires onExposure once")
     func recordExposureFiresOnce() async throws {
         let counter = ExposureCounter()
         let plugin = makePlugin(onExposure: { key, value in
@@ -223,14 +223,14 @@ struct FeatureFlagsPluginTests {
             flags: ["k": .boolean(rollout: 100)]
         )
 
-        let effect1 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        let effect1 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(of: BoolFlag("k"))))
         try await effect1?({ _ in })
         await Task.yield()
 
-        #expect(state.featureFlags.exposedKeys.contains("k"))
+        #expect(state.featureFlags.exposedValues["k"] != nil)
         #expect(counter.count == 1)
 
-        let effect2 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        let effect2 = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(of: BoolFlag("k"))))
         try await effect2?({ _ in })
         await Task.yield()
 
@@ -289,7 +289,7 @@ struct FeatureFlagsPluginTests {
         state.userID = "user-1"
         plugin.afterReduce(state: &state, action: .unrelated)
 
-        let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(of: BoolFlag("k"))))
         try await effect?({ _ in })
         await Task.yield()
 
@@ -310,7 +310,8 @@ struct FeatureFlagsPluginTests {
             flags: ["k": .variant(variants: [])]
         )
 
-        let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(key: "k")))
+        let flag = VariantFlag<Checkout>("k", default: .control)
+        let effect = plugin.reduce(state: &state, action: .featureFlags(.recordExposure(of: flag)))
         try await effect?({ _ in })
         await Task.yield()
 
@@ -327,13 +328,184 @@ struct FeatureFlagsPluginTests {
 
         let effect = plugin.reduce(
             state: &state,
-            action: .featureFlags(.recordExposure(key: "nope"))
+            action: .featureFlags(.recordExposure(of: BoolFlag("nope")))
         )
         try await effect?({ _ in })
         await Task.yield()
 
         #expect(counter.count == 0)
-        #expect(state.featureFlags.exposedKeys.contains("nope") == false)
+        #expect(state.featureFlags.exposedValues["nope"] == nil)
+    }
+
+    // MARK: - Exposure matches the read
+
+    enum Checkout: String { case control, treatment }
+
+    /// Records exposures synchronously so assertions need no yield.
+    private func exposurePlugin(
+        _ log: ExposureLog,
+        userIDKeyPath: KeyPath<TestState, String?>? = nil
+    ) -> FeatureFlagsPlugin<TestState, TestAction> {
+        makePlugin(userIDKeyPath: userIDKeyPath, onExposure: { key, value in log.append(key, value) })
+    }
+
+    private func record(
+        _ action: FeatureFlagsAction,
+        with plugin: FeatureFlagsPlugin<TestState, TestAction>,
+        in state: inout TestState
+    ) async throws {
+        try await plugin.reduce(state: &state, action: .featureFlags(action))?({ _ in })
+    }
+
+    /// First ID in `candidates` whose bucket for `key` lands on the other side
+    /// of `threshold` from `id`'s.
+    private func idOnOtherSide(of id: String, key: String, threshold: Int = 50) -> String {
+        let side = Bucketing.bucket(id: id, flagKey: key) < threshold
+        return (0..<1_000).map { "other-\($0)" }
+            .first { (Bucketing.bucket(id: $0, flagKey: key) < threshold) != side }!
+    }
+
+    @Test("a remote variant the app can't parse renders the default and records no exposure")
+    func unparseableVariantRecordsNoExposure() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["checkout": .variant(variants: [.init(value: "v3", weight: 100)])]
+        )
+        let flag = VariantFlag<Checkout>("checkout", default: .control)
+
+        #expect(state.featureFlags.variant(of: flag) == .control)
+        try await record(.recordExposure(of: flag), with: plugin, in: &state)
+
+        #expect(log.all.isEmpty)
+    }
+
+    @Test("an override the read ignores is not what the exposure records")
+    func wrongTypedOverrideRecordsRenderedValue() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["k": .boolean(rollout: 100)]
+        )
+        state.featureFlags.localOverrides = ["k": .string("off")]
+
+        #expect(state.featureFlags.isEnabled(BoolFlag("k")))
+        try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+
+        #expect(log.all.map(\.value) == [.bool(true)])
+    }
+
+    @Test("a parseable variant override is recorded as shown")
+    func variantOverrideRecorded() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["checkout": .variant(variants: [.init(value: "control", weight: 100)])]
+        )
+        state.featureFlags.localOverrides = ["checkout": .string("treatment")]
+        let flag = VariantFlag<Checkout>("checkout", default: .control)
+
+        try await record(.recordExposure(of: flag), with: plugin, in: &state)
+
+        #expect(log.all.map(\.value) == [.string("treatment")])
+    }
+
+    @Test("an exposure buckets by the same explicit bucketingID as the read")
+    func exposureHonorsExplicitBucketingID() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        plugin.afterReduce(state: &state, action: .unrelated)
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: ["k": .boolean(rollout: 50)]
+        )
+        let team = idOnOtherSide(of: "device-1", key: "k")
+        let shown = state.featureFlags.isEnabled(BoolFlag("k"), bucketingID: team)
+
+        try await record(.recordExposure(of: BoolFlag("k"), bucketingID: team), with: plugin, in: &state)
+
+        #expect(shown != state.featureFlags.isEnabled(BoolFlag("k")))
+        #expect(log.all.map(\.value) == [.bool(shown)])
+    }
+
+    // MARK: - Exposure dedupe
+
+    @Test("a reassignment at sign-in records the new variant")
+    func reassignmentAtSignInReRecords() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log, userIDKeyPath: \.userID)
+        var state = TestState()
+        plugin.afterReduce(state: &state, action: .unrelated)
+        state.featureFlags.config = FeatureFlagsConfig(
+            version: 1,
+            flags: [
+                "checkout": .variant(variants: [
+                    .init(value: "control", weight: 50), .init(value: "treatment", weight: 50),
+                ])
+            ]
+        )
+        let flag = VariantFlag<Checkout>("checkout", default: .control)
+
+        let before = state.featureFlags.variant(of: flag)
+        try await record(.recordExposure(of: flag), with: plugin, in: &state)
+        state.userID = idOnOtherSide(of: "device-1", key: "checkout")
+        plugin.afterReduce(state: &state, action: .unrelated)
+        let after = state.featureFlags.variant(of: flag)
+        try await record(.recordExposure(of: flag), with: plugin, in: &state)
+        try await record(.recordExposure(of: flag), with: plugin, in: &state)
+
+        #expect(before != after)
+        #expect(log.all.map(\.value) == [.string(before.rawValue), .string(after.rawValue)])
+    }
+
+    @Test("a config change that flips the rendered value records it once")
+    func configChangeReRecords() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(version: 1, flags: ["k": .boolean(rollout: 0)])
+
+        try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+        let ramped = FeatureFlagsConfig(version: 1, flags: ["k": .boolean(rollout: 100)])
+        _ = plugin.reduce(state: &state, action: .featureFlags(.refreshSucceeded(ramped, fetchedAt: Date())))
+        try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+        try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+
+        #expect(log.all.map(\.value) == [.bool(false), .bool(true)])
+    }
+
+    @available(*, deprecated, message: "Exercises the deprecated key-only exposure.")
+    @Test("the deprecated key-only exposure shares the value dedupe")
+    func keyOnlyExposureSharesDedupe() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(version: 1, flags: ["k": .boolean(rollout: 100)])
+
+        try await record(.recordExposure(key: "k"), with: plugin, in: &state)
+        try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+        try await record(.recordExposure(key: "k"), with: plugin, in: &state)
+
+        #expect(log.all.map(\.value) == [.bool(true)])
+    }
+}
+
+/// Thread-safe exposure recorder; `onExposure` runs inside the effect.
+final class ExposureLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [(key: String, value: FlagValue)] = []
+
+    var all: [(key: String, value: FlagValue)] { lock.withLock { records } }
+
+    func append(_ key: String, _ value: FlagValue) {
+        lock.withLock { records.append((key, value)) }
     }
 }
 
