@@ -228,7 +228,7 @@ Sets `currentScreen` to the given name **regardless of opt-out** (the screen sta
 
 ### `identify(userID:, properties:)`
 
-Sets `lastIdentifiedUserID = userID` and returns an effect calling `service.identify`. Skipped when opted out. Use this when the app needs to force identity before the auto-identify keypath would observe the change.
+Sets `lastIdentifiedUserID = userID` and returns an effect calling `service.identify`. Skipped when opted out. Use this when the app needs to force identity before the auto-identify keypath would observe the change — see *Explicit identify and auto-identify* below for how the two interact.
 
 ### `alias(newID:, previousID:)`
 
@@ -276,6 +276,18 @@ When configured with an `AnalyticsIdentity`, the plugin re-evaluates both the `u
 `userProperties` is re-evaluated every non-analytics dispatch; dictionary equality decides whether to re-fire `identify`. This keeps derived people-properties (subscription tier, paywall entitlements, feature flags) in sync with state without any explicit `.identify` plumbing.
 
 When opted out, auto-identify is paused: neither `lastIdentifiedUserID` nor `lastIdentifiedProperties` is updated. Opting back in re-establishes identity correctly on the next dispatch.
+
+### Explicit identify and auto-identify
+
+An explicit `.identify(userID:)` that names a different user than the `AnalyticsIdentity` currently derives overrides the derived identity until the derived `userID` changes:
+
+- Derived `nil` (auth state not landed yet), explicit `"u1"`: later dispatches neither `reset` nor re-identify while the derived ID stays `nil`.
+- The derived ID then catches up to `"u1"`: no second `identify`, unless the derived `userProperties` differ from what the explicit call sent — then `identify` fires once with the derived properties.
+- From then on the derived ID drives identity as usual: `"u1" → "u2"` fires `identify`, `"u1" → nil` fires `reset`.
+- The derived ID moving to any value other than the one it held at the explicit call ends the override the same way, including a move to `nil` (sign-out), which fires `reset`.
+- `.reset` and `.setOptedOut(true)` end the override. After opting back in, the derived identity is re-identified on the next dispatch.
+
+An explicit `.identify` naming the same user the identity derives is recorded like an auto-identify, so it suppresses a duplicate call and nothing else.
 
 ## Flushing
 

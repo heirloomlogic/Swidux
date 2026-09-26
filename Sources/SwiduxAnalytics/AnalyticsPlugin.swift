@@ -19,7 +19,9 @@ import Swidux
 /// Plus auto-identify via an optional ``AnalyticsIdentity``: the plugin
 /// re-evaluates `userID` and `userProperties` each non-analytics dispatch
 /// and fires `service.identify` whenever either side changes;
-/// `service.reset` fires on `userID → nil`.
+/// `service.reset` fires on `userID → nil`. An explicit
+/// ``AnalyticsAction/identify(userID:properties:)`` naming a different user
+/// than the identity overrides it until the identity's `userID` changes.
 ///
 /// ## Consent
 ///
@@ -71,6 +73,11 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// Invalidates unsent events when consent is withdrawn, even if the user
     /// opts back in before the queue reaches them.
     private var consentGeneration = UUID()
+    /// The derived user ID in effect when an explicit `.identify` named a
+    /// different user, wrapped so a derived `nil` is distinguishable from no
+    /// override. Auto-identify defers to the explicit identity until the
+    /// derived ID moves off this value.
+    private var explicitIdentityPin: String??
 
     /// Creates an analytics plugin wired into the host app.
     ///
@@ -117,9 +124,27 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// processes via the mapper and auto-identify).
     public func reduce(state: inout RootState, action: RootAction) -> Effect<RootAction>? {
         guard let local = extractAction(action) else { return nil }
+        pinExplicitIdentity(state: state, action: local)
         let localEffect = reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
         guard let localEffect else { return nil }
         return localEffect.map(toRootAction)
+    }
+
+    /// Records an explicit `.identify` that disagrees with the configured
+    /// identity, so auto-identify doesn't reset or re-identify over it on the
+    /// next dispatch just because state hasn't caught up. `.reset` and opting
+    /// out end the override.
+    private func pinExplicitIdentity(state: RootState, action: AnalyticsAction) {
+        switch action {
+        case .identify(let userID, _):
+            guard let identity, !state[keyPath: stateKeyPath].isOptedOut else { return }
+            let derived = identity.userID(state)
+            explicitIdentityPin = derived == userID ? nil : .some(derived)
+        case .reset, .setOptedOut(true):
+            explicitIdentityPin = nil
+        default:
+            break
+        }
     }
 
     private func reduceLocal(
@@ -196,8 +221,14 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         guard !analyticsState.isOptedOut else { return }
 
         let service = self.service
+        let derivedUserID = identity.userID(state)
 
-        guard let userID = identity.userID(state) else {
+        if let pinned = explicitIdentityPin {
+            guard derivedUserID != pinned else { return }
+            explicitIdentityPin = nil
+        }
+
+        guard let userID = derivedUserID else {
             guard analyticsState.lastIdentifiedUserID != nil else { return }
             state[keyPath: stateKeyPath].clearIdentified()
             spawn(requiresConsent: false) { await service.reset() }

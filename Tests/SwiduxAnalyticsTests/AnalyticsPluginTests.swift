@@ -760,6 +760,116 @@ struct AnalyticsPluginTests {
         #expect(state.analytics.lastIdentifiedProperties == ["plan": .string("pro")])
     }
 
+    // MARK: - Explicit identify vs auto-identify
+
+    /// The documented use of `.identify`: force identity before the auth state
+    /// the identity keypath reads has landed.
+    private func identifyAheadOfState(
+        _ service: RecordingAnalyticsService
+    ) async throws -> (AnalyticsPlugin<TestState, TestAction>, TestState) {
+        let plugin = makePlugin(service: service, identity: AnalyticsIdentity(userID: \.userID))
+        var state = TestState()
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        )
+        return (plugin, state)
+    }
+
+    @Test("explicit .identify survives dispatches before state catches up")
+    func explicitIdentifyAheadOfStateIsNotReset() async throws {
+        let service = RecordingAnalyticsService()
+        let (plugin, initial) = try await identifyAheadOfState(service)
+        var state = initial
+
+        plugin.afterReduce(state: &state, action: .unrelated)
+        plugin.afterReduce(state: &state, action: .unrelated)
+        await plugin.flush()
+
+        let log = await service.log
+        #expect(log == ["identify", "flush"])
+        #expect(state.analytics.lastIdentifiedUserID == "u1")
+    }
+
+    @Test("state catching up to the explicit ID does not re-identify")
+    func stateCatchingUpToExplicitIdentify() async throws {
+        let service = RecordingAnalyticsService()
+        let (plugin, initial) = try await identifyAheadOfState(service)
+        var state = initial
+        plugin.afterReduce(state: &state, action: .unrelated)
+
+        state.userID = "u1"
+        plugin.afterReduce(state: &state, action: .setUserID("u1"))
+        await plugin.flush()
+
+        let log = await service.log
+        #expect(log == ["identify", "flush"])
+    }
+
+    @Test("once state has caught up, its later transitions drive identity again")
+    func stateTransitionsAfterExplicitIdentify() async throws {
+        let service = RecordingAnalyticsService()
+        let (plugin, initial) = try await identifyAheadOfState(service)
+        var state = initial
+        state.userID = "u1"
+        plugin.afterReduce(state: &state, action: .setUserID("u1"))
+
+        state.userID = "u2"
+        plugin.afterReduce(state: &state, action: .setUserID("u2"))
+        state.userID = nil
+        plugin.afterReduce(state: &state, action: .setUserID(nil))
+        await plugin.flush()
+
+        let log = await service.log
+        let identified = await service.identifyCalls.map(\.userID)
+        #expect(log == ["identify", "identify", "reset", "flush"])
+        #expect(identified == ["u1", "u2"])
+        #expect(state.analytics.lastIdentifiedUserID == nil)
+    }
+
+    @Test("state moving off its value at .identify time takes over, sign-out included")
+    func stateSignOutAfterExplicitOverride() async throws {
+        let service = RecordingAnalyticsService()
+        let plugin = makePlugin(service: service, identity: AnalyticsIdentity(userID: \.userID))
+        var state = TestState()
+        state.userID = "u2"
+        plugin.afterReduce(state: &state, action: .setUserID("u2"))
+
+        // Override what state says; the override holds while state is unchanged.
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        )
+        plugin.afterReduce(state: &state, action: .unrelated)
+        state.userID = nil
+        plugin.afterReduce(state: &state, action: .setUserID(nil))
+        await plugin.flush()
+
+        let log = await service.log
+        let identified = await service.identifyCalls.map(\.userID)
+        #expect(log == ["identify", "identify", "reset", "flush"])
+        #expect(identified == ["u2", "u1"])
+    }
+
+    @Test("opting out drops an explicit identity, so opting back in re-identifies from state")
+    func optOutDropsExplicitIdentity() async throws {
+        let service = RecordingAnalyticsService()
+        let plugin = makePlugin(service: service, identity: AnalyticsIdentity(userID: \.userID))
+        var state = TestState()
+        state.userID = "u2"
+        plugin.afterReduce(state: &state, action: .setUserID("u2"))
+        try await runEffect(
+            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        )
+
+        try await runEffect(plugin.reduce(state: &state, action: .analytics(.setOptedOut(true))))
+        try await runEffect(plugin.reduce(state: &state, action: .analytics(.setOptedOut(false))))
+        plugin.afterReduce(state: &state, action: .unrelated)
+        await plugin.flush()
+
+        let identified = await service.identifyCalls.map(\.userID)
+        #expect(identified == ["u2", "u1", "u2"])
+        #expect(state.analytics.lastIdentifiedUserID == "u2")
+    }
+
     // MARK: - Flush
 
     @Test("flush awaits pending tasks and calls service.flush")

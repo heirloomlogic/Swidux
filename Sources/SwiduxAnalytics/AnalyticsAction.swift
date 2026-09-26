@@ -16,7 +16,16 @@ public enum AnalyticsAction: Sendable, Equatable {
     /// emits a `"screen_view"` event with `name` plus any extra properties.
     case screenView(String, properties: [String: AnalyticsValue])
 
-    /// Explicitly identify the user (overrides the auto-identify keypath).
+    /// Explicitly identify the user.
+    ///
+    /// When an ``AnalyticsIdentity`` is configured and currently derives a
+    /// different user ID (typically `nil`, because auth state hasn't landed
+    /// yet), this identity overrides it: auto-identify neither resets nor
+    /// re-identifies until the derived ID changes. From then on the derived
+    /// ID drives identity again — catching up to this same ID is a no-op
+    /// unless the derived properties differ, and a later change or sign-out
+    /// fires `identify` or `reset` as usual. ``reset`` and opting out end
+    /// the override.
     case identify(userID: String, properties: [String: AnalyticsValue])
 
     /// Link an anonymous distinct ID to a known user — call once when an
