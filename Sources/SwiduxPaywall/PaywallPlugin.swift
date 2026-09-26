@@ -98,7 +98,7 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
         case .refreshCustomerInfo:
             state.isLoading = true
             let service = self.service
-            return requestEffect { try await service.customerInfo() }
+            return requestEffect(requests.beginRead()) { try await service.customerInfo() }
 
         case .customerInfoUpdated(let snapshot):
             if snapshot.source == .cacheSeed {
@@ -115,22 +115,21 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
             requests.acceptResult()
             state.isPro = snapshot.isPro
             state.hasPermanentLicense = snapshot.hasPermanentLicense
-            state.isLoading = false
+            state.isLoading = requests.isLoading
             state.error = nil
 
         case .refreshFailed(let message):
-            state.isLoading = false
+            state.isLoading = requests.isLoading
             state.error = message
 
         case .refreshCancelled(let requestID):
-            guard requests.current == requestID else { return nil }
-            _ = requests.begin()
-            state.isLoading = false
+            guard requests.end(requestID) else { return nil }
+            state.isLoading = requests.isLoading
 
         case .restorePurchases:
             state.isLoading = true
             let service = self.service
-            return requestEffect { try await service.restorePurchases() }
+            return requestEffect(requests.beginRestore()) { try await service.restorePurchases() }
 
         case .presentCustomerCenter:
             state.isCustomerCenterPresented = true
@@ -148,15 +147,15 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 
     private func requestEffect(
+        _ generation: UUID,
         _ operation: @escaping @Sendable () async throws -> EntitlementSnapshot
     ) -> Effect<PaywallAction> {
         let requests = self.requests
-        let generation = requests.begin()
         return Effect { send in
             await withTaskCancellationHandler {
                 guard
                     await MainActor.run(body: {
-                        guard requests.current == generation else { return false }
+                        guard requests.isLive(generation) else { return false }
                         guard !Task.isCancelled else {
                             send(.refreshCancelled(requestID: generation))
                             return false
@@ -167,20 +166,22 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
                 do {
                     let snapshot = try await operation()
                     await MainActor.run {
-                        guard requests.current == generation else { return }
+                        guard requests.isLive(generation) else { return }
                         if Task.isCancelled {
                             send(.refreshCancelled(requestID: generation))
                         } else {
+                            requests.end(generation)
                             send(.customerInfoUpdated(snapshot))
                         }
                     }
                 } catch {
                     let message = error.localizedDescription
                     await MainActor.run {
-                        guard requests.current == generation else { return }
+                        guard requests.isLive(generation) else { return }
                         if Task.isCancelled {
                             send(.refreshCancelled(requestID: generation))
                         } else {
+                            requests.end(generation)
                             send(.refreshFailed(message))
                         }
                     }
@@ -189,7 +190,7 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
                 // Providers may ignore cancellation indefinitely. Clear only
                 // this request's loading on MainActor without waiting for them.
                 Task { @MainActor in
-                    guard requests.current == generation else { return }
+                    guard requests.isLive(generation) else { return }
                     send(.refreshCancelled(requestID: generation))
                 }
             }
@@ -197,18 +198,49 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 }
 
+/// Decides which request results may still land.
+///
+/// Reads are ordered by when they *start*: only the newest may land, and any
+/// accepted result supersedes it. A restore is a write, so it is ordered by
+/// when it *completes*: its result reflects the account after the restore,
+/// which is newer than anything a read resolved while it ran — even a read
+/// that started later. No read therefore supersedes a restore.
 @MainActor
 private final class PaywallRequestGeneration {
-    private(set) var current = UUID()
+    /// The newest read, until it resolves or is superseded.
+    private var currentRead: UUID?
+    private var restores: Set<UUID> = []
     private(set) var hasResolved = false
 
-    func acceptResult() {
-        _ = begin()
-        hasResolved = true
+    /// Whether a read or restore is still in flight.
+    var isLoading: Bool { currentRead != nil || !restores.isEmpty }
+
+    func beginRead() -> UUID {
+        let id = UUID()
+        currentRead = id
+        return id
     }
 
-    func begin() -> UUID {
-        current = UUID()
-        return current
+    func beginRestore() -> UUID {
+        restores.insert(UUID()).memberAfterInsert
+    }
+
+    func isLive(_ id: UUID) -> Bool {
+        id == currentRead || restores.contains(id)
+    }
+
+    /// Ends `id`. Returns `false` if it had already ended or been superseded,
+    /// so a duplicate or delayed completion changes nothing.
+    @discardableResult
+    func end(_ id: UUID) -> Bool {
+        if restores.remove(id) != nil { return true }
+        guard id == currentRead else { return false }
+        currentRead = nil
+        return true
+    }
+
+    func acceptResult() {
+        currentRead = nil
+        hasResolved = true
     }
 }

@@ -236,6 +236,44 @@ struct PaywallOrderingTests {
         #expect(state.paywall.isPro)
     }
 
+    @Test(
+        "a refresh started during a restore cannot supersede the restore's result or error",
+        arguments: [false, true], [false, true]
+    )
+    @MainActor
+    func laterRefreshCannotSupersedeRestore(resilient: Bool, restoreFails: Bool) async throws {
+        let store = InMemoryKeyValueStore()
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let service: any PaywallService =
+            resilient ? ResilientPaywallService(base: base, store: store, maxAttempts: 1) : base
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let restore = plugin.reduce(state: &state, action: .paywall(.restorePurchases))
+        let restoreRun = Task { try await collectActions(from: restore) }
+        await base.waitForRestore()
+
+        // The user closes the sheet while the restore is still in flight.
+        let refresh = plugin.reduce(state: &state, action: .paywall(.refreshCustomerInfo))
+        let refreshRun = Task { try await collectActions(from: refresh) }
+        await base.waitForRead()
+        await base.finishRead(snapshot: .init(isPro: false))
+        for action in try await refreshRun.value {
+            _ = plugin.reduce(state: &state, action: .paywall(action))
+        }
+        #expect(state.paywall.isLoading, "the restore is still in flight")
+
+        await base.finishRestore(fails: restoreFails, snapshot: .init(isPro: true))
+        for action in try await restoreRun.value {
+            _ = plugin.reduce(state: &state, action: .paywall(action))
+        }
+        #expect(state.paywall.isPro == !restoreFails)
+        #expect((state.paywall.error != nil) == restoreFails)
+        #expect(!state.paywall.isLoading)
+        if resilient {
+            #expect(store.value(.lastKnownEntitlement)?.isPro == !restoreFails)
+        }
+    }
+
     @Test("a cancelled refresh ignores a provider success and finishes its own loading")
     @MainActor
     func cancelledRefreshDoesNotPublishSnapshot() async throws {
@@ -282,6 +320,23 @@ struct PaywallOrderingTests {
         _ = try await service.restorePurchases()
         await base.finishRead()
         #expect(try await read.value.isPro)
+        #expect(store.value(.lastKnownEntitlement)?.isPro == true)
+    }
+
+    @Test("a read started during a restore cannot discard the restored entitlement")
+    func laterReadCannotSupersedeRestoreCache() async throws {
+        let store = InMemoryKeyValueStore()
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 1)
+        let restore = Task { try await service.restorePurchases() }
+        await base.waitForRestore()
+        let read = Task { await service.currentSnapshot() }
+        await base.waitForRead()
+        await base.finishRead(snapshot: .init(isPro: false))
+        #expect(await !read.value.isPro)
+
+        await base.finishRestore(snapshot: .init(isPro: true))
+        #expect(try await restore.value == EntitlementSnapshot(isPro: true))
         #expect(store.value(.lastKnownEntitlement)?.isPro == true)
     }
 
@@ -337,11 +392,17 @@ private actor ConcurrentPaywallService: PaywallService {
 private actor SuspendedPaywallService: PaywallService {
     nonisolated let updates: AsyncStream<EntitlementSnapshot>.Continuation
     private nonisolated let stream: AsyncStream<EntitlementSnapshot>
+    private let suspendsRestore: Bool
     private var pendingRead: CheckedContinuation<EntitlementSnapshot, any Error>?
     private var readStarted: CheckedContinuation<Void, Never>?
+    private var pendingRestore: CheckedContinuation<EntitlementSnapshot, any Error>?
+    private var restoreStarted: CheckedContinuation<Void, Never>?
 
-    init() {
+    /// `suspendsRestore` holds `restorePurchases()` until ``finishRestore(fails:snapshot:)``;
+    /// otherwise a restore returns pro immediately.
+    init(suspendsRestore: Bool = false) {
         (stream, updates) = AsyncStream.makeStream()
+        self.suspendsRestore = suspendsRestore
     }
 
     func customerInfo() async throws -> EntitlementSnapshot {
@@ -368,7 +429,28 @@ private actor SuspendedPaywallService: PaywallService {
 
     nonisolated func customerInfoStream() -> AsyncStream<EntitlementSnapshot> { stream }
 
-    func restorePurchases() async throws -> EntitlementSnapshot { .init(isPro: true) }
+    func restorePurchases() async throws -> EntitlementSnapshot {
+        guard suspendsRestore else { return .init(isPro: true) }
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingRestore = continuation
+            restoreStarted?.resume()
+            restoreStarted = nil
+        }
+    }
+
+    func waitForRestore() async {
+        guard pendingRestore == nil else { return }
+        await withCheckedContinuation { restoreStarted = $0 }
+    }
+
+    func finishRestore(fails: Bool = false, snapshot: EntitlementSnapshot = .init(isPro: true)) {
+        if fails {
+            pendingRestore?.resume(throwing: ReadError.failed)
+        } else {
+            pendingRestore?.resume(returning: snapshot)
+        }
+        pendingRestore = nil
+    }
 
     private enum ReadError: Error { case failed }
 }

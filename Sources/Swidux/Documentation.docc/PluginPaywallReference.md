@@ -43,7 +43,7 @@ let resilient = ResilientPaywallService(
 )
 ```
 
-Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: successful live snapshots overwrite the cache unless a newer successful read or live stream update has superseded them. Starting or failing an independent read does not discard another caller's successful response. Cached values preserve their original freshness window. See the type's own documentation for the staleness policy and threat model.
+Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: successful live snapshots overwrite the cache unless a newer successful read, restore, or live stream update has superseded them. A restore is ordered by when it completes, not when it started, so a read that began during a restore cannot discard the restored entitlement. Starting or failing an independent read does not discard another caller's successful response. Cached values preserve their original freshness window. See the type's own documentation for the staleness policy and threat model.
 
 ## Types
 
@@ -242,15 +242,17 @@ Sets `isLoading = true`. Returns a one-shot effect that calls `PaywallService.cu
 
 ### `customerInfoUpdated(EntitlementSnapshot)`
 
-Sets `isPro` and `hasPermanentLicense` from the snapshot, clears `isLoading`, and clears `error`. Returns no effect. The plugin emits this internally; your code rarely dispatches it directly. Note that the plugin emits this on **every** snapshot (each `customerInfoStream()` value, every `refreshCustomerInfo`/`restorePurchases`), not only on entitlement changes — observe `PaywallState` (or a value derived from it) for transitions rather than mapping this action directly. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
+Sets `isPro` and `hasPermanentLicense` from the snapshot, clears `isLoading` (unless a restore is still in flight), and clears `error`. Returns no effect. The plugin emits this internally; your code rarely dispatches it directly. Note that the plugin emits this on **every** snapshot (each `customerInfoStream()` value, every `refreshCustomerInfo`/`restorePurchases`), not only on entitlement changes — observe `PaywallState` (or a value derived from it) for transitions rather than mapping this action directly. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
 
 ### `refreshFailed(String)`
 
-Sets `error` to the given message and clears `isLoading`. Returns no effect.
+Sets `error` to the given message and clears `isLoading` (unless another refresh or restore is still in flight). Returns no effect.
 
 ### `restorePurchases`
 
 Sets `isLoading = true`. Returns a one-shot effect that calls `PaywallService.restorePurchases()` and dispatches `.customerInfoUpdated` on success or `.refreshFailed` on error.
+
+A restore is a write, so its result is the newest entitlement when it completes. Refreshes are ordered by when they start, and a newer result supersedes an older refresh; a restore is never superseded that way. If the user closes the sheet mid-restore (which dispatches `.refreshCustomerInfo`), the refresh may land first, and the restore's snapshot or error still lands when the restore completes. `isLoading` stays `true` until the restore finishes.
 
 ### `presentCustomerCenter` / `dismissCustomerCenter`
 

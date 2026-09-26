@@ -232,17 +232,15 @@ public struct ResilientPaywallService: PaywallService {
     /// Restores previously completed purchases, forwarding to the base service.
     /// Persists on success; rethrows on failure (a restore is an explicit user
     /// action, so the plugin keeps the prior state).
+    ///
+    /// A restore is a write: its result is the account's state as of its
+    /// completion, newer than any read that resolved while it ran — even one
+    /// that started later. So it is persisted like a stream event, superseding
+    /// every read still in flight, rather than ordered by when it started.
     public func restorePurchases() async throws -> EntitlementSnapshot {
         try Task.checkCancellation()
-        let generation = beginRequest()
         let snapshot = try await base.restorePurchases()
-        try Task.checkCancellation()
-        guard persist(snapshot, for: generation) else {
-            if let cached = readCache(), let usable = usableSnapshot(from: cached) {
-                return usable
-            }
-            throw EntitlementReadError.superseded
-        }
+        guard persist(snapshot) else { throw CancellationError() }
         return snapshot
     }
 
