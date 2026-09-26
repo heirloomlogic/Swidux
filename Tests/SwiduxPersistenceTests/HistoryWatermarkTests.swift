@@ -212,6 +212,33 @@ struct HistoryWatermarkTests {
         #expect(store.notes[id]?.title == "typed mid-fetch")
     }
 
+    @Test("a write flushed during the fetch is not rolled back, and the next edit builds on it")
+    func writeFlushedDuringTheFetchSurvives() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "v1")
+
+        // An ordinary local save. Its own transaction is what makes the next tick
+        // read this row back — which is every tick an on-disk store produces,
+        // because local saves post the remote-change notification too.
+        store.send(.add(Note(id: id, title: "v2", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.duringReadPhase = {
+            store.send(.add(Note(id: id, title: "v3", pinned: false)))
+            await coordinator.corePlugin.flush()
+        }
+        await coordinator.mergeChanges(into: store)
+        coordinator.duringReadPhase = nil
+
+        #expect(store.notes[id]?.title == "v3", "the read of v2 predates the save of v3")
+
+        // What the rollback costs: the user's next keystroke is built on whatever
+        // memory shows, and overwrites the flushed value on disk.
+        store.send(.add(Note(id: id, title: (store.notes[id]?.title ?? "") + "!", pinned: false)))
+        await coordinator.corePlugin.flush()
+        let disk = try await coordinator.fetchAll(of: Note.self, flushPending: false)
+        #expect(disk.first?.title == "v3!")
+    }
+
     @Test("a locally deleted row is not resurrected by its own history")
     func doesNotResurrectALocalDelete() async throws {
         let (coordinator, store, id) = try await makeAnchoredNote(title: "doomed")

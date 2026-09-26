@@ -424,18 +424,20 @@ public final class PersistenceCoordinator<State, Action> {
     /// Each fold arrives with its entity's policy and dirty set already bound,
     /// resolved lazily inside the closure — so dirtiness is read once every
     /// fetch has completed, and a write that landed during the flush or during
-    /// the fetch still counts as locally owned.
+    /// the fetch still counts as locally owned. `flushes` is index-aligned with
+    /// `writers`: what each one saved after the caller's own flush, which the
+    /// reads may predate.
     ///
     /// An entity a partial scope named nothing for is skipped entirely rather
     /// than read with an empty set. The two are equivalent — an empty set chunks
     /// to no queries, and reconciling against an empty snapshot with nothing
     /// declared deleted mutates nothing — so skipping saves the actor hop and
     /// leaves a skipped entity indistinguishable from one that had no news.
-    private func mergePhase(_ scope: MergeScope = .wholeTable) async -> MergePhase {
+    private func mergePhase(_ scope: MergeScope, flushes: [FlushRecord]) async -> MergePhase {
         var folds: [MergeFold] = []
         folds.reserveCapacity(entities.count)
         var allReadsSucceeded = true
-        for (entity, writer) in zip(entities, writers) {
+        for (index, entity) in entities.enumerated() {
             let deleted = scope.declaredDeletions(for: entity.entityName)
             let read: PersistedEntity<State>.MergeRead
             switch scope {
@@ -447,7 +449,7 @@ public final class PersistenceCoordinator<State, Action> {
                 read = await entity.readForPartialMerge(handle, observers, reading)
             }
             allReadsSucceeded = allReadsSucceeded && read.succeeded
-            folds.append(fold(read.apply, entity, writer, deleted: deleted))
+            folds.append(fold(read.apply, entity, writers[index], flushes[index], deleted: deleted))
         }
         await duringReadPhase?()
         return MergePhase(folds: folds, allReadsSucceeded: allReadsSucceeded)
@@ -481,6 +483,7 @@ public final class PersistenceCoordinator<State, Action> {
         _ merge: @escaping PersistedEntity<State>.MergeApply,
         _ entity: PersistedEntity<State>,
         _ writer: StateWriter<State>,
+        _ flushed: FlushRecord,
         deleted: Set<UUID>
     ) -> MergeFold {
         // Lifted out field-by-field so the fold doesn't capture `entity` itself:
@@ -492,12 +495,17 @@ public final class PersistenceCoordinator<State, Action> {
         let entityPolicy = entity.policy
         let entityName = entity.entityName
         return { [mergePolicy, editing] state, override in
-            // Four sources, because no one of them is complete: the writer
-            // holds drained-but-unflushed IDs, the ledger holds IDs whose
+            // Five sources, because no one of them is complete: the writer
+            // holds drained-but-unflushed IDs, the flush record holds IDs a
+            // debounce flush saved while the read was suspended — on disk
+            // now, with a value the read predates — the ledger holds IDs whose
             // save failed, the app's editing holds cover values that were
             // never dispatched at all, and the store's own `changes` hold
             // mutations not yet drained. `reconcile` folds in the last.
-            let written = writer.pendingIDs.union(unpersisted.ids)
+            //
+            // A row the record names needs no carrying forward: its own save
+            // wrote a transaction the next window re-offers.
+            let written = writer.pendingIDs.union(flushed.ids).union(unpersisted.ids)
             let owned = written.union(editing.ids)
             // Only the holds the writer doesn't already cover are worth
             // reporting: attributing a pending write to the hold would
@@ -794,7 +802,13 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         try check(attempt)
         await corePlugin.flush()
         try check(attempt)
-        let phase = await mergePhase(scope)
+        // Opened after the flush has landed and before the first fetch: from
+        // here on, a debounce flush can save a value the reads predate. Failing
+        // the attempt on any such flush would never finish under steady typing;
+        // exempting what it saved costs nothing, because its own transaction
+        // re-offers it.
+        let flushes = writers.map { $0.recordFlushes() }
+        let phase = await mergePhase(scope, flushes: flushes)
         try check(attempt)
         var carryOver = AttributedIDs()
         store.mutate { state in

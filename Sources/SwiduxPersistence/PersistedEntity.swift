@@ -271,8 +271,7 @@ public struct PersistedEntity<State> {
                         await record { $0.markPersisted(touched) }
                     } catch {
                         // Belt and braces alongside the writer putting the batch
-                        // back: this records memory ≠ storage even for the
-                        // window where the batch is mid-flight, and it is the
+                        // back: this records memory ≠ storage, and it is the
                         // only record a hand-written non-throwing persist
                         // closure could leave.
                         await record { $0.markFailed(touched) }
