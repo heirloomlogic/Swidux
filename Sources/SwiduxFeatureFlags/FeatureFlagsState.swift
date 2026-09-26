@@ -161,9 +161,18 @@ enum FlagEvaluator {
         config: FeatureFlagsConfig,
         localOverrides: [String: FlagValue]
     ) -> Double? {
-        if case .double(let v) = localOverrides[flag.key] { return v }
-        if case .value(.double(let v)) = config.flags[flag.key] { return v }
-        return nil
+        // `FlagValue` decodes any whole number — `2.0` included — as `.int`,
+        // so a Double read that matched only `.double` would ignore it.
+        switch localOverrides[flag.key] {
+        case .double(let v): return v
+        case .int(let v): return Double(v)
+        default: break
+        }
+        switch config.flags[flag.key] {
+        case .value(.double(let v)): return v
+        case .value(.int(let v)): return Double(v)
+        default: return nil
+        }
     }
 
     static func value(
@@ -239,7 +248,8 @@ extension FeatureFlagsState {
             ?? flag.defaultValue
     }
 
-    /// Reads a value flag (`Double`).
+    /// Reads a value flag (`Double`). A whole-number remote value or override
+    /// (`.int`) reads as the equivalent `Double`.
     public func value(of flag: ValueFlag<Double>) -> Double {
         FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
             ?? flag.defaultValue
@@ -305,6 +315,7 @@ extension FeatureFlagsStateObserver {
     }
 
     /// Reads a value flag (`Double`) against the observer's current state.
+    /// A whole-number remote value or override (`.int`) reads as a `Double`.
     public func value(of flag: ValueFlag<Double>) -> Double {
         FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
             ?? flag.defaultValue
