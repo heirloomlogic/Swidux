@@ -430,6 +430,71 @@ struct StoreTests {
         #expect(!deletes.contains(entity.id))
     }
 
+    @Test("undo does not delete, or flush a deletion of, a row another device created")
+    @MainActor
+    func undoKeepsRemotelyInsertedRow() async {
+        let collector = PersistCollector()
+        let a = TestEntity(name: "a")
+        let b = TestEntity(name: "created on another device")
+        var initial = TestState()
+        initial.items = EntityStore([a])
+        let undoPlugin = UndoPlugin<TestState, TestAction>()
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(undoPlugin)
+        plugins.register(
+            PersistencePlugin<TestState, TestAction>(
+                writers: [
+                    StateWriter(keyPath: \.items) { writes, deletes in
+                        await collector.record(writes: writes, deletes: deletes)
+                    }
+                ],
+                debounce: .milliseconds(10)
+            )
+        )
+        let store = Store(initialState: initial, reducer: testReducer, plugins: plugins, undoPlugin: undoPlugin)
+
+        store.send(.rename(a.id, "edited"))  // snapshot = {a}
+        await store.flush()
+        var aEdited = a
+        aEdited.name = "edited"
+        // A sync tick surfaces `b`.
+        store.mutate { $0.items.reconcile(with: EntityStore([aEdited, b]), preserving: [], removingMissing: true) }
+
+        store.undo()  // the user undoes *their own* rename
+        await store.flush()
+        #expect(store.items[a.id]?.name == "a")
+        #expect(store.items[b.id] == b, "undo removed a row the local user never touched")
+
+        store.redo()
+        await store.flush()
+        #expect(store.items[a.id]?.name == "edited")
+        #expect(store.items[b.id] == b)
+
+        let deletes = await collector.deletes
+        #expect(!deletes.contains(b.id), "undo or redo flushed a deletion of another device's row")
+    }
+
+    @Test("redo does not delete a row another device created after the undo")
+    @MainActor
+    func redoKeepsRowInsertedAfterUndo() {
+        let a = TestEntity(name: "a")
+        let b = TestEntity(name: "created on another device")
+        var initial = TestState()
+        initial.items = EntityStore([a])
+        let undoPlugin = UndoPlugin<TestState, TestAction>()
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(undoPlugin)
+        let store = Store(initialState: initial, reducer: testReducer, plugins: plugins, undoPlugin: undoPlugin)
+
+        store.send(.rename(a.id, "edited"))
+        store.undo()  // redo snapshot = {a: edited}, taken before `b` exists
+        store.mutate { $0.items.reconcile(with: EntityStore([a, b]), preserving: [], removingMissing: true) }
+        store.redo()
+
+        #expect(store.items[a.id]?.name == "edited")
+        #expect(store.items[b.id] == b)
+    }
+
     @Test("multiple send calls accumulate state")
     @MainActor
     func multipleSends() {

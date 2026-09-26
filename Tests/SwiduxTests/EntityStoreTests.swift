@@ -1003,4 +1003,116 @@ struct EntityStoreTests {
 
         #expect(store.remotelyRemovedIDs.isEmpty, "it survived the reconcile — it was never removed")
     }
+
+    // MARK: - Remote Insertions vs. Undo
+
+    @Test("restore does not delete an entity another device created")
+    func restoreKeepsRemotelyInserted() {
+        let local = TestEntity(name: "local")
+        var store = EntityStore([local])
+        let snapshot = store  // taken before the other device's row arrived
+
+        let remote = TestEntity(name: "created on another device")
+        store.reconcile(with: EntityStore([local, remote]), preserving: [], removingMissing: true)
+        store.restore(from: snapshot)
+
+        #expect(store[remote.id] == remote, "undo is scoped to local changes — it cannot undo a remote creation")
+        #expect(
+            !store.changes.deletions.contains(remote.id),
+            "the deletion is the real damage: it would sync out and delete the row on every peer"
+        )
+        #expect(store.values == [local, remote])
+    }
+
+    @Test("restore keeps a row that merge absorbed after the snapshot")
+    func restoreKeepsMergeInserted() {
+        let local = TestEntity(name: "local")
+        var store = EntityStore([local])
+        let snapshot = store
+
+        let fetched = TestEntity(name: "fetched")
+        store.merge(from: EntityStore([fetched])) { _, _ in false }
+        store.restore(from: snapshot)
+
+        #expect(store[fetched.id] == fetched)
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("restore still removes an entity the local user created")
+    func restoreRemovesLocallyCreated() {
+        var store = EntityStore([TestEntity(name: "local")])
+        let snapshot = store
+
+        let created = TestEntity(name: "created here")
+        store[created.id] = created
+        store.restore(from: snapshot)
+
+        #expect(store[created.id] == nil, "undoing your own insert is the whole point of undo")
+        #expect(store.changes.deletions.contains(created.id))
+    }
+
+    @Test("redo of a local delete of a remote row still deletes it")
+    func redoOfLocalDeleteOfRemoteRow() {
+        var store = EntityStore<TestEntity>()
+        let remote = TestEntity(name: "created on another device")
+        store.reconcile(with: EntityStore([remote]), preserving: [], removingMissing: true)
+        let beforeDelete = store
+
+        store[remote.id] = nil  // the local user deletes it
+        let afterDelete = store
+        store.restore(from: beforeDelete)  // undo
+        #expect(store[remote.id] == remote)
+
+        store.resetChanges()
+        store.restore(from: afterDelete)  // redo
+
+        #expect(store[remote.id] == nil, "the deletion was the local user's own, so redo owns it")
+        #expect(store.changes.deletions.contains(remote.id))
+    }
+
+    @Test("undoing a local delete of a remote row keeps it out of reach of older snapshots")
+    func undoneDeleteOfRemoteRowStaysRemote() {
+        let local = TestEntity(name: "local")
+        var store = EntityStore([local])
+        let beforeArrival = store
+
+        let remote = TestEntity(name: "created on another device")
+        store.reconcile(with: EntityStore([local, remote]), preserving: [], removingMissing: true)
+        let beforeDelete = store
+
+        store[remote.id] = nil
+        store.restore(from: beforeDelete)  // undo the delete
+        store.resetChanges()
+        store.restore(from: beforeArrival)  // undo something older still
+
+        #expect(store[remote.id] == remote, "bringing the row back does not make the local user its creator")
+        #expect(!store.changes.deletions.contains(remote.id))
+    }
+
+    @Test("a row storage hands back after a local delete is a new arrival")
+    func returningRowIsANewArrival() {
+        var store = EntityStore<TestEntity>()
+        let remote = TestEntity(name: "deleted here, restored elsewhere")
+        store.reconcile(with: EntityStore([remote]), preserving: [], removingMissing: true)
+        store[remote.id] = nil
+        store.resetChanges()  // the deletion flushed
+        let afterDelete = store
+
+        // Another device brings the row back.
+        store.reconcile(with: EntityStore([remote]), preserving: [], removingMissing: true)
+        store.restore(from: afterDelete)
+
+        #expect(store[remote.id] == remote, "the snapshot predates this arrival, whatever it knew of an earlier one")
+        #expect(!store.changes.deletions.contains(remote.id))
+    }
+
+    @Test("remote arrivals are excluded from equality")
+    func remoteArrivalsExcludedFromEquality() {
+        let remote = TestEntity(name: "remote")
+        var reconciled = EntityStore<TestEntity>()
+        reconciled.reconcile(with: EntityStore([remote]), preserving: [], removingMissing: true)
+
+        #expect(!reconciled.remoteArrivals.isEmpty)
+        #expect(reconciled == EntityStore([remote]), "transient metadata is not semantic state")
+    }
 }

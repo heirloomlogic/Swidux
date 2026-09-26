@@ -94,7 +94,9 @@ That has to be the rule, because the alternative is worse than a missing undo st
 
 ``EntityStore`` tracks this in `remotelyRemovedIDs`. An ID leaves the set the moment it becomes local again — the user creates it, or the row reappears on disk because the other device undid *its* delete — so nothing is permanently un-undoable. See <doc:EntityStoreGuide> for the mechanics.
 
-Apps that don't sync never hit this: nothing populates the set, and undo behaves exactly as it always has.
+The same holds in the other direction. If another device creates an entity and the merge surfaces it after an undo snapshot was taken, undoing past that snapshot keeps the row instead of deleting it — a deletion would sync out and remove the other device's creation everywhere. Redo follows the same rule. The row is still the local user's to edit and delete, and undo and redo of *those* changes work as usual.
+
+Apps that don't sync never hit either case: nothing is recorded, and undo behaves exactly as it always has.
 
 ## Memory
 
