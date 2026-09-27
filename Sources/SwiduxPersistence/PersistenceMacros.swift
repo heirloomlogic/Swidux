@@ -23,18 +23,27 @@ public enum SwiduxDeleteRule: Sendable {
 /// `Identifiable & Equatable & Sendable` with `ID == UUID`. By default every
 /// stored property is mirrored onto the model (SwiftData persists scalars and
 /// `Codable` composites natively); use the marker macros to override:
-/// ``Relation(deleteRule:inverse:)``, ``ForeignKey()``, ``Inline()``, ``Ignored()``.
+/// ``Relation(deleteRule:)``, ``ForeignKey()``, ``Inline()``, ``Ignored()``.
 @attached(peer, names: suffixed(Model))
 @attached(extension, conformances: PersistableEntity, names: arbitrary)
 public macro Persisted() = #externalMacro(module: "SwiduxMacros", type: "PersistedMacro")
 
 /// Marks a property as a SwiftData relationship to another `@Persisted` entity.
-/// The property's type must reference the related *domain* type (`[Card]`,
-/// `Card?`, or `Card`); the generated model substitutes the `…Model` shadow.
-/// `inverse` is supplied as a key path on the generated model type, e.g.
-/// `\CardModel.deck`.
+/// The property's type must reference the related *domain* type (`[Card]` or
+/// `Card?`); the generated model substitutes the `…Model` shadow.
+///
+/// A relation is an owned value composition: the parent's value contains its
+/// children, and saving the parent reconciles them. There is no back-reference —
+/// a child's domain value can't hold its parent without containing itself — so
+/// bidirectional relationships are not supported. Give the child a
+/// ``ForeignKey()`` `UUID` if it needs to name its parent.
+///
+/// A to-many relation is **unordered**: SwiftData stores it as a set, so the
+/// array comes back from storage in no particular order, and a change that only
+/// reorders it is not saved. Sort in the domain (or store an explicit position)
+/// when order matters.
 @attached(peer)
-public macro Relation(deleteRule: SwiduxDeleteRule, inverse: AnyKeyPath? = nil) =
+public macro Relation(deleteRule: SwiduxDeleteRule) =
     #externalMacro(module: "SwiduxMacros", type: "MarkerMacro")
 
 /// Marks a `UUID` property as a scalar parent reference. Intent/documentation
