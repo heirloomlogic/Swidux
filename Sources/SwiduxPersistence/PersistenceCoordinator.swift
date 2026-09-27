@@ -1006,14 +1006,21 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         ifAbsenceUndecided: UndecidedAbsence = .anchor
     ) async throws(MergeConflict) -> Bool {
         try check(attempt)
+        // Opened before this merge's own flush, not after it. A debounce flush
+        // can save a value the reads predate from the moment the flush below
+        // suspends — its work chains behind this flush's and may run before
+        // this function resumes — so a record opened on resuming could miss
+        // it. That also records this merge's own flush, whose rows are on disk
+        // before the first fetch, so the read agrees with memory about them.
+        // The one thing it can cost is a remote write that lands on such a
+        // row between that save and the read — milliseconds, on a row the user
+        // just edited — and that write's own transaction re-offers it to the
+        // next history tick. Missing the debounce flush instead would roll
+        // memory back over a newer local edit. Failing the attempt on any
+        // flush would never finish under steady typing.
+        let flushes = writers.map { $0.recordFlushes() }
         await corePlugin.flush()
         try check(attempt)
-        // Opened after the flush has landed and before the first fetch: from
-        // here on, a debounce flush can save a value the reads predate. Failing
-        // the attempt on any such flush would never finish under steady typing;
-        // exempting what it saved costs nothing, because its own transaction
-        // re-offers it.
-        let flushes = writers.map { $0.recordFlushes() }
         let phase = await mergePhase(scope, flushes: flushes)
         do {
             try check(attempt)
