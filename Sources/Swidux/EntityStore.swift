@@ -487,7 +487,7 @@ public nonisolated struct EntityStore<
     /// differences as changes for persistence tracking.
     ///
     /// Use this when restoring a previous state snapshot (e.g. undo/redo)
-    /// so the persistence middleware can persist the restored state.
+    /// so `PersistencePlugin` can persist the restored state.
     ///
     /// Unlike `merge(from:)` (which is a hydration operation that records
     /// no changes), `restore` records every difference so that
