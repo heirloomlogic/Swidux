@@ -53,7 +53,9 @@ public struct KillswitchService: Sendable {
     /// `fetchTimeout` bounds the whole fetch, headers and body together — not
     /// just the gap between packets. A response trickled in a byte at a time
     /// still fails at `fetchTimeout`, so the plugin reaches its cached verdict
-    /// on schedule instead of waiting on a transfer that never ends.
+    /// on schedule instead of waiting on a transfer that never ends. A
+    /// `fetchTimeout` that isn't finite and positive (`.infinity`, say) sets
+    /// no deadline, leaving only the session's own timeouts.
     ///
     /// ## The cache is the other input path
     ///
@@ -94,7 +96,7 @@ public struct KillswitchService: Sendable {
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 let data = try await BoundedResponse.data(
                     for: request, session: session, limit: Self.maxResponseBytes,
-                    deadline: .seconds(fetchTimeout)
+                    deadline: BoundedResponse.deadline(forTimeout: fetchTimeout)
                 )
                 return try JSONDecoder().decode(KillswitchConfig.self, from: data)
             },

@@ -72,6 +72,15 @@ struct KillswitchServiceLiveTests {
         #expect(error?.code == .dataLengthExceedsMaximum)
     }
 
+    @Test("an infinite fetchTimeout fetches without a deadline instead of trapping")
+    func infiniteFetchTimeoutDoesNotTrap() async throws {
+        let url = URL(static: "https://example.test/killswitch.json")
+        let session = StubURLSession.with(data: Data("{}".utf8), response: .ok(url: url))
+        let service = KillswitchService.live(endpoint: url, fetchTimeout: .infinity, session: session)
+
+        #expect(try await service.fetch() == KillswitchConfig())
+    }
+
     @Test("a trickling response is abandoned at fetchTimeout, not kept alive by each byte")
     func tricklingResponseTimesOut() async throws {
         let url = URL(static: "https://example.test/killswitch.json")
