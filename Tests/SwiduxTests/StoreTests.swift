@@ -763,6 +763,29 @@ struct StoreUndoManagerTests {
         #expect(!undoManager.canUndo && !store.canUndo, "the two stacks run out together")
     }
 
+    @Test("on a shared UndoManager, store.undo() is the window's Undo")
+    func inAppUndoOnSharedManagerIsTheWindowsUndo() {
+        let a = TestEntity(name: "a")
+        let store = Self.makeStore(a)
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+        final class TextField { var undone = false }
+        let textField = TextField()
+
+        event(undoManager) { store.send(.rename(a.id, "b")) }
+        event(undoManager) { undoManager.registerUndo(withTarget: textField) { $0.undone = true } }
+
+        // One history: the most recent step is the text field's, so that is
+        // what the in-app button undoes, exactly as Edit ▸ Undo would.
+        event(undoManager) { store.undo() }
+        #expect(textField.undone)
+        #expect(store.items[a.id]?.name == "b")
+
+        event(undoManager) { store.undo() }
+        #expect(store.items[a.id]?.name == "a")
+        #expect(!undoManager.canUndo && !store.canUndo)
+    }
+
     @Test("a deallocated store takes its steps off the UndoManager")
     func deallocatedStoreRemovesItsSteps() {
         let undoManager = UndoManager()

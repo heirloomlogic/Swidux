@@ -419,12 +419,17 @@ public final class Store<State: SwiduxObservable, Action> {
 
     // MARK: - Undo / Redo
 
-    /// Restores the previous state from the undo stack.
+    /// Restores the previous state from the undo stack — or, with an
+    /// ``undoManager`` attached, performs the window's Undo.
     ///
-    /// With an ``undoManager`` attached, a direct call — an in-app Undo
-    /// button, or a menu command that calls this — is routed through the
-    /// platform manager, so the Edit menu, shake-to-undo, and the button all
-    /// walk one history.
+    /// A direct call — an in-app Undo button, or a menu command that calls
+    /// this — is routed through an attached platform manager, so the Edit
+    /// menu, shake-to-undo, and the button all walk one history. That history
+    /// is the manager's, not just the store's: if a text field or a SwiftData
+    /// context sharing the manager registered the most recent step, that step
+    /// is what this undoes, and the store is left as it is. `canUndo` still
+    /// describes only the store's own history; enable a button that should
+    /// match the Edit menu from the manager's `canUndo` instead.
     public func undo() {
         if let undoManager, routesThroughUndoManager(undoManager, canStep: canUndo && undoManager.canUndo) {
             return undoManager.undo()
@@ -443,9 +448,11 @@ public final class Store<State: SwiduxObservable, Action> {
         }
     }
 
-    /// Re-applies a previously undone state from the redo stack.
+    /// Re-applies a previously undone state from the redo stack — or, with an
+    /// ``undoManager`` attached, performs the window's Redo.
     ///
-    /// Routed through an attached ``undoManager`` exactly as ``undo()`` is.
+    /// Routed through an attached ``undoManager`` exactly as ``undo()`` is,
+    /// with the same one-history contract.
     public func redo() {
         if let undoManager, routesThroughUndoManager(undoManager, canStep: canRedo && undoManager.canRedo) {
             return undoManager.redo()
