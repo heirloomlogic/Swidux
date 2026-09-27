@@ -83,6 +83,21 @@ public enum BoundedResponse {
         }
     }
 
+    /// The deadline for a `fetchTimeout` given in seconds, or `nil` when the
+    /// value can't be one.
+    ///
+    /// `URLRequest.timeoutInterval` accepts anything, and `.infinity` or
+    /// `.greatestFiniteMagnitude` there reads as "no timeout". The same value
+    /// passed to `Duration.seconds(_:)` traps. So a non-finite value, one past
+    /// a century (effectively forever, and short of `Duration`'s range), or
+    /// one that isn't positive means no deadline, the same thing it always
+    /// meant to the idle timeout.
+    package static func deadline(forTimeout seconds: TimeInterval) -> Duration? {
+        let century: TimeInterval = 100 * 365 * 24 * 3600
+        guard seconds.isFinite, seconds > 0, seconds <= century else { return nil }
+        return .seconds(seconds)
+    }
+
     /// The capped read itself, with no deadline of its own.
     private static func transfer(
         _ request: URLRequest,

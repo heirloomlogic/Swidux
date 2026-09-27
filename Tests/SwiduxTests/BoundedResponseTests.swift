@@ -41,6 +41,22 @@ struct BoundedResponseTests {
         #expect(try withoutDeadline.get() == StagedTransferProtocol.body)
     }
 
+    @Test(
+        "a timeout that isn't a usable deadline means no deadline, not a trap",
+        arguments: [TimeInterval.infinity, .greatestFiniteMagnitude, 1e19, .nan, 0, -1]
+    )
+    func unusableTimeoutMeansNoDeadline(seconds: TimeInterval) {
+        // `fetchTimeout: .infinity` used to mean "no timeout" to
+        // `URLRequest.timeoutInterval`; `Duration.seconds(_:)` traps on it.
+        #expect(BoundedResponse.deadline(forTimeout: seconds) == nil)
+    }
+
+    @Test("an ordinary timeout becomes the same deadline")
+    func ordinaryTimeoutIsTheDeadline() {
+        #expect(BoundedResponse.deadline(forTimeout: 10) == .seconds(10))
+        #expect(BoundedResponse.deadline(forTimeout: 0.25) == .milliseconds(250))
+    }
+
     /// Fetches `path` from the staged protocol, cancelling it from outside if
     /// it is still running after 5 s — so a missing deadline fails the test
     /// instead of hanging the run.

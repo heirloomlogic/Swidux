@@ -88,12 +88,14 @@ public struct KillswitchService: Sendable {
     public var loadCached: @Sendable () -> KillswitchConfig?
     public var saveCached: @Sendable (KillswitchConfig) -> Void
     public let cacheLifetime: TimeInterval
+    public let fetchTimeout: TimeInterval
 
     public init(
         fetch: @escaping @Sendable () async throws -> KillswitchConfig,
         loadCached: @escaping @Sendable () -> KillswitchConfig?,
         saveCached: @escaping @Sendable (KillswitchConfig) -> Void,
-        cacheLifetime: TimeInterval
+        cacheLifetime: TimeInterval,
+        fetchTimeout: TimeInterval = 30
     )
 
     public static func live(
@@ -112,6 +114,8 @@ public struct KillswitchService: Sendable {
 ```
 
 `live(endpoint:)` decodes JSON from `endpoint` with a `reloadIgnoringLocalCacheData` policy and persists the result to `swidux-killswitch.json` in a **bundle-scoped subdirectory** of the user's caches directory. The stored payload records the endpoint it came from, and a cache written for a different endpoint reads as absent — the cached config produces a verdict with the same authority a fetched one does, so it is scoped and checked rather than trusted. See <doc:SecurityPosture> §6a. `mock(result:cached:)` keeps an in-memory cache and lets a test inject a closure that returns or throws.
+
+`fetchTimeout` is the plugin's own bound on `fetch`, whatever the service does inside it. Only one network fetch runs at a time, so a custom `fetch` that never returned would otherwise hold `isFetching`, and every later `.fetch` and `.forceFetch`, for the session. Past the bound the plugin abandons the call, even one that ignores cancellation, and handles it as a failure (`URLError.timedOut`): cache fallback plus `.fetchFailed`. It defaults to 30 seconds for a custom service; `live` uses its own `fetchTimeout`. A value that isn't finite and positive means no bound.
 
 The endpoint must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure) — the killswitch is a remote control channel and must not be tamperable in transit. Non-2xx responses, payloads over 1 MB, and fetches that run past `fetchTimeout` are treated as fetch failures, which fall back to the cache (and ultimately fail open). `fetchTimeout` bounds the whole fetch, headers and body together; it is not just an idle timeout, so a response trickled in a byte at a time still fails on schedule.
 
@@ -213,7 +217,7 @@ Both initializers fail and return `nil` if the lower bound is not strictly less 
 
 | Action | Effect on state | Returned effect |
 |---|---|---|
-| `.fetch` | ignored while `isFetching`. Otherwise none, or sets `isFetching` when it goes to the network | if the window is fresh (`0 <= Date() - lastFetch < cacheLifetime`), evaluates the cached config and dispatches `.verdictReceived(..., fromNetwork: false)` without hitting the network (or dispatches `.forceFetch` if no cache is on disk); otherwise behaves like `.forceFetch`. `lastFetch` is session state, so every cold launch goes to the network |
+| `.fetch` | ignored while `isFetching`. If the window is fresh (`0 <= Date() - lastFetch < cacheLifetime`) and `loadCached()` returns a config, sets `verdict` from it and clears `fetchError` right there in the reducer, leaving `lastFetch` alone; otherwise sets `isFetching` | none for a fresh-window cache hit — the verdict is already applied, so no later action can land after, and overwrite, a newer network verdict. Otherwise behaves like `.forceFetch`. `lastFetch` is session state, so every cold launch goes to the network |
 | `.forceFetch` | ignored while `isFetching`; otherwise sets `isFetching` | if `verdict` is still `.unknown` (a cold launch) and a cached config exists, first dispatches its verdict with `fromNetwork: false`, so a build the device already knows is blocked is blocked before the network answers. Then calls `service.fetch()`, persists the result via `service.saveCached(_:)`, and dispatches `.verdictReceived(..., fromNetwork: true)`. On thrown error, falls back to `service.loadCached()` if it wasn't already shown — dispatching `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)` so the UI can surface the error while keeping a usable verdict |
 | `.verdictReceived(verdict, fromNetwork:)` | sets `verdict`, clears `fetchError`; sets `lastFetch = Date()` and clears `isFetching` **only when `fromNetwork` is true** — a cache-served verdict must not slide the freshness window, or a session polling `.fetch` inside `cacheLifetime` would never consult the network again, and the cold-launch preview arrives while the request is still in flight | none |
 | `.fetchFailed(message)` | sets `fetchError = message`, clears `isFetching` (does not clear `verdict` or `lastFetch`) | none |
@@ -223,7 +227,7 @@ The plugin only handles its own actions. Any action that `extractAction` returns
 
 The combination of `.forceFetch`'s cached-fallback behavior and `.fetch`'s cache-freshness gate is the basis for the plugin's offline tolerance: a launch on a flaky network still yields a verdict (cached) and an error indicator (`fetchError`), without leaving the UI stuck on `.unknown`.
 
-> Note: `.verdictReceived` is dispatched on every `.fetch`/`.forceFetch` (cache hit or network), usually with an unchanged verdict. Consume verdict transitions by observing `KillswitchState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
+> Note: `.verdictReceived` is dispatched on every network fetch (and its cold-launch preview or cache fallback), usually with an unchanged verdict; a fresh-window `.fetch` applies its cached verdict without one. Consume verdict transitions by observing `KillswitchState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
 
 ## Verdict evaluation rules
 

@@ -26,6 +26,85 @@ private final class MovableClock: Sendable {
     }
 }
 
+/// A key-value store whose first write is slow — a Keychain `SecItemAdd` →
+/// `errSecDuplicateItem` → `SecItemUpdate` under load — so a later write can
+/// overtake it.
+private final class SlowFirstWriteStore: KeyValueStore {
+    private let backing = InMemoryKeyValueStore()
+    private let writes = Mutex(0)
+    private let landed = Mutex(0)
+
+    /// Writes that have finished, slow one included.
+    var completedWrites: Int { landed.withLock { $0 } }
+
+    func value<Value>(_ key: KVKey<Value>) -> Value? { backing.value(key) }
+
+    @discardableResult
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool {
+        let index = writes.withLock { count in
+            count += 1
+            return count
+        }
+        if index == 1 { Thread.sleep(forTimeInterval: 0.15) }
+        defer { landed.withLock { $0 += 1 } }
+        return backing.setValue(value, for: key)
+    }
+
+    @discardableResult
+    func removeValue<Value>(for key: KVKey<Value>) -> Bool { backing.removeValue(for: key) }
+
+    func contains<Value>(_ key: KVKey<Value>) -> Bool { backing.contains(key) }
+}
+
+/// A store root for the one test that needs the real effect runner: `Store`
+/// runs every effect in its own task, which is what lets writes race.
+@Swidux
+nonisolated struct LockoutStoreRoot: Equatable, Sendable {
+    @Slice var parentalGate: ParentalGateState = .init()
+}
+
+enum LockoutStoreAction: Sendable {
+    case gate(ParentalGateAction)
+}
+
+@Suite("ParentalGate lockout persistence under the store")
+@MainActor
+struct ParentalGateLockoutStoreTests {
+    @Test("the persisted lockout ends up matching state, whatever order the writes run in")
+    func persistedLockoutFollowsDispatchOrder() async throws {
+        let kv = SlowFirstWriteStore()
+        let plugin = ParentalGatePlugin<LockoutStoreRoot, LockoutStoreAction>(
+            state: \.parentalGate,
+            action: LockoutStoreAction.gate,
+            extractAction: { if case .gate(let a) = $0 { a } else { nil } },
+            challengeSource: .fixed(MathChallenge(left: 2, right: 3, op: .plus)),
+            attemptLimit: 2,
+            keyValueStore: kv
+        )
+        let host = PluginHost<LockoutStoreRoot, LockoutStoreAction>()
+        host.register(plugin)
+        let store = Store(initialState: LockoutStoreRoot(), reducer: { _, _ in nil }, plugins: host)
+        defer { store.cancelEffects() }
+
+        store.send(.gate(.request(reason: "purchase")))
+        store.send(.gate(.submitAnswer(99)))  // attempts 1, no cooldown — the slow write
+        store.send(.gate(.submitAnswer(99)))  // the limit: attempts 0, cooldown
+        let live = store.parentalGate.cooldownUntil
+        #expect(live != nil)
+
+        // What a relaunch would hydrate. Each change's write is its own
+        // effect; if the slow first one lands last, the store says "one wrong
+        // answer, no cooldown" and a force-quit hands back fresh guesses.
+        for _ in 0..<400 where kv.completedWrites < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(kv.completedWrites >= 2)
+        let relaunched = ParentalGateState.hydrated(from: kv)
+        #expect(relaunched.cooldownUntil == live)
+        #expect(relaunched.attempts == 0)
+    }
+}
+
 extension ParentalGatePluginTests {
     // MARK: - Relaunch
 

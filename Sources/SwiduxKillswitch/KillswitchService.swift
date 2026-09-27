@@ -19,18 +19,39 @@ public struct KillswitchService: Sendable {
     public var saveCached: @Sendable (KillswitchConfig) -> Void
     /// How long a cached config is considered fresh, in seconds.
     public let cacheLifetime: TimeInterval
+    /// The longest the plugin waits on ``fetch``, in seconds.
+    ///
+    /// The plugin runs one network fetch at a time, so a fetch that never
+    /// returns would hold every later `.fetch` and `.forceFetch` for the rest
+    /// of the session, the incident-response refresh included. Past this
+    /// bound the plugin abandons it, even if it ignores cancellation, and
+    /// treats it as failed (`URLError.timedOut`), falling back to the cache.
+    /// A value that isn't finite and positive means no bound.
+    public let fetchTimeout: TimeInterval
 
     /// Creates a service with the given closures.
+    ///
+    /// - Parameters:
+    ///   - fetch: Fetches the latest config.
+    ///   - loadCached: Loads the last persisted config, or `nil`. Called
+    ///     synchronously on the main actor for a `.fetch` inside the
+    ///     freshness window, so keep it to a small local read.
+    ///   - saveCached: Persists a config.
+    ///   - cacheLifetime: How long a cached config is considered fresh, in
+    ///     seconds.
+    ///   - fetchTimeout: The longest the plugin waits on `fetch`, in seconds.
     public init(
         fetch: @escaping @Sendable () async throws -> KillswitchConfig,
         loadCached: @escaping @Sendable () -> KillswitchConfig?,
         saveCached: @escaping @Sendable (KillswitchConfig) -> Void,
-        cacheLifetime: TimeInterval
+        cacheLifetime: TimeInterval,
+        fetchTimeout: TimeInterval = 30
     ) {
         self.fetch = fetch
         self.loadCached = loadCached
         self.saveCached = saveCached
         self.cacheLifetime = cacheLifetime
+        self.fetchTimeout = fetchTimeout
     }
 
     // MARK: - Live
@@ -53,7 +74,9 @@ public struct KillswitchService: Sendable {
     /// `fetchTimeout` bounds the whole fetch, headers and body together — not
     /// just the gap between packets. A response trickled in a byte at a time
     /// still fails at `fetchTimeout`, so the plugin reaches its cached verdict
-    /// on schedule instead of waiting on a transfer that never ends.
+    /// on schedule instead of waiting on a transfer that never ends. A
+    /// `fetchTimeout` that isn't finite and positive (`.infinity`, say) sets
+    /// no deadline, leaving only the session's own timeouts.
     ///
     /// ## The cache is the other input path
     ///
@@ -94,7 +117,7 @@ public struct KillswitchService: Sendable {
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 let data = try await BoundedResponse.data(
                     for: request, session: session, limit: Self.maxResponseBytes,
-                    deadline: .seconds(fetchTimeout)
+                    deadline: BoundedResponse.deadline(forTimeout: fetchTimeout)
                 )
                 return try JSONDecoder().decode(KillswitchConfig.self, from: data)
             },
@@ -112,7 +135,8 @@ public struct KillswitchService: Sendable {
                     at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? data.write(to: cacheURL, options: .atomic)
             },
-            cacheLifetime: cacheLifetime
+            cacheLifetime: cacheLifetime,
+            fetchTimeout: fetchTimeout
         )
     }
 
