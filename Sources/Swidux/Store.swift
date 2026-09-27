@@ -111,6 +111,17 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Platform undo manager for menu/gesture integration.
     public weak var undoManager: UndoManager?
 
+    /// What the store's steps are registered against, instead of the store.
+    ///
+    /// `UndoManager` doesn't keep a step's target alive, and invoking a step
+    /// whose target was freed traps. A store scoped shorter than its window —
+    /// a per-sheet or per-document store, one rebuilt on account switch —
+    /// would leave exactly that behind for the next Edit ▸ Undo. Each step
+    /// holds this token strongly and the store weakly, so a step that outlives
+    /// its store is a no-op, and `deinit` removes the steps by it.
+    @ObservationIgnored
+    private let undoTarget = UndoTarget()
+
     /// Guards against re-entrant dispatch; see `send(_:)`.
     @ObservationIgnored
     private var isDispatching = false
@@ -289,7 +300,7 @@ public final class Store<State: SwiduxObservable, Action> {
         // `isUndoable`, the plugin's own predicate — which decided whether to
         // snapshot — is the whole rule.
         if let undoPlugin, undoPlugin.snapshotCount != snapshotsBefore, isUndoableAction?(action) ?? true {
-            undoManager?.registerUndo(withTarget: self) { $0.undo() }
+            registerPlatformStep { $0.undo() }
         }
 
         let send: Send<Action> = { [weak self] action in
@@ -368,6 +379,15 @@ public final class Store<State: SwiduxObservable, Action> {
 
     deinit {
         for handle in effectTasks.values { handle.task.cancel() }
+        // Take the store's steps out of the Edit menu. `UndoManager` belongs
+        // to the main thread, where a UI-owned store is released; released
+        // anywhere else, the steps stay behind as no-ops instead.
+        if Thread.isMainThread {
+            let target = undoTarget
+            MainActor.assumeIsolated {
+                undoManager?.removeAllActions(withTarget: target)
+            }
+        }
     }
 
     // MARK: - Undo / Redo
@@ -390,8 +410,8 @@ public final class Store<State: SwiduxObservable, Action> {
             // Only an undo the manager is running files the inverse on its redo
             // stack. Registered from anywhere else it becomes a new *undo*, and
             // the next system Undo would redo what the user just undid.
-            if let undoManager = self.undoManager, undoManager.isUndoing {
-                undoManager.registerUndo(withTarget: self) { $0.redo() }
+            if self.undoManager?.isUndoing == true {
+                self.registerPlatformStep { $0.redo() }
             }
         }
     }
@@ -408,8 +428,8 @@ public final class Store<State: SwiduxObservable, Action> {
             let current = State(observer: self.observer)
             guard let restored = undoPlugin.redo(current: current) else { return }
             self.applySnapshot(restored)
-            if let undoManager = self.undoManager, undoManager.isRedoing {
-                undoManager.registerUndo(withTarget: self) { $0.undo() }
+            if self.undoManager?.isRedoing == true {
+                self.registerPlatformStep { $0.undo() }
             }
         }
     }
@@ -425,6 +445,17 @@ public final class Store<State: SwiduxObservable, Action> {
     /// the call is the manager's own callback or arrives mid-dispatch, and when
     /// a group other than the current event's is open — `UndoManager` raises
     /// if asked to undo inside one.
+    /// Registers `step` on the platform manager against ``undoTarget``, which
+    /// the handler keeps alive, calling into the store only while it lives.
+    private func registerPlatformStep(_ step: @escaping @MainActor (Store) -> Void) {
+        let target = undoTarget
+        undoManager?.registerUndo(withTarget: target) { [weak self] _ in
+            withExtendedLifetime(target) {
+                if let self { step(self) }
+            }
+        }
+    }
+
     private func routesThroughUndoManager(_ undoManager: UndoManager, canStep: Bool) -> Bool {
         guard canStep, !isDispatching, !undoManager.isUndoing, !undoManager.isRedoing else { return false }
         return undoManager.groupingLevel == 0 || (undoManager.groupsByEvent && undoManager.groupingLevel == 1)
@@ -452,6 +483,9 @@ public final class Store<State: SwiduxObservable, Action> {
 }
 
 extension Store: @MainActor SwiduxDispatcher {}
+
+/// The target the store's platform undo steps are registered against.
+private final class UndoTarget: Sendable {}
 
 // MARK: - Effect Cancellation Registry
 

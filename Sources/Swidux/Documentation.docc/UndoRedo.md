@@ -81,6 +81,8 @@ WindowGroup { ... }
 
 Once an `UndoManager` is attached, calling ``Store/undo()`` or ``Store/redo()`` directly — from an in-app button, or from the macOS `CommandGroup` above — routes through it. The Edit menu, shake-to-undo, and your own buttons then walk one history, and each can undo or redo what another did. If the manager holds none of the store's steps (it was attached after the edits were made), the store steps its own history instead and leaves the manager alone.
 
+A store may be shorter-lived than the window's manager — a per-sheet or per-document store, or one rebuilt on account switch. When it is deallocated it takes its steps off the manager, and any step left behind (the manager was swapped out first) does nothing when invoked.
+
 ## Coalescing
 
 The `coalescing` predicate groups consecutive matching actions into a single undo step. The first coalescing action captures a snapshot; subsequent consecutive coalescing actions share that snapshot. A non-coalescing action or undo/redo resets the flag. Typing "hello" produces one undo entry, not five.

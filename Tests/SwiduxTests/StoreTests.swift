@@ -749,6 +749,50 @@ struct StoreUndoManagerTests {
         #expect(store.items[a.id]?.name == "a")
     }
 
+    @Test("a deallocated store takes its steps off the UndoManager")
+    func deallocatedStoreRemovesItsSteps() {
+        let undoManager = UndoManager()
+        weak var weakStore: Store<TestState, TestAction>?
+        do {
+            let a = TestEntity(name: "a")
+            let store = Self.makeStore(a)
+            store.undoManager = undoManager
+            event(undoManager) { store.send(.rename(a.id, "b")) }
+            weakStore = store
+        }
+        #expect(weakStore == nil, "premise: the manager doesn't keep the store alive")
+        #expect(!undoManager.canUndo, "Edit ▸ Undo still offered for a store nobody holds")
+    }
+
+    #if os(macOS)
+    @Test("Edit ▸ Undo of a step whose store is gone does not trap")
+    func undoAfterStoreDeinitDoesNotTrap() async {
+        await #expect(processExitsWith: .success) {
+            await MainActor.run {
+                let undoManager = UndoManager()
+                undoManager.groupsByEvent = false
+                do {
+                    let a = TestEntity(name: "a")
+                    let plugins = PluginHost<TestState, TestAction>()
+                    plugins.register(UndoPlugin<TestState, TestAction>())
+                    var initial = TestState()
+                    initial.items = EntityStore([a])
+                    let store = Store(initialState: initial, reducer: testReducer, plugins: plugins)
+                    store.undoManager = undoManager
+                    undoManager.beginUndoGrouping()
+                    store.send(.rename(a.id, "b"))
+                    undoManager.endUndoGrouping()
+                    // Detached first — a view swapping managers — so the
+                    // store's deinit can't take the step back off.
+                    store.undoManager = nil
+                }
+                precondition(undoManager.canUndo, "premise: the step outlived its store")
+                undoManager.undo()  // must be inert, not a call into freed memory
+            }
+        }
+    }
+    #endif
+
     @Test("in-app undo and redo work when the UndoManager holds none of the store's steps")
     func inAppUndoWithoutPlatformSteps() {
         let a = TestEntity(name: "a")
