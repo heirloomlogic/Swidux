@@ -44,8 +44,14 @@ func generateConformanceExtension(
     // state that may opt out of undo, or a plain value is a question about its
     // resolved type, which the syntax can't answer (`typealias Cards =
     // EntityStore<Card>`); `SwiduxRestore`'s overloads answer it.
+    //
+    // The restored value is built in an initializer, where assigning a stored
+    // property doesn't run its `willSet`/`didSet`. Mutating `current` in place
+    // (or passing its properties `inout`) would run every observer in the tree
+    // on each undo, and an observer that touches a sibling — `didSet {
+    // revision += 1 }` — would leave the restored state unequal to its snapshot.
     let restoreLines = properties.map { prop -> String in
-        "        SwiduxRestore.restore(&current.\(prop.name), from: snapshot.\(prop.name))"
+        "        self.\(prop.name) = SwiduxRestore.restored(current.\(prop.name), from: snapshot.\(prop.name))"
     }.joined(separator: "\n")
 
     let source = """
@@ -71,6 +77,11 @@ func generateConformanceExtension(
 
             @MainActor
             \(accessPrefix)static func applyRestore(from snapshot: \(typeName), to current: inout \(typeName)) {
+                current = \(typeName)(swiduxRestoring: current, from: snapshot)
+            }
+
+            @MainActor
+            private init(swiduxRestoring current: \(typeName), from snapshot: \(typeName)) {
         \(restoreLines)
             }
         }

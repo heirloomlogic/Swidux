@@ -85,7 +85,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: FlagState, to current: inout FlagState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = FlagState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: FlagState, from snapshot: FlagState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -143,7 +148,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PairState, to current: inout PairState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = PairState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PairState, from snapshot: PairState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -201,7 +211,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: LazyState, to current: inout LazyState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = LazyState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: LazyState, from snapshot: LazyState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -305,7 +320,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     fileprivate static func applyRestore(from snapshot: HiddenState, to current: inout HiddenState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = HiddenState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: HiddenState, from snapshot: HiddenState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -358,7 +378,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: HostState, to current: inout HostState) {
-                        SwiduxRestore.restore(&current.child, from: snapshot.child)
+                        current = HostState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: HostState, from snapshot: HostState) {
+                        self.child = SwiduxRestore.restored(current.child, from: snapshot.child)
                     }
                 }
                 """,
@@ -436,9 +461,14 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PhaseState, to current: inout PhaseState) {
-                        SwiduxRestore.restore(&current.phase, from: snapshot.phase)
-                        SwiduxRestore.restore(&current.limit, from: snapshot.limit)
-                        SwiduxRestore.restore(&current.other, from: snapshot.other)
+                        current = PhaseState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PhaseState, from snapshot: PhaseState) {
+                        self.phase = SwiduxRestore.restored(current.phase, from: snapshot.phase)
+                        self.limit = SwiduxRestore.restored(current.limit, from: snapshot.limit)
+                        self.other = SwiduxRestore.restored(current.other, from: snapshot.other)
                     }
                 }
                 """,

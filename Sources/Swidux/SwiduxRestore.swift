@@ -5,9 +5,9 @@
 //  Undo/redo restore support for macro-generated `applyRestore` bodies.
 //
 
-/// Restores one stored property of a `@Swidux` struct during undo/redo.
-/// Emitted into every generated ``SwiduxObservable/applyRestore(from:to:)``
-/// body; not meant to be called directly.
+/// Computes the restored value of one stored property of a `@Swidux` struct
+/// during undo/redo. Emitted into every generated
+/// ``SwiduxObservable/applyRestore(from:to:)``; not meant to be called directly.
 ///
 /// ## Why overloads rather than the macro deciding
 ///
@@ -23,23 +23,38 @@
 /// - A ``SwiduxObservable`` value recurses into its own `applyRestore`, unless
 ///   its type opts out through ``SwiduxObservable/restoresOnUndo`` — with or
 ///   without `@Slice`.
-/// - Anything else is assigned.
+/// - Anything else is the snapshot's value.
+///
+/// ## Why values rather than `inout`
+///
+/// Each overload returns the restored value, and the generated code assigns it
+/// inside an initializer. Swift runs a property's `willSet`/`didSet` whenever
+/// the property is mutated in place or passed `inout`, but not when an
+/// initializer assigns it — and undo must reproduce the snapshot, not replay
+/// the side effects of an edit.
 public enum SwiduxRestore {
-    /// Restores a plain value by assignment.
-    public static func restore<Value>(_ current: inout Value, from snapshot: Value) {
-        current = snapshot
+    /// The restored value of a plain property: the snapshot's.
+    public static func restored<Value>(_ current: Value, from snapshot: Value) -> Value {
+        snapshot
     }
 
-    /// Restores an entity store, recording the difference as pending changes.
-    public static func restore<Entity>(_ current: inout EntityStore<Entity>, from snapshot: EntityStore<Entity>) {
-        current.restore(from: snapshot)
+    /// The restored entity store, with the difference recorded as pending changes.
+    public static func restored<Entity>(
+        _ current: EntityStore<Entity>,
+        from snapshot: EntityStore<Entity>
+    ) -> EntityStore<Entity> {
+        var restored = current
+        restored.restore(from: snapshot)
+        return restored
     }
 
-    /// Restores nested state through its own `applyRestore`, or leaves
-    /// `current` untouched when the type opts out of undo restoration.
+    /// The restored nested state, through its own `applyRestore` — or `current`
+    /// unchanged when the type opts out of undo restoration.
     @MainActor
-    public static func restore<State: SwiduxObservable>(_ current: inout State, from snapshot: State) {
-        guard State.restoresOnUndo else { return }
-        State.applyRestore(from: snapshot, to: &current)
+    public static func restored<State: SwiduxObservable>(_ current: State, from snapshot: State) -> State {
+        guard State.restoresOnUndo else { return current }
+        var restored = current
+        State.applyRestore(from: snapshot, to: &restored)
+        return restored
     }
 }

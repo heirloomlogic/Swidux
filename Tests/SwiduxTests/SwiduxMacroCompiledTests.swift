@@ -89,6 +89,19 @@ public nonisolated struct AccessMixState: Equatable, Sendable {
     mutating func setSecret(_ value: Int) { secret = value }
 }
 
+/// A property observer with a side effect on a sibling. Undo must reproduce the
+/// snapshot exactly, so restoring `title` must not run its `didSet`.
+@Swidux
+nonisolated struct StampedState: Equatable, Sendable {
+    var revision: Int = 0
+    var title: String = "" {
+        didSet { revision += 1 }
+    }
+    var log: [String] = [] {
+        willSet { if log.count > 100 { log.removeAll() } }
+    }
+}
+
 /// Top-level `private` (the same scope as `fileprivate` there), the usual shape
 /// of a state in a test or preview file.
 @Swidux
@@ -192,6 +205,16 @@ struct SwiduxMacroCompiledTests {
         state.setSecret(3)
 
         #expect(AccessMixState(observer: AccessMixState.makeObserver(from: state)) == state)
+    }
+
+    @Test("applyRestore reproduces the snapshot without running property observers")
+    func restoreDoesNotRunObservers() {
+        let snapshot = StampedState(revision: 5, title: "before", log: ["a"])
+        var current = StampedState(revision: 9, title: "after", log: ["a", "b"])
+
+        StampedState.applyRestore(from: snapshot, to: &current)
+
+        #expect(current == snapshot, "restored revision \(current.revision), snapshot had 5")
     }
 
     @Test("A top-level fileprivate state works through a store")

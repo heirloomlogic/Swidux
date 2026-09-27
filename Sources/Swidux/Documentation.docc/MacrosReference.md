@@ -30,13 +30,13 @@ For a struct named `MyState`, the macro emits:
    - `init(observer:)` — pack: read the observer tree into a struct snapshot.
    - `static func makeObserver(from:) -> MyStateObserver` — factory.
    - `static func apply(_:to:)` — unpack: assign struct fields back onto the observer. `@Observable` only fires notifications for fields whose values actually change.
-   - `static func applyRestore(from:to:)` — used during undo/redo. Every property restores through `SwiduxRestore.restore(_:from:)`, whose overloads choose by the property's resolved type: an ``EntityStore`` calls `.restore(from:)` so change tracking stays consistent, a ``SwiduxObservable`` value recurses into its own `applyRestore` unless its type opts out (see below), and anything else is assigned. Deciding by type rather than spelling means a `typealias` or a module-qualified `Swidux.EntityStore` behaves the same as `EntityStore<…>`.
+   - `static func applyRestore(from:to:)` — used during undo/redo. It rebuilds the state in a private initializer, taking each property from `SwiduxRestore.restored(_:from:)`, whose overloads choose by the property's resolved type: an ``EntityStore`` goes through `.restore(from:)` so change tracking stays consistent, a ``SwiduxObservable`` value recurses into its own `applyRestore` unless its type opts out (see below), and anything else takes the snapshot's value. Because the values are assigned in an initializer, restoring never runs a property's `willSet`/`didSet`. Deciding by type rather than spelling means a `typealias` or a module-qualified `Swidux.EntityStore` behaves the same as `EntityStore<…>`.
 
 ### Requirements on the annotated struct
 
 - **Must be a struct.** Applying `@Swidux` to a class or enum emits a diagnostic.
 - **Should declare `Equatable` and `Sendable`.** The protocol requires both. The example projects also mark the struct `nonisolated` so it can cross the `@MainActor` boundary inside ``Store``.
-- **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs or unpacks the value.
+- **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs, unpacks or restores the value, so undo reproduces the snapshot exactly instead of replaying an observer's side effects.
 - **Not generic, and not `private`/`fileprivate` when nested.** The generated peer can't name a generic struct's parameters, and a nested `private` type is narrower than anything the peer can be declared with. Both are diagnosed. For generic state, hand-write the ``SwiduxObservable`` conformance. A `private` or `fileprivate` struct at file scope is fine, which is the usual shape in a test or preview file: both mean "this file" there, and the observer and conformance are emitted `fileprivate`.
 - **Every stored property must be visible to the macro.** Each of these is a compile error rather than a property whose value silently resets on every dispatch: a stored property inside `#if` (declare it unconditionally and move the `#if` into its type or value), a tuple-pattern declaration (`var (a, b): (Int, Int)`), a combined declaration (`var a: Int, b: Int`), a missing type annotation, and a `lazy` property.
 
@@ -153,13 +153,18 @@ extension AppState: SwiduxObservable {
 
     @MainActor
     static func applyRestore(from snapshot: AppState, to current: inout AppState) {
-        SwiduxRestore.restore(&current.counters, from: snapshot.counters)
-        SwiduxRestore.restore(&current.ui, from: snapshot.ui)
+        current = AppState(swiduxRestoring: current, from: snapshot)
+    }
+
+    @MainActor
+    private init(swiduxRestoring current: AppState, from snapshot: AppState) {
+        self.counters = SwiduxRestore.restored(current.counters, from: snapshot.counters)
+        self.ui = SwiduxRestore.restored(current.ui, from: snapshot.ui)
     }
 }
 ```
 
-Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, `applyRestore` emits the same `SwiduxRestore.restore` call for both properties. Overload resolution sends `counters` to `EntityStore.restore(from:)`, because plain assignment would discard pending change-tracking metadata, and sends `ui` to `UIState.applyRestore`. `SwiduxRestore` exists only for generated code; don't call it directly.
+Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, the restore emits the same `SwiduxRestore.restored` call for both properties. Overload resolution sends `counters` to `EntityStore.restore(from:)`, because plain assignment would discard pending change-tracking metadata, and sends `ui` to `UIState.applyRestore`. The results are assigned inside an initializer rather than to `current`'s properties in place, because an in-place write, or an `inout` argument, runs the property's observers. `SwiduxRestore` exists only for generated code; don't call it directly.
 
 ### What undo restores
 
