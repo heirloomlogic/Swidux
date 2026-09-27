@@ -36,7 +36,8 @@ public protocol PersistableModel: PersistentModel {
 
     /// Updates an existing model in place from a domain value (used for upserts),
     /// preserving SwiftData identity. Does not reassign `id`.
-    /// Throws on conversion failure. `EntityDB` rolls back the whole write batch.
+    /// Throws on conversion failure. `EntityDB` fails that row alone and saves
+    /// the rest of its batch — see ``UnencodableRows``.
     func update(from domain: Domain) throws
 
     /// The entity's stable identity.
