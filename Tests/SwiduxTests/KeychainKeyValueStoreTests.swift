@@ -292,7 +292,9 @@ struct KeychainKeyValueStoreTests {
         ]
         #expect(SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess)
 
-        let store = KeychainKeyValueStore(service: service)
+        // Held as the protocol, the way an app environment usually stores it:
+        // the Keychain-aware path must still be taken.
+        let store: any KeyValueStore = KeychainKeyValueStore(service: service)
         let sessionOnly = store.deviceIdentity()
         #expect(UUID(uuidString: sessionOnly) != nil)
 

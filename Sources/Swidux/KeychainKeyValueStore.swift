@@ -28,14 +28,13 @@ import os
 /// let deviceID = kv.deviceIdentity()   // reads, or mints-and-persists, ``KVKey/deviceID``
 /// ```
 ///
-/// Use ``KeyValueStore/deviceIdentity(key:)`` rather than hand-rolling the
-/// read-or-mint pattern above: it ships with Swidux under the fixed key
-/// ``KVKey/deviceID``, and this type's own overload additionally distinguishes
-/// "no identity yet" from "couldn't read the identity right now" so a locked
-/// keychain never mints a second identity over an existing one. An app that
-/// mints under a key of its own choosing instead — as the snippet above used
-/// to — silently reshuffles every existing user's identity the day it switches
-/// to the shared helper, because the two keys never collide.
+/// Prefer ``KeyValueStore/deviceIdentity(key:)`` to a hand-rolled
+/// read-or-mint under a key of your own: it uses the fixed key
+/// ``KVKey/deviceID``, and on this store it distinguishes "no identity yet"
+/// from "couldn't read the identity right now", so a locked keychain never
+/// mints a second identity over an existing one. An app that minted under its
+/// own key and later switches to the helper silently gives every existing user
+/// a new identity, because the two keys never collide.
 ///
 /// ## Accessibility
 ///
@@ -205,7 +204,7 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
 
     /// The outcome of a Keychain lookup, distinguishing "no item" from
     /// "an item may exist but couldn't be read" — the distinction
-    /// ``deviceIdentity(key:)`` needs so a transient read failure never mints
+    /// ``KeyValueStore/deviceIdentity(key:)`` needs so a transient read failure never mints
     /// over an identity that's still there. ``value(_:)`` collapses `.missing`
     /// and `.failed` to `nil`; use `lookup(_:)` where that distinction matters.
     enum LookupResult<Value> {
