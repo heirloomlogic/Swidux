@@ -41,6 +41,15 @@ public actor EntityDB {
     /// An error the next read should throw instead of touching the store.
     private var injectedFetchFailure: (any Error)?
 
+    /// The author this actor stamps on every transaction it saves.
+    ///
+    /// Unique per instance, so a history scan can tell this database's own
+    /// writes from every other writer's — CloudKit's import, another process,
+    /// or a second `EntityDB` on the same container. What this actor wrote came
+    /// from the state it serves, so the scan has nothing to learn from it that
+    /// it can only learn the expensive way. See `changes(since:readers:)`.
+    let transactionAuthor = "swidux.\(UUID().uuidString)"
+
     /// Test seam: makes the next read throw `error` rather than run, so the
     /// read-failure branch of hydration and of every merge can be exercised.
     ///
@@ -82,8 +91,11 @@ public actor EntityDB {
     /// ``EntityStore`` cannot represent duplicates, and handing it a duplicate
     /// corrupts its index. Duplicates are logged, not treated as an error —
     /// they are a legitimate state under CloudKit mirroring.
+    ///
+    /// Throws if any row cannot be decoded, rather than returning the rest as
+    /// though they were everything.
     public func fetchAll<M: PersistableModel>(_ type: M.Type) throws -> [M.Domain] {
-        try fetchAllCollapsing(M.self).domains
+        try fetchAllCollapsing(M.self).checked()
     }
 
     /// Collapses rows to one domain value per `id`, keeping the first in fetch
@@ -93,17 +105,29 @@ public actor EntityDB {
     /// full-table and by-ID paths. Two reads of the same row disagreeing on the
     /// survivor would make a partial merge flap between values on every tick.
     ///
-    /// - Returns: The domain values, and how many rows were collapsed away. The
-    ///   count goes back to the caller as well as to the log: only the main
-    ///   actor holds the app's diagnostic handler.
-    private func collapse<M: PersistableModel>(_ rows: [M]) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+    /// Decoding is per row. A row this build cannot decode — typically one a
+    /// newer app version wrote — is named in the result instead of failing the
+    /// read, so it costs that row and not every row of its entity. An ID whose
+    /// first row in fetch order will not decode is undecodable; a later
+    /// duplicate is not consulted, so both read paths agree.
+    ///
+    /// - Returns: The domain values, how many rows were collapsed away, and the
+    ///   rows that could not be decoded. The count goes back to the caller as
+    ///   well as to the log: only the main actor holds the app's diagnostic
+    ///   handler.
+    private func collapse<M: PersistableModel>(_ rows: [M]) -> CollapsedRead<M.Domain> {
         var seen = Set<UUID>(minimumCapacity: rows.count)
         var domains: [M.Domain] = []
         domains.reserveCapacity(rows.count)
+        var undecodable = UndecodableRows()
         for row in rows where seen.insert(row.id).inserted {
-            domains.append(try row.toDomain())
+            do {
+                domains.append(try row.toDomain())
+            } catch {
+                undecodable.record(row.id, error)
+            }
         }
-        let duplicates = rows.count - domains.count
+        let duplicates = rows.count - seen.count
         if duplicates > 0 {
             Self.logger.warning(
                 """
@@ -113,7 +137,7 @@ public actor EntityDB {
                 """
             )
         }
-        return (domains, duplicates)
+        return CollapsedRead(domains: domains, duplicatesCollapsed: duplicates, undecodable: undecodable)
     }
 
     /// ``fetchAll(_:)`` plus how many rows it collapsed away.
@@ -125,9 +149,9 @@ public actor EntityDB {
     /// app's diagnostic handler, so they emit it.
     func fetchAllCollapsing<M: PersistableModel>(
         _ type: M.Type
-    ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+    ) throws -> CollapsedRead<M.Domain> {
         try consumeInjectedFetchFailure()
-        return try collapse(try modelContext.fetch(FetchDescriptor<M>()))
+        return collapse(try modelContext.fetch(FetchDescriptor<M>()))
     }
 
     /// Loads every persisted row of the **domain** type `E`.
@@ -159,12 +183,13 @@ public actor EntityDB {
     ///   - ids: The identities to load. Duplicates and unknown IDs are harmless.
     ///   - type: The domain entity type, e.g. `Note.self`.
     /// - Returns: One domain value per matched `id`, in fetch order.
-    /// - Throws: Whatever the underlying fetch throws.
+    /// - Throws: Whatever the underlying fetch throws, or the decoding error of
+    ///   the first row that cannot be decoded.
     public func fetch<E: PersistableEntity>(
         ids: some Sequence<UUID>,
         of type: E.Type
     ) throws -> [E] {
-        try fetchCollapsing(ids: ids, as: E.Model.self).domains
+        try fetchCollapsing(ids: ids, as: E.Model.self).checked()
     }
 
     /// ``fetch(ids:of:)`` plus how many rows it collapsed away.
@@ -176,9 +201,9 @@ public actor EntityDB {
     func fetchCollapsing<M: PersistableModel>(
         ids: some Sequence<UUID>,
         as type: M.Type
-    ) throws -> (domains: [M.Domain], duplicatesCollapsed: Int) {
+    ) throws -> CollapsedRead<M.Domain> {
         try consumeInjectedFetchFailure()
-        return try collapse(try rows(ids: ids, as: M.self))
+        return collapse(try rows(ids: ids, as: M.self))
     }
 
     /// Inserts or updates the row for `domain.id`, then saves.
@@ -212,35 +237,82 @@ public actor EntityDB {
     /// row sharing an ID, so a batch applied against a store holding duplicates
     /// leaves no stale or resurrectable copies.
     ///
-    /// On failure the context is rolled back before rethrowing, leaving no
-    /// half-applied changes behind for a later save to pick up.
+    /// A row whose value cannot be converted to its stored form fails on its
+    /// own: every other row is saved, and ``UnencodableRows`` names the ones
+    /// that were not. Conversion failures are deterministic, so failing the
+    /// whole batch would fail it identically on every retry — and every later
+    /// edit of this type joins that batch. Any other failure rolls the context
+    /// back before rethrowing, leaving no half-applied changes behind for a
+    /// later save to pick up.
+    ///
+    /// - Throws: ``UnencodableRows`` after saving the rest of the batch, or
+    ///   whatever the fetch or save throws, with nothing saved.
     public func apply<M: PersistableModel>(
         writes: [M.Domain],
         deletions: Set<UUID>,
         as type: M.Type
     ) throws {
+        var unencodable: Set<UUID> = []
+        var firstError: (any Error)?
+        // Each pass that meets a conversion failure excludes at least one more
+        // row than the last, so this ends — in two passes for any batch whose
+        // failures are deterministic.
+        while true {
+            let remaining = unencodable.isEmpty ? writes : writes.filter { !unencodable.contains($0.id) }
+            let failures = try applyOnce(writes: remaining, deletions: deletions, as: M.self)
+            guard let first = failures.first else { break }
+            firstError = firstError ?? first.error
+            unencodable.formUnion(failures.lazy.map(\.id))
+        }
+        if let firstError {
+            throw UnencodableRows(failedIDs: unencodable, underlying: firstError)
+        }
+    }
+
+    /// One attempt at a batch. Saves it when every row converts; otherwise rolls
+    /// back and reports the rows that did not, in batch order.
+    ///
+    /// Nothing from a pass that met a conversion failure is saved: a throw can
+    /// come part-way through `update(from:)`, leaving that row half-written in
+    /// the context, and only a rollback is sure to undo it.
+    private func applyOnce<M: PersistableModel>(
+        writes: [M.Domain],
+        deletions: Set<UUID>,
+        as type: M.Type
+    ) throws -> [(id: UUID, error: any Error)] {
         do {
             let touchedIDs = Set(writes.map(\.id)).union(deletions)
             var existingByID = try rowsByID(touchedIDs, as: M.self)
+            var unencodable: [(id: UUID, error: any Error)] = []
             for domain in writes {
-                let existing = existingByID[domain.id] ?? []
-                if existing.isEmpty {
-                    let inserted = try M(from: domain)
-                    modelContext.insert(inserted)
-                    // Keep the map faithful to context state: a later
-                    // deletion of the same ID must see the pending row,
-                    // exactly as a per-ID fetch would.
-                    existingByID[domain.id] = [inserted]
-                } else {
-                    for row in existing { try row.update(from: domain) }
+                do {
+                    let existing = existingByID[domain.id] ?? []
+                    if existing.isEmpty {
+                        let inserted = try M(from: domain)
+                        modelContext.insert(inserted)
+                        // Keep the map faithful to context state: a later
+                        // deletion of the same ID must see the pending row,
+                        // exactly as a per-ID fetch would.
+                        existingByID[domain.id] = [inserted]
+                    } else {
+                        for row in existing { try row.update(from: domain) }
+                    }
+                } catch {
+                    unencodable.append((domain.id, error))
                 }
+            }
+            guard unencodable.isEmpty else {
+                modelContext.rollback()
+                return unencodable
             }
             for id in deletions {
                 for row in existingByID[id] ?? [] {
                     modelContext.delete(row)
                 }
             }
+            modelContext.author = transactionAuthor
             try modelContext.save()
+            return []
         } catch {
             modelContext.rollback()
             throw error
@@ -276,13 +348,30 @@ public actor EntityDB {
     /// pick a survivor safely on its own.
     ///
     /// - Returns: The survivors and the IDs removed from disk.
-    /// - Throws: Whatever the underlying fetch or save throws. The context is
-    ///   rolled back before rethrowing.
+    /// - Throws: Whatever the underlying fetch or save throws, or the decoding
+    ///   error of the first row that cannot be decoded — in which case nothing
+    ///   is collapsed. The context is rolled back before rethrowing.
     @discardableResult
     public func collapseDuplicates<M: PersistableModel>(
         as type: M.Type,
         using collapse: @Sendable ([M.Domain]) -> [M.Domain]
     ) throws -> CollapseOutcome<M.Domain> {
+        let collapsed = try collapsingDuplicates(as: M.self, using: collapse)
+        try collapsed.undecodable.check()
+        return collapsed.outcome
+    }
+
+    /// ``collapseDuplicates(as:using:)`` that reports undecodable rows instead
+    /// of throwing on them.
+    ///
+    /// When any row cannot be decoded the resolver does not run and nothing is
+    /// written: it is handed the whole table and asked which rows survive, and a
+    /// table with rows missing from it is a world it cannot see. The decodable
+    /// rows come back collapsed exactly as a plain read would collapse them.
+    func collapsingDuplicates<M: PersistableModel>(
+        as type: M.Type,
+        using collapse: @Sendable ([M.Domain]) -> [M.Domain]
+    ) throws -> (outcome: CollapseOutcome<M.Domain>, undecodable: UndecodableRows) {
         do {
             let rows = try modelContext.fetch(FetchDescriptor<M>())
             // Convert once and keep the domain value beside its row: the
@@ -290,10 +379,21 @@ public actor EntityDB {
             var byID: [UUID: [(row: M, domain: M.Domain)]] = [:]
             var domains: [M.Domain] = []
             domains.reserveCapacity(rows.count)
+            var undecodable = UndecodableRows()
             for row in rows {
-                let domain = try row.toDomain()
-                domains.append(domain)
-                byID[row.id, default: []].append((row, domain))
+                do {
+                    let domain = try row.toDomain()
+                    domains.append(domain)
+                    byID[row.id, default: []].append((row, domain))
+                } catch {
+                    undecodable.record(row.id, error)
+                }
+            }
+            guard undecodable.ids.isEmpty else {
+                let read = self.collapse(rows)
+                let outcome = CollapseOutcome(
+                    survivors: read.domains, removedIDs: [], duplicateRowCount: read.duplicatesCollapsed)
+                return (outcome, read.undecodable)
             }
 
             let survivors = collapse(domains)
@@ -326,12 +426,14 @@ public actor EntityDB {
                 }
             }
 
+            modelContext.author = transactionAuthor
             try modelContext.save()
-            return CollapseOutcome(
+            let outcome = CollapseOutcome(
                 survivors: survivors,
                 removedIDs: removedIDs,
                 duplicateRowCount: rows.count - byID.count
             )
+            return (outcome, undecodable)
         } catch {
             modelContext.rollback()
             throw error
@@ -397,5 +499,47 @@ public actor EntityDB {
         return stride(from: 0, to: unique.count, by: batchFetchChunkSize).map {
             Array(unique[$0..<min($0 + batchFetchChunkSize, unique.count)])
         }
+    }
+}
+
+/// A read's rows, collapsed to one domain value per `id`.
+struct CollapsedRead<Domain: Sendable>: Sendable {
+    /// One value per decodable `id`, in fetch order.
+    var domains: [Domain]
+
+    /// How many rows shared an `id` with an earlier one and were collapsed away.
+    var duplicatesCollapsed: Int
+
+    /// The rows that could not be decoded, and so are not in ``domains``.
+    var undecodable: UndecodableRows
+
+    /// ``domains``, or the first decoding error — for callers with no way to
+    /// say that a row was skipped.
+    func checked() throws -> [Domain] {
+        try undecodable.check()
+        return domains
+    }
+}
+
+/// Stored rows a read found but could not turn into domain values.
+///
+/// Kept apart from a failed fetch on purpose. A fetch that throws read nothing,
+/// so nothing it returns can be trusted; a row that will not decode costs that
+/// row alone, and the read around it is as good as any other.
+struct UndecodableRows: Sendable {
+    /// The IDs that would not decode.
+    private(set) var ids: Set<UUID> = []
+
+    /// The first decoding error met, in fetch order.
+    private(set) var firstError: (any Error)?
+
+    mutating func record(_ id: UUID, _ error: any Error) {
+        ids.insert(id)
+        if firstError == nil { firstError = error }
+    }
+
+    /// Throws the first decoding error, if any row failed.
+    func check() throws {
+        if let firstError { throw firstError }
     }
 }

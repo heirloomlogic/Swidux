@@ -141,6 +141,41 @@ struct ReadFailureTests {
         #expect(failures.failures(.fetch).first?.isFinal == false, "a fetch is not retried")
     }
 
+    @Test("a hydration whose read threw does not anchor, so the first tick still reads everything")
+    func aFailedHydrationDoesNotAnchor() async throws {
+        let container = try makeNotesContainer()
+        let existing = Note(id: UUID(), title: "on disk before launch", pinned: false)
+        try seedNotes(container, [existing])
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+        let store = makeNotesStore(coordinator)
+
+        await coordinator.database.failNextFetch(with: unreadable)
+        await coordinator.hydrate(into: store)
+        #expect(store.notes.isEmpty, "the premise: the read threw and applied nothing")
+
+        // Nothing has changed on disk since launch, so a narrow tick would read
+        // nothing — and the rows the failed read missed would stay hidden.
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[existing.id] != nil, "an anchor over a window nobody read hides it for the session")
+    }
+
+    @Test("the launch hydrate does not anchor past a read that threw, either")
+    func aFailedLaunchHydrationDoesNotAnchor() async throws {
+        let container = try makeNotesContainer()
+        let existing = Note(id: UUID(), title: "on disk before launch", pinned: false)
+        try seedNotes(container, [existing])
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+
+        await coordinator.database.failNextFetch(with: unreadable)
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[existing.id] != nil)
+    }
+
     @Test("re-hydration leaves live state untouched rather than empty")
     func rehydrationLeavesLiveStateUntouched() async throws {
         let (coordinator, store, id, failures) = try await makeAnchoredNote()
@@ -186,6 +221,26 @@ struct ReadFailureTests {
 
         #expect(store.notes[id]?.title == "edited elsewhere", "the window was re-offered, not lost")
         #expect(coordinator.handle.anchor.token != before, "a tick that read everything moves on")
+    }
+
+    @Test("a tick whose read threw does not report itself as merged")
+    func aFailedReadIsNotReportedAsMerged() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), onDiagnostic: onDiagnostic)
+        let store = makeNotesStore(coordinator)
+        let id = UUID()
+        store.send(.add(Note(id: id, title: "mine", pinned: false)))
+        await coordinator.corePlugin.flush()
+        await coordinator.mergeChanges(into: store)
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
+        log.clear()
+
+        await coordinator.database.failNextFetch(with: unreadable)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(
+            !log.contains(.remoteChangesMerged),
+            "the healthy-merge signal must not describe a tick that merged nothing")
     }
 
     @Test("one entity's failed read pins the window even though the other was read")
@@ -254,6 +309,28 @@ struct ReadFailureTests {
 
         #expect(store.notes[held]?.title == "edited elsewhere", "the carried-over row is still delivered")
         #expect(coordinator.handle.anchor.carryOver.reading(for: "NoteModel").isEmpty)
+    }
+
+    @Test("a caller-fed merge whose read threw keeps the identities it was handed")
+    func aFailedReadKeepsTheCallersSignal() async throws {
+        let (coordinator, store, id, _) = try await makeAnchoredNote()
+        let gone = UUID()
+        store.send(.add(Note(id: gone, title: "doomed", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await remoteWrite(
+            coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [gone])
+
+        // A sync signal names what changed. It is usually spent once read, and
+        // this read throws.
+        await coordinator.database.failNextFetch(with: unreadable)
+        await coordinator.mergeRemote(into: store, ids: [id], deleted: [gone])
+        #expect(store.notes[id]?.title == "mine", "the premise: the read threw and applied nothing")
+
+        // A later call that names nothing still delivers the signal.
+        await coordinator.mergeRemote(into: store, ids: [])
+
+        #expect(store.notes[id]?.title == "edited elsewhere", "the caller's signal was dropped with the read")
+        #expect(store.notes[gone] == nil, "so was the deletion it declared")
     }
 
     @Test("a partial read that threw is not mistaken for a row that vanished")

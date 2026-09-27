@@ -35,7 +35,11 @@ import Foundation
 ///
 /// A hold **defers a remote change; it does not veto one.** Release it and the
 /// next merge applies whatever storage holds, including a deletion made
-/// elsewhere. The worst a leaked hold can do is strand one row at a stale
+/// elsewhere — provided nothing writes the row first. Committing a draft for a
+/// row a peer deleted re-creates it, and a live row outranks the tombstone, so
+/// the edit wins. Check
+/// ``PersistenceCoordinator/isRemotelyDeleted(_:)`` before committing when that
+/// is not what you want. The worst a leaked hold can do is strand one row at a stale
 /// value, which is what ``MergePolicy/preferInMemory`` does on purpose. It is
 /// not data loss, and it is not silent either: a merge that actually withheld a
 /// differing value reports

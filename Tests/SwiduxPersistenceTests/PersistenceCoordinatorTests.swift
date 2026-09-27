@@ -170,6 +170,54 @@ struct PersistenceCoordinatorTests {
         #expect(store.notes[id] == nil, "a drained-but-unflushed delete must not be resurrected by the merge")
     }
 
+    @Test("a write flushed during the fetch is not overwritten by the stale read")
+    func writeFlushedDuringTheFetchSurvives() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let store = makeNotesStore(coordinator)
+        store.send(.add(Note(id: id, title: "v1", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        // The user keeps typing while the read is on the database actor, and the
+        // debounce timer fires before the merge folds. `flush()` stands in for the
+        // timer: the same flush work, the same buffers. Once it has run, the ID
+        // is in none of the pending buffers, the failure ledger, or `changes`.
+        coordinator.duringReadPhase = {
+            store.send(.add(Note(id: id, title: "v2", pinned: false)))
+            await coordinator.corePlugin.flush()
+        }
+
+        await coordinator.rehydrate(into: store)
+        coordinator.duringReadPhase = nil
+
+        let disk = try await coordinator.fetchAll(of: Note.self, flushPending: false)
+        #expect(disk.first?.title == "v2", "the premise: the edit reached disk")
+        #expect(store.notes[id]?.title == "v2", "a read that predates the save must not roll memory back")
+    }
+
+    @Test("a delete flushed during the fetch is not resurrected by the stale read")
+    func deleteFlushedDuringTheFetchIsNotResurrected() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        let other = UUID()
+        let store = makeNotesStore(coordinator)
+        store.send(.add(Note(id: id, title: "doomed", pinned: false)))
+        store.send(.add(Note(id: other, title: "other", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.duringReadPhase = {
+            store.send(.remove(id))
+            await coordinator.corePlugin.flush()
+        }
+
+        await coordinator.rehydrate(into: store)
+        coordinator.duringReadPhase = nil
+
+        let disk = try await coordinator.fetchAll(of: Note.self, flushPending: false)
+        #expect(!disk.contains { $0.id == id }, "the premise: the delete reached disk")
+        #expect(store.notes[id] == nil, "the stale read still holds the row the user deleted")
+    }
+
     // MARK: - Editing holds
 
     @Test("a held ID keeps its in-memory value when a remote edit lands")

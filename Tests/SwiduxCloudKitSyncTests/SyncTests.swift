@@ -226,6 +226,36 @@ struct SyncCoordinatorTests {
     }
 
     @MainActor
+    @Test("a peer deleting the last row after a toggle is not lost, and not resurrected")
+    func toggleKeepsALastRowDeletion() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: container)
+        let id = UUID()
+        try await persistence.database.upsert(Item(id: id, label: "only"), as: ItemModel.self)
+        let store = makeItemsStore(persistence)
+        await persistence.hydrate(into: store)
+
+        // Both modes over one store, as CloudContainerFactory arranges.
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .localOnly,
+            preflight: .mock(ubiquityToken: true, account: .available),
+            keyValue: InMemoryKeyValueStore(), makeContainer: { _ in container })
+        #expect(await sync.setSyncEnabled(true, into: store) == .syncing)
+
+        // A peer deletes the row, and mirroring imports the delete.
+        try await EntityDB(modelContainer: container).delete(id: id, as: ItemModel.self)
+        await persistence.mergeChanges(into: store)
+        #expect(store.items[id] == nil, "the first tick after a toggle must see the tombstone")
+
+        // The user edits the row if they can still see it.
+        if store.items[id] != nil { store.send(.add(Item(id: id, label: "edited"))) }
+        await persistence.corePlugin.flush()
+        let onDisk = try await persistence.fetchAll(of: Item.self)
+        #expect(!onDisk.contains { $0.id == id }, "the deleted row was resurrected on disk, and so on every peer")
+    }
+
+    @MainActor
     @Test("opting out keeps local data and persists the choice")
     func optOutKeepsData() async throws {
         let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])

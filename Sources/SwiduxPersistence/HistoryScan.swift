@@ -81,6 +81,12 @@ enum HistoryScanFailure: Error, Sendable {
     /// watermark past a change nobody read.
     case unresolvedChanges(entityName: String)
 
+    /// Another writer changed a row of a model no registration mirrors but a
+    /// registered one reaches through a relationship — a `@Relation` child. Its
+    /// value lives inside its parent's domain value, and nothing in the change
+    /// says which parent, so only a full read of the parents can deliver it.
+    case embeddedChange(entityName: String)
+
     /// More than one store behind the container. `DefaultHistoryToken` is a
     /// per-store vector and `Comparable` orders it totally, which is not a
     /// componentwise upper bound — so `> max` can exclude a second store's later
@@ -130,6 +136,7 @@ extension EntityDB {
 
         let byName = Dictionary(
             readers.map { ($0.entityName, $0) }, uniquingKeysWith: { first, _ in first })
+        let embedded = embeddedEntityNames(registered: Set(byName.keys))
         var changedPIDs: [String: [PersistentIdentifier]] = [:]
         var deletedPIDs: Set<PersistentIdentifier> = []
 
@@ -142,11 +149,24 @@ extension EntityDB {
             if scan.newWatermark.map({ transaction.token > $0 }) ?? true {
                 scan.newWatermark = transaction.token
             }
+            let isOwnWrite = transaction.author == transactionAuthor
             for change in transaction.changes {
                 let identifier = change.changedPersistentIdentifier
-                // A model no registered entity mirrors. Its rows are not in
-                // state, so nothing here has anything to say about them.
-                guard let reader = byName[identifier.entityName] else { continue }
+                guard let reader = byName[identifier.entityName] else {
+                    // A model a registered entity embeds: its rows *are* in
+                    // state, inside their parents. Skipping another writer's
+                    // change would consume it unread, and the parent's next save
+                    // would write the stale child back over it. Our own saves
+                    // wrote these children *from* state, so they are skipped:
+                    // escalating on them would make every local edit of a
+                    // subtree cost the next tick a full read.
+                    if embedded.contains(identifier.entityName), !isOwnWrite {
+                        throw HistoryScanFailure.embeddedChange(entityName: identifier.entityName)
+                    }
+                    // A model no registered entity mirrors or reaches. Its rows
+                    // are not in state, so nothing here has anything to say.
+                    continue
+                }
                 switch change {
                 case .delete:
                     deletedPIDs.insert(identifier)
@@ -184,6 +204,27 @@ extension EntityDB {
             }
         }
         return scan
+    }
+
+    /// Every model a registered one reaches through its relationships, at any
+    /// depth, that is not itself registered.
+    ///
+    /// Read off the container's schema per scan rather than cached: it is a
+    /// walk over a handful of entities, and the container behind this actor is
+    /// the one whose history is being read.
+    func embeddedEntityNames(registered: Set<String>) -> Set<String> {
+        let entities = modelContainer.schema.entitiesByName
+        var embedded: Set<String> = []
+        var frontier = Array(registered)
+        while let name = frontier.popLast() {
+            for relationship in entities[name]?.relationships ?? []
+            where !registered.contains(relationship.destination)
+                && embedded.insert(relationship.destination).inserted
+            {
+                frontier.append(relationship.destination)
+            }
+        }
+        return embedded
     }
 
     /// The newest token in the store, or `nil` when it has no history yet.
@@ -286,6 +327,8 @@ extension HistoryScanFailure: CustomStringConvertible {
             "a deleted \(entityName) row left no identity in its tombstone"
         case .unresolvedChanges(let entityName):
             "a changed \(entityName) row could not be resolved to an identity"
+        case .embeddedChange(let entityName):
+            "a \(entityName) row changed that is only readable through its parent"
         case .multipleStores:
             "history tokens are not a total order across more than one store"
         case .fetchFailed(let message):

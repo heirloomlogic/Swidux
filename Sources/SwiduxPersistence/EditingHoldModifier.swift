@@ -20,7 +20,12 @@ extension View {
     /// ```swift
     /// TextEditor(text: $draft)
     ///     .holdsEntity(note.id, in: persistence.editing)
-    ///     .onDisappear { store.send(.commitDraft(note.id, draft)) }
+    ///     .onDisappear {
+    ///         // A peer may have deleted the note while the hold deferred it.
+    ///         // Committing would write it back, and undo the deletion everywhere.
+    ///         guard !persistence.isRemotelyDeleted(note.id) else { return }
+    ///         store.send(.commitDraft(note.id, draft))
+    ///     }
     /// ```
     ///
     /// The hold is taken when the view appears and given back when it goes away
@@ -33,7 +38,9 @@ extension View {
     /// ```
     ///
     /// A hold defers a remote change rather than vetoing it: once released, the
-    /// next merge applies whatever storage holds. See ``EditingHolds``.
+    /// next merge applies whatever storage holds — unless a commit writes the
+    /// row first, which is why the example asks
+    /// ``PersistenceCoordinator/isRemotelyDeleted(_:)``. See ``EditingHolds``.
     ///
     /// - Parameters:
     ///   - id: The entity being edited, or `nil` to hold nothing.
