@@ -44,6 +44,14 @@ struct AttributedIDs: Sendable {
     /// Every identity named as deleted, with the attribution dropped.
     var allDeleted: Set<UUID> { Self.flattened(deleted) }
 
+    /// The same identities with the changed side dropped — what a whole-table
+    /// read still needs told, since it reads every changed row anyway.
+    var deletionsOnly: AttributedIDs {
+        var only = AttributedIDs()
+        only.deleted = deleted
+        return only
+    }
+
     /// Everything `entityName` should read: what it was told changed, plus what
     /// it was told was deleted. Declared deletions are read too — a row storage
     /// still holds is what refutes a stale tombstone, and only a fetch can tell

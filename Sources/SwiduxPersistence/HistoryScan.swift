@@ -56,6 +56,21 @@ struct HistoryScan: Sendable {
     /// below that the fetch order is unspecified and "the last one" is whatever
     /// the store felt like returning.
     var newWatermark: DefaultHistoryToken?
+
+    /// Why this window can't be merged row by row, when it can't.
+    ///
+    /// Set rather than thrown, because the window was still *read*: every
+    /// tombstone in it that did yield an identity is in ``rows``, and a full
+    /// re-read can't recover those from an empty table — the empty-snapshot
+    /// guard forbids inferring what they prove. So the fallback is handed them
+    /// as declared deletions, and anchors at ``newWatermark``, the end of the
+    /// window it has accounted for.
+    var escalation: HistoryScanFailure?
+
+    /// Records the first reason the window needs a full read.
+    mutating func escalate(_ reason: HistoryScanFailure) {
+        if escalation == nil { escalation = reason }
+    }
 }
 
 /// Why a window could not be resolved into identities.
@@ -116,10 +131,14 @@ extension EntityDB {
     /// retained history; the tick uses ``currentHistoryToken()`` to anchor
     /// instead, which is cheaper and doesn't materialize every change.
     ///
+    /// A window that was read but holds a change this scan can't attribute to
+    /// a row comes back with ``HistoryScan/escalation`` set: re-read everything,
+    /// and apply the tombstones it did read.
+    ///
     /// - Throws: ``HistoryScanFailure`` for anything that leaves the window
-    ///   unknowable. Every case means "re-read everything", never "nothing
-    ///   changed" — a scan that returns normally has accounted for every change
-    ///   it saw.
+    ///   unreadable. Every case means "re-read everything", never "nothing
+    ///   changed" — a scan that returns with no escalation has accounted for
+    ///   every change it saw.
     func changes(
         since watermark: DefaultHistoryToken?,
         readers: [EntityHistoryReader]
@@ -161,7 +180,7 @@ extension EntityDB {
                     // escalating on them would make every local edit of a
                     // subtree cost the next tick a full read.
                     if embedded.contains(identifier.entityName), !isOwnWrite {
-                        throw HistoryScanFailure.embeddedChange(entityName: identifier.entityName)
+                        scan.escalate(.embeddedChange(entityName: identifier.entityName))
                     }
                     // A model no registered entity mirrors or reaches. Its rows
                     // are not in state, so nothing here has anything to say.
@@ -171,7 +190,8 @@ extension EntityDB {
                 case .delete:
                     deletedPIDs.insert(identifier)
                     guard let id = reader.tombstoneID(change) else {
-                        throw HistoryScanFailure.unidentifiedDeletion(entityName: reader.entityName)
+                        scan.escalate(.unidentifiedDeletion(entityName: reader.entityName))
+                        continue
                     }
                     scan.rows.insert(deleted: [id], for: reader.entityName)
                 case .insert, .update:
@@ -180,11 +200,14 @@ extension EntityDB {
                     // A change kind this build doesn't know about, against a
                     // model it does mirror. Treating it as "nothing happened"
                     // would advance the watermark past it; re-reading costs a tick.
-                    throw HistoryScanFailure.unresolvedChanges(entityName: reader.entityName)
+                    scan.escalate(.unresolvedChanges(entityName: reader.entityName))
                 }
             }
         }
 
+        // A window going to be re-read in full needs no rows resolved: the
+        // full read finds them anyway, and only its tombstones are owed.
+        guard scan.escalation == nil else { return scan }
         for (entityName, identifiers) in changedPIDs {
             guard let reader = byName[entityName] else { continue }
             let resolved = try identities(of: identifiers, asConcrete: reader.modelType)
@@ -200,7 +223,7 @@ extension EntityDB {
                 resolved[$0] == nil && !deletedPIDs.contains($0)
             }
             if unexplained {
-                throw HistoryScanFailure.unresolvedChanges(entityName: entityName)
+                scan.escalate(.unresolvedChanges(entityName: entityName))
             }
         }
         return scan

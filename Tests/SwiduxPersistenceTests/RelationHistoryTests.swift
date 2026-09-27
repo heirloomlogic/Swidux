@@ -112,4 +112,59 @@ struct RelationHistoryTests {
         #expect(!log.contains(.historyUnavailable), "\(log.fallbackReasons)")
         #expect(store.books[book.id] == book)
     }
+
+    @Test("a peer deleting the last parent with children is applied, and not resurrected")
+    func thePeerDeletedLastParentIsApplied() async throws {
+        let (coordinator, store, container) = try makeShelf()
+        let book = Book(id: UUID(), title: "only", chapters: [Chapter(id: UUID(), heading: "one")])
+        store.send(.put(book))
+        await coordinator.corePlugin.flush()
+        await coordinator.mergeChanges(into: store)  // anchor
+
+        // The peer deletes the book, and its chapters go with it.
+        let peer = ModelContext(container)
+        for chapter in try peer.fetch(FetchDescriptor<ChapterModel>()) { peer.delete(chapter) }
+        for row in try peer.fetch(FetchDescriptor<BookModel>()) { peer.delete(row) }
+        try peer.save()
+
+        await coordinator.mergeChanges(into: store)
+        await coordinator.mergeChanges(into: store)
+        #expect(store.books[book.id] == nil, "the peer's deletion of the last book never lands")
+
+        // What that costs: the user edits the book they can still see.
+        if store.books[book.id] != nil { store.send(.setTitle(book.id, "edited")) }
+        await coordinator.corePlugin.flush()
+        #expect(try ModelContext(container).fetch(FetchDescriptor<BookModel>()).isEmpty, "resurrected on disk")
+    }
+
+    @Test("a tick that has to re-read everything still applies the tombstones its window held")
+    func aFallbackAppliesTheWindowsTombstones() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, container) = try makeShelf(onDiagnostic: onDiagnostic)
+        let book = Book(id: UUID(), title: "only", chapters: [])
+        store.send(.put(book))
+        await coordinator.corePlugin.flush()
+        // A chapter no book holds — left behind by an older build, say.
+        let seed = ModelContext(container)
+        seed.insert(try ChapterModel(from: Chapter(id: UUID(), heading: "stray")))
+        try seed.save()
+        await coordinator.mergeChanges(into: store)  // anchor
+        log.clear()
+
+        // One window: a change nothing can attribute to a parent, which forces
+        // the full read, and the deletion of the last book.
+        let peer = ModelContext(container)
+        for stray in try peer.fetch(FetchDescriptor<ChapterModel>()) { peer.delete(stray) }
+        try peer.save()
+        for row in try peer.fetch(FetchDescriptor<BookModel>()) { peer.delete(row) }
+        try peer.save()
+
+        await coordinator.mergeChanges(into: store)
+        #expect(log.contains(.historyUnavailable), "the premise: this tick re-read everything")
+        await coordinator.mergeChanges(into: store)
+
+        #expect(
+            store.books[book.id] == nil,
+            "the full read finds an empty table, and anchoring past the window threw the tombstone away")
+    }
 }

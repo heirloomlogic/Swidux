@@ -762,6 +762,19 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         }
         try check(attempt)
 
+        if let reason = scan.escalation {
+            // Read, but not attributable row by row. The full read picks up
+            // every change; the tombstones the window did name are handed over
+            // as declared deletions, because an empty table can't reproduce
+            // them and the anchor below steps past the window that held them.
+            var declaring = anchor.carryOver
+            declaring.formUnion(scan.rows.deletionsOnly)
+            try await rehydrateAnchoring(
+                into: store, policy: policy, attempt: attempt, anchor: anchor, reason: reason,
+                declaring: declaring, window: scan.newWatermark)
+            return
+        }
+
         // Rows the last tick was offered and deferred ride along with whatever
         // this window found. They have to: releasing a hold writes no
         // transaction, so no future window will ever name them again.
@@ -799,17 +812,30 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     }
 
     /// A full re-hydration that also re-establishes the watermark.
+    ///
+    /// `declaring` is what the read must apply as declared deletions; it
+    /// defaults to what is already owed. `window` is the end of a window the
+    /// tick did read, when it read one, and becomes the anchor: everything up
+    /// to it is accounted for, by the full read or by `declaring`. Without one,
+    /// the anchor is the newest token, taken before the read.
     private func rehydrateAnchoring(
         into store: Store<State, Action>,
         policy: MergePolicy?,
         attempt: MergeAttempt,
         anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int),
-        reason: any Error
+        reason: any Error,
+        declaring: AttributedIDs? = nil,
+        window: DefaultHistoryToken? = nil
     ) async throws(MergeConflict) {
         observers.report(.historyUnavailable(reason: "\(reason)"))
         // Anchored before the read, not after: a write landing while the fetches
         // are in flight gets a token above this one and is picked up next tick.
-        let token = try? await handle.db.currentHistoryToken()
+        let token: DefaultHistoryToken?
+        if let window {
+            token = window
+        } else {
+            token = try? await handle.db.currentHistoryToken()
+        }
         // Anchoring even though the read withheld something is what keeps one
         // held row from costing a full table scan on every tick until it is
         // released — this path has no anchor to stand still on, so refusing here
@@ -832,7 +858,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // fallback, so that case anchors anyway.
         let rescanCouldSucceed = anchor.token != nil && Self.isTransient(reason)
         try await merge(
-            .wholeTable(declaring: anchor.carryOver), into: store, policy: policy, attempt: attempt,
+            .wholeTable(declaring: declaring ?? anchor.carryOver), into: store, policy: policy,
+            attempt: attempt,
             recordAnchor: token != nil, watermark: token,
             ifAbsenceUndecided: rescanCouldSucceed ? .keepWatermark : .anchor)
     }
