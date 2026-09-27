@@ -18,7 +18,8 @@ extension SwiduxMacro: PeerMacro {
             return []
         }
 
-        let unsupported = unsupportedStructDiagnostics(of: structDecl, macro: "Swidux")
+        let unsupported = unsupportedStructDiagnostics(
+            of: structDecl, macro: "Swidux", allowsFileScopedAccess: context.lexicalContext.isEmpty)
         guard unsupported.isEmpty else {
             for diagnostic in unsupported { context.diagnose(diagnostic) }
             return []
@@ -38,19 +39,21 @@ extension SwiduxMacro: PeerMacro {
             in: context
         )
 
+        for member in structDecl.memberBlock.members {
+            guard let varDecl = member.decl.as(VariableDeclSyntax.self),
+                varDecl.bindingSpecifier.tokenKind == .keyword(.let), !isTypeMember(varDecl)
+            else { continue }
+            for binding in varDecl.bindings where binding.initializer == nil {
+                context.diagnose(Diagnostic(node: binding, message: SwiduxDiagnostic.letRequiresDefault))
+            }
+        }
+
         for property in properties where property.isMarkedSlice && property.kind != .nested {
             context.diagnose(
                 Diagnostic(node: property.typeSyntax, message: SwiduxDiagnostic.sliceRequiresNamedType))
         }
 
-        let accessLevel = structDecl.modifiers.first { modifier in
-            switch modifier.name.tokenKind {
-            case .keyword(.public), .keyword(.package), .keyword(.internal):
-                return true
-            default:
-                return false
-            }
-        }?.name.text
+        let accessLevel = observerAccessLevel(of: structDecl)
 
         return [
             generateObserverClass(
@@ -73,26 +76,38 @@ extension SwiduxMacro: ExtensionMacro {
     ) throws -> [ExtensionDeclSyntax] {
         // The peer expansion reports why an unsupported struct gets nothing.
         guard let structDecl = declaration.as(StructDeclSyntax.self),
-            unsupportedStructDiagnostics(of: structDecl, macro: "Swidux").isEmpty
+            unsupportedStructDiagnostics(
+                of: structDecl, macro: "Swidux", allowsFileScopedAccess: context.lexicalContext.isEmpty
+            ).isEmpty
         else {
             return []
         }
 
         let properties = classifyProperties(of: structDecl)
-        let accessLevel = structDecl.modifiers.first { modifier in
-            switch modifier.name.tokenKind {
-            case .keyword(.public), .keyword(.package), .keyword(.internal):
-                return true
-            default:
-                return false
-            }
-        }?.name.text
+        let accessLevel = observerAccessLevel(of: structDecl)
         return [
             generateConformanceExtension(
                 typeName: type.trimmedDescription,
                 properties: properties,
+                keptLets: undefaultedLetNames(of: structDecl),
                 accessLevel: accessLevel
             )
         ]
     }
+}
+
+/// The access keyword for the generated observer and conformance: the struct's
+/// own, with a file-scope `private` spelled `fileprivate` (the same scope, but
+/// `private` on a peer would hide it from the extension that uses it).
+private func observerAccessLevel(of structDecl: StructDeclSyntax) -> String? {
+    structDecl.modifiers.lazy.compactMap { modifier -> String? in
+        switch modifier.name.tokenKind {
+        case .keyword(.public), .keyword(.package), .keyword(.internal), .keyword(.fileprivate):
+            return modifier.name.text
+        case .keyword(.private):
+            return "fileprivate"
+        default:
+            return nil
+        }
+    }.first
 }

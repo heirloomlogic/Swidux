@@ -8,6 +8,7 @@ import SwiftSyntaxBuilder
 func generateConformanceExtension(
     typeName: String,
     properties: [ClassifiedProperty],
+    keptLets: [String] = [],
     accessLevel: String?
 ) -> ExtensionDeclSyntax {
     let observerName = "\(typeName)Observer"
@@ -44,9 +45,20 @@ func generateConformanceExtension(
     // state that may opt out of undo, or a plain value is a question about its
     // resolved type, which the syntax can't answer (`typealias Cards =
     // EntityStore<Card>`); `SwiduxRestore`'s overloads answer it.
-    let restoreLines = properties.map { prop -> String in
-        "        SwiduxRestore.restore(&current.\(prop.name), from: snapshot.\(prop.name))"
-    }.joined(separator: "\n")
+    //
+    // The restored value is built in an initializer, where assigning a stored
+    // property doesn't run its `willSet`/`didSet`. Mutating `current` in place
+    // (or passing its properties `inout`) would run every observer in the tree
+    // on each undo, and an observer that touches a sibling — `didSet {
+    // revision += 1 }` — would leave the restored state unequal to its snapshot.
+    //
+    // It must initialize every stored property, not only the mirrored ones: a
+    // `let` without a default (diagnosed, since `init(observer:)` can't set
+    // it) keeps `current`'s value, and a `let` with one is already set.
+    let restoreLines =
+        (properties.map { prop -> String in
+            "        self.\(prop.name) = SwiduxRestore.restored(current.\(prop.name), from: snapshot.\(prop.name))"
+        } + keptLets.map { "        self.\($0) = current.\($0)" }).joined(separator: "\n")
 
     let source = """
         extension \(typeName): SwiduxObservable {
@@ -71,6 +83,11 @@ func generateConformanceExtension(
 
             @MainActor
             \(accessPrefix)static func applyRestore(from snapshot: \(typeName), to current: inout \(typeName)) {
+                current = \(typeName)(swiduxRestoring: current, from: snapshot)
+            }
+
+            @MainActor
+            private init(swiduxRestoring current: \(typeName), from snapshot: \(typeName)) {
         \(restoreLines)
             }
         }

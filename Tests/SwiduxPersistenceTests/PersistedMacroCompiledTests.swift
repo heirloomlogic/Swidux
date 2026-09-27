@@ -57,6 +57,20 @@ enum NestingLibrary {
     }
 }
 
+/// An `@Ignored` property under `#if` has no column either way, so the
+/// conditional is harmless and must be accepted.
+@Persisted
+nonisolated struct ConditionalNote: Identifiable, Equatable, Sendable {
+    var id: UUID
+    var text: String = ""
+    #if DEBUG
+    @Ignored var debugTrace: String? = nil
+    #endif
+    #if os(macOS)
+    var shouted: String { text.uppercased() }
+    #endif
+}
+
 // MARK: - Tests
 
 @Suite("@Persisted compiled expansion")
@@ -97,5 +111,12 @@ struct PersistedMacroCompiledTests {
         let model: NestingLibrary.Volume.Model = try NestingLibrary.VolumeModel(from: volume)
 
         #expect(try model.toDomain() == volume)
+    }
+
+    @Test("@Ignored and computed members under #if are accepted and round-trip")
+    func conditionalIgnoredRoundTrips() throws {
+        let note = ConditionalNote(id: UUID(), text: "kept")
+
+        #expect(try ConditionalNoteModel(from: note).toDomain() == note)
     }
 }

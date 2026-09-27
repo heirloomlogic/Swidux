@@ -56,6 +56,12 @@ func diagnoseSkippedStoredProperties(
 /// property unconditionally would reference it in configurations where it
 /// doesn't exist. Re-emitting matching `#if` blocks in the observer, model and
 /// initializers is possible, but a pointed error is the smaller, safer fix.
+///
+/// Only members the macro would carry are flagged. Computed and type-level
+/// ones never reach generated code, and neither does an optional `@Ignored`
+/// property of `@Persisted` (the only caller that mirrors `let`s): it has no
+/// column, and the memberwise initializer defaults it to `nil`, so being
+/// invisible to the macro is exactly what it asks for.
 private func diagnoseStoredProperties(
     in ifConfig: IfConfigDeclSyntax,
     includesLetBindings: Bool,
@@ -69,6 +75,15 @@ private func diagnoseStoredProperties(
             } else if let varDecl = member.decl.as(VariableDeclSyntax.self),
                 isStoredInstanceProperty(varDecl, includesLetBindings: includesLetBindings)
             {
+                if includesLetBindings, isMarkedIgnored(varDecl), let binding = varDecl.bindings.first {
+                    // Same rule as an unconditional `@Ignored`: `toDomain()`
+                    // must be able to leave it out and get `nil`.
+                    if binding.typeAnnotation.flatMap({ optionalWrappedType(of: $0.type) }) == nil {
+                        context.diagnose(
+                            Diagnostic(node: binding, message: SwiduxDiagnostic.ignoredRequiresOptional))
+                    }
+                    continue
+                }
                 context.diagnose(
                     Diagnostic(node: varDecl, message: SwiduxDiagnostic.storedPropertyInIfConfig))
             }
@@ -86,6 +101,34 @@ private func isStoredInstanceProperty(_ varDecl: VariableDeclSyntax, includesLet
         let first = varDecl.bindings.first
     else { return false }
     return isStoredBinding(first)
+}
+
+/// The names of the struct's instance `let` properties that have no default.
+///
+/// `@Swidux` doesn't mirror `let`s, but every initializer it generates must
+/// still initialize them. The restoring initializer keeps `current`'s value;
+/// `init(observer:)` has no value to give them, so `@Swidux` diagnoses them
+/// (`letRequiresDefault`). A `let` with a default is already initialized and
+/// must not be assigned again.
+func undefaultedLetNames(of structDecl: StructDeclSyntax) -> [String] {
+    structDecl.memberBlock.members.flatMap { member -> [String] in
+        guard let varDecl = member.decl.as(VariableDeclSyntax.self),
+            varDecl.bindingSpecifier.tokenKind == .keyword(.let),
+            !isTypeMember(varDecl)
+        else { return [] }
+        return varDecl.bindings.compactMap { binding in
+            guard binding.initializer == nil else { return nil }
+            return binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text
+        }
+    }
+}
+
+/// Whether a declaration carries `@Persisted`'s `@Ignored` marker.
+private func isMarkedIgnored(_ varDecl: VariableDeclSyntax) -> Bool {
+    varDecl.attributes.contains { attribute in
+        guard case .attribute(let attr) = attribute else { return false }
+        return attr.attributeName.as(IdentifierTypeSyntax.self)?.name.text == "Ignored"
+    }
 }
 
 /// Whether a declaration is `lazy`. Both classifiers skip it, so the generated
@@ -193,17 +236,29 @@ func classifyProperties(of structDecl: StructDeclSyntax) -> [ClassifiedProperty]
 /// parameters, which a separate peer declaration can't name, and `private`/
 /// `fileprivate` access, where the peers must name the struct from outside it.
 ///
+/// `allowsFileScopedAccess` exempts a `private`/`fileprivate` struct at file
+/// scope, where both mean "this file" and the peers can simply be emitted
+/// `fileprivate` beside it. `@Swidux` passes it for a top-level struct. A nested
+/// `private` type is narrower than anything a peer can be declared with, and
+/// `@Persisted`'s `@Model` class has never compiled at `fileprivate`.
+///
 /// Empty when the struct is supported. Callers emit no expansion otherwise, so
 /// the error stands alone instead of arriving with a wall of failures reported
 /// against generated code.
-func unsupportedStructDiagnostics(of structDecl: StructDeclSyntax, macro: String) -> [Diagnostic] {
+func unsupportedStructDiagnostics(
+    of structDecl: StructDeclSyntax,
+    macro: String,
+    allowsFileScopedAccess: Bool = false
+) -> [Diagnostic] {
     var diagnostics: [Diagnostic] = []
     if let generics = structDecl.genericParameterClause {
         diagnostics.append(Diagnostic(node: generics, message: SwiduxDiagnostic.genericStruct(macro: macro)))
     }
-    if let modifier = structDecl.modifiers.first(where: {
-        $0.name.tokenKind == .keyword(.private) || $0.name.tokenKind == .keyword(.fileprivate)
-    }) {
+    if !allowsFileScopedAccess,
+        let modifier = structDecl.modifiers.first(where: {
+            $0.name.tokenKind == .keyword(.private) || $0.name.tokenKind == .keyword(.fileprivate)
+        })
+    {
         diagnostics.append(
             Diagnostic(node: modifier, message: SwiduxDiagnostic.restrictedAccessStruct(macro: macro)))
     }

@@ -89,6 +89,66 @@ public nonisolated struct AccessMixState: Equatable, Sendable {
     mutating func setSecret(_ value: Int) { secret = value }
 }
 
+/// A property observer with a side effect on a sibling. Undo must reproduce the
+/// snapshot exactly, so restoring `title` must not run its `didSet`.
+@Swidux
+nonisolated struct StampedState: Equatable, Sendable {
+    var revision: Int = 0
+    var title: String = "" {
+        didSet { revision += 1 }
+    }
+    var log: [String] = [] {
+        willSet { revision += 10 }
+    }
+}
+
+/// An opted-out type mounted optionally or in an array is still opted out.
+@Swidux
+nonisolated struct WrappedPinParent: Equatable, Sendable {
+    var maybePinned: PinnedState? = nil
+    var pinnedList: [PinnedState] = []
+    var maybeChild: RestorableChild? = nil
+    var children: [RestorableChild] = []
+}
+
+/// Top-level `private` (the same scope as `fileprivate` there), the usual shape
+/// of a state in a test or preview file.
+@Swidux
+private nonisolated struct FileScopedState: Equatable, Sendable {
+    var count: Int = 0
+}
+
+/// Declares its own initializer, a defaulted `let` and property-wrapped storage.
+/// The generated initializers must initialize every stored property without
+/// assigning the `let` twice, and must not collide with the struct's own init.
+/// (Not `nonisolated`: the compiler rejects a property wrapper there, macro or not.)
+@Swidux
+struct OwnInitState: Equatable, Sendable {
+    let kind: String = "doc"
+    var count: Int = 0
+    @Clamped var level: Int = 0
+
+    init(count: Int, level: Int = 0) {
+        self.count = count
+        self.level = level
+    }
+}
+
+/// Clamps to 0...10.
+@propertyWrapper
+struct Clamped: Equatable, Sendable {
+    private var value: Int
+
+    var wrappedValue: Int {
+        get { value }
+        set { value = min(max(newValue, 0), 10) }
+    }
+
+    init(wrappedValue: Int) {
+        value = min(max(wrappedValue, 0), 10)
+    }
+}
+
 // MARK: - Tests
 
 @Suite("@Swidux compiled expansion")
@@ -185,5 +245,76 @@ struct SwiduxMacroCompiledTests {
         state.setSecret(3)
 
         #expect(AccessMixState(observer: AccessMixState.makeObserver(from: state)) == state)
+    }
+
+    @Test("applyRestore reproduces the snapshot without running property observers")
+    func restoreDoesNotRunObservers() {
+        let snapshot = StampedState(revision: 5, title: "before", log: ["a"])
+        var current = StampedState(revision: 9, title: "after", log: ["a", "b"])
+
+        StampedState.applyRestore(from: snapshot, to: &current)
+
+        #expect(current == snapshot, "restored revision \(current.revision), snapshot had 5")
+    }
+
+    @Test("An opted-out type is kept through Optional and Array; a restorable one is restored")
+    func optOutHoldsThroughWrappers() {
+        let snapshot = WrappedPinParent(maybeChild: .init(value: 1), children: [.init(value: 1)])
+        var current = WrappedPinParent(
+            maybePinned: .init(value: 7),
+            pinnedList: [.init(value: 7)],
+            maybeChild: .init(value: 2),
+            children: [.init(value: 2), .init(value: 3)]
+        )
+
+        WrappedPinParent.applyRestore(from: snapshot, to: &current)
+
+        #expect(current.maybePinned == .init(value: 7), "opted-out state rolled back through Optional")
+        #expect(current.pinnedList == [.init(value: 7)], "opted-out state rolled back through Array")
+        #expect(current.maybeChild == .init(value: 1))
+        #expect(current.children == [.init(value: 1)])
+    }
+
+    @Test("A top-level fileprivate state works through a store")
+    func fileprivateStateDispatches() {
+        let store = Store<FileScopedState, Int>(
+            initialState: .init(),
+            reducer: { state, value in
+                state.count += value
+                return nil
+            }
+        )
+
+        store.send(2)
+
+        #expect(FileScopedState(observer: store.observer).count == 2)
+    }
+
+    @Test("A state declared in a file importing only Swidux works")
+    func swiduxOnlyImportState() {
+        let state = SwiduxOnlyImportState(count: 4)
+
+        #expect(SwiduxOnlyImportState(observer: SwiduxOnlyImportState.makeObserver(from: state)) == state)
+    }
+
+    @Test("A state with its own init, a defaulted let and wrapped storage restores and packs")
+    func ownInitStateRestoresAndPacks() {
+        let snapshot = OwnInitState(count: 1, level: 3)
+        var current = OwnInitState(count: 2, level: 7)
+
+        OwnInitState.applyRestore(from: snapshot, to: &current)
+        #expect(current == snapshot)
+
+        let observer = OwnInitState.makeObserver(from: snapshot)
+        #expect(OwnInitState(observer: observer) == snapshot)
+    }
+
+    @Test("The memberwise initializer survives the generated initializers")
+    func memberwiseInitIsAvailable() {
+        let state = ObservedPropertyState(plain: 1, clamped: 2, watched: "w")
+
+        #expect(state.plain == 1)
+        #expect(state.clamped == 2)
+        #expect(state.watched == "w")
     }
 }

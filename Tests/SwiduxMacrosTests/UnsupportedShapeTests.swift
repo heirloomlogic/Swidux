@@ -85,7 +85,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: FlagState, to current: inout FlagState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = FlagState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: FlagState, from snapshot: FlagState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -143,7 +148,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PairState, to current: inout PairState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = PairState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PairState, from snapshot: PairState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -201,7 +211,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: LazyState, to current: inout LazyState) {
-                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        current = LazyState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: LazyState, from snapshot: LazyState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -232,21 +247,156 @@ final class UnsupportedShapeTests: XCTestCase {
         )
     }
 
-    func testSwiduxPrivateStructIsDiagnosed() throws {
+    // Nested, `private` is narrower than anything the peer can be declared
+    // with. (At file scope it is supported: see `testSwiduxFileScopedPrivateStruct`.)
+    func testSwiduxNestedPrivateStructIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            enum Feature {
+                @Swidux
+                private struct HiddenState: Equatable, Sendable {
+                    var count: Int = 0
+                }
+            }
+            """,
+            expandedSource: """
+                enum Feature {
+                    private struct HiddenState: Equatable, Sendable {
+                        var count: Int = 0
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(message: Message.restrictedAccess("Swidux"), line: 3, column: 5)
+            ],
+            macros: swidux
+        )
+    }
+
+    // At file scope `private` and `fileprivate` both mean "this file", so the
+    // peers are emitted `fileprivate` beside the struct.
+    func testSwiduxFileScopedPrivateStruct() throws {
         assertMacroExpansion(
             """
             @Swidux
-            fileprivate struct HiddenState: Equatable, Sendable {
+            private struct HiddenState: Equatable, Sendable {
                 var count: Int = 0
             }
             """,
             expandedSource: """
-                fileprivate struct HiddenState: Equatable, Sendable {
+                private struct HiddenState: Equatable, Sendable {
                     var count: Int = 0
+                }
+
+                @Observable
+                @MainActor
+                fileprivate final class HiddenStateObserver: @unchecked Sendable {
+                    fileprivate var count: Int
+
+                    fileprivate init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension HiddenState: SwiduxObservable {
+                    fileprivate typealias Observer = HiddenStateObserver
+
+                    @MainActor
+                    fileprivate init(observer: HiddenStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    fileprivate static func makeObserver(from state: HiddenState) -> HiddenStateObserver {
+                        HiddenStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    fileprivate static func apply(_ snapshot: HiddenState, to observer: HiddenStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    fileprivate static func applyRestore(from snapshot: HiddenState, to current: inout HiddenState) {
+                        current = HiddenState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: HiddenState, from snapshot: HiddenState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
+                    }
+                }
+                """,
+            macros: swidux
+        )
+    }
+
+    // `init(observer:)` has nothing to give a `let` without a default, so it is
+    // diagnosed. The restoring initializer still initializes it, from `current`,
+    // and never assigns a `let` that has a default.
+    func testSwiduxUndefaultedLetIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct KeyedState: Equatable, Sendable {
+                let id: UUID
+                let kind: String = "doc"
+                var count: Int = 0
+            }
+            """,
+            expandedSource: """
+                struct KeyedState: Equatable, Sendable {
+                    let id: UUID
+                    let kind: String = "doc"
+                    var count: Int = 0
+                }
+
+                @Observable
+                @MainActor
+                final class KeyedStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension KeyedState: SwiduxObservable {
+                    typealias Observer = KeyedStateObserver
+
+                    @MainActor
+                    init(observer: KeyedStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: KeyedState) -> KeyedStateObserver {
+                        KeyedStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: KeyedState, to observer: KeyedStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: KeyedState, to current: inout KeyedState) {
+                        current = KeyedState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: KeyedState, from snapshot: KeyedState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
+                        self.id = current.id
+                    }
                 }
                 """,
             diagnostics: [
-                DiagnosticSpec(message: Message.restrictedAccess("Swidux"), line: 2, column: 1)
+                DiagnosticSpec(message: Message.letDefault, line: 3, column: 9)
             ],
             macros: swidux
         )
@@ -297,7 +447,12 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: HostState, to current: inout HostState) {
-                        SwiduxRestore.restore(&current.child, from: snapshot.child)
+                        current = HostState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: HostState, from snapshot: HostState) {
+                        self.child = SwiduxRestore.restored(current.child, from: snapshot.child)
                     }
                 }
                 """,
@@ -375,9 +530,14 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PhaseState, to current: inout PhaseState) {
-                        SwiduxRestore.restore(&current.phase, from: snapshot.phase)
-                        SwiduxRestore.restore(&current.limit, from: snapshot.limit)
-                        SwiduxRestore.restore(&current.other, from: snapshot.other)
+                        current = PhaseState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PhaseState, from snapshot: PhaseState) {
+                        self.phase = SwiduxRestore.restored(current.phase, from: snapshot.phase)
+                        self.limit = SwiduxRestore.restored(current.limit, from: snapshot.limit)
+                        self.other = SwiduxRestore.restored(current.other, from: snapshot.other)
                     }
                 }
                 """,
@@ -452,6 +612,81 @@ final class UnsupportedShapeTests: XCTestCase {
                 """,
             diagnostics: [
                 DiagnosticSpec(message: Message.ifConfig, line: 5, column: 5)
+            ],
+            macros: persisted
+        )
+    }
+
+    // An optional `@Ignored` has no column and loads as `nil` either way, so a
+    // surrounding `#if` changes nothing; computed and static members under `#if`
+    // are never generated from. Only a non-optional `@Ignored` is still an error,
+    // the same one it gets unconditionally.
+    func testPersistedIfConfigAllowsSkippedMembers() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Memo: Identifiable, Equatable, Sendable {
+                var id: UUID
+                #if DEBUG
+                @Ignored var debugTrace: String? = nil
+                @Ignored var badge: String
+                var shouted: String { "" }
+                static var count: Int = 0
+                #endif
+            }
+            """,
+            expandedSource: """
+                struct Memo: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    #if DEBUG
+                    var debugTrace: String? = nil
+                    var badge: String
+                    var shouted: String { "" }
+                    static var count: Int = 0
+                    #endif
+                }
+
+                @Model
+                final class MemoModel: PersistableModel {
+                    typealias Domain = Memo
+
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+
+                    init(from domain: Memo) throws {
+                        self.id = domain.id
+                    }
+
+                    func toDomain() throws -> Memo {
+                        Memo(
+                            id: id
+                        )
+                    }
+
+                    func update(from domain: Memo) throws {
+
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<MemoModel> {
+                        FetchDescriptor<MemoModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<MemoModel> {
+                        FetchDescriptor<MemoModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
+                }
+
+                extension Memo: PersistableEntity {
+                    typealias Model = MemoModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(message: Message.ignoredOptional, line: 6, column: 18)
             ],
             macros: persisted
         )
@@ -986,6 +1221,8 @@ private enum Message {
         "@Relation properties must be declared as [T] (to-many) or T? (to-one), where T names a @Persisted struct directly"
     static let inverse =
         "@Relation(inverse:) is not supported: a @Relation is an owned value composition, and a domain value can't hold a back-reference to its parent without containing itself. Remove inverse:, and keep the parent's id in a @ForeignKey property if the child needs it"
+    static let letDefault =
+        "A let without a default can't be rebuilt by the generated init(observer:), which reads only the var properties the observer mirrors; give it a default, or make it a var"
     static let inlineCollision =
         "@Inline property 'payload' stores its blob in a generated 'payloadData' column, which collides with the property 'payloadData'; rename one of them"
     static let mirrorDefault =

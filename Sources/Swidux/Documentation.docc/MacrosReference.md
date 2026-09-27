@@ -30,14 +30,14 @@ For a struct named `MyState`, the macro emits:
    - `init(observer:)` — pack: read the observer tree into a struct snapshot.
    - `static func makeObserver(from:) -> MyStateObserver` — factory.
    - `static func apply(_:to:)` — unpack: assign struct fields back onto the observer. `@Observable` only fires notifications for fields whose values actually change.
-   - `static func applyRestore(from:to:)` — used during undo/redo. Every property restores through `SwiduxRestore.restore(_:from:)`, whose overloads choose by the property's resolved type: an ``EntityStore`` calls `.restore(from:)` so change tracking stays consistent, a ``SwiduxObservable`` value recurses into its own `applyRestore` unless its type opts out (see below), and anything else is assigned. Deciding by type rather than spelling means a `typealias` or a module-qualified `Swidux.EntityStore` behaves the same as `EntityStore<…>`.
+   - `static func applyRestore(from:to:)` — used during undo/redo. It rebuilds the state in a private initializer, taking each property from `SwiduxRestore.restored(_:from:)`, whose overloads choose by the property's resolved type: an ``EntityStore`` goes through `.restore(from:)` so change tracking stays consistent, a ``SwiduxObservable`` value recurses into its own `applyRestore` unless its type opts out (see below), and anything else takes the snapshot's value. Because the values are assigned in an initializer, restoring never runs a property's `willSet`/`didSet`. Deciding by type rather than spelling means a `typealias` or a module-qualified `Swidux.EntityStore` behaves the same as `EntityStore<…>`.
 
 ### Requirements on the annotated struct
 
 - **Must be a struct.** Applying `@Swidux` to a class or enum emits a diagnostic.
 - **Should declare `Equatable` and `Sendable`.** The protocol requires both. The example projects also mark the struct `nonisolated` so it can cross the `@MainActor` boundary inside ``Store``.
-- **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs or unpacks the value.
-- **Not generic, `private` or `fileprivate`.** The generated peer can't name a generic struct's parameters, and it must name the struct from outside its body. Both are diagnosed. For generic state, hand-write the ``SwiduxObservable`` conformance.
+- **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A `let` must have a default, because the generated `init(observer:)` has no value to give it; a `let` without one is diagnosed. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs, unpacks or restores the value, so undo reproduces the snapshot exactly instead of replaying an observer's side effects.
+- **Not generic, and not `private`/`fileprivate` when nested.** The generated peer can't name a generic struct's parameters, and a nested `private` type is narrower than anything the peer can be declared with. Both are diagnosed. For generic state, hand-write the ``SwiduxObservable`` conformance. A `private` or `fileprivate` struct at file scope is fine, which is the usual shape in a test or preview file: both mean "this file" there, and the observer and conformance are emitted `fileprivate`.
 - **Every stored property must be visible to the macro.** Each of these is a compile error rather than a property whose value silently resets on every dispatch: a stored property inside `#if` (declare it unconditionally and move the `#if` into its type or value), a tuple-pattern declaration (`var (a, b): (Int, Int)`), a combined declaration (`var a: Int, b: Int`), a missing type annotation, and a `lazy` property.
 
 ### Property handling rules
@@ -153,19 +153,24 @@ extension AppState: SwiduxObservable {
 
     @MainActor
     static func applyRestore(from snapshot: AppState, to current: inout AppState) {
-        SwiduxRestore.restore(&current.counters, from: snapshot.counters)
-        SwiduxRestore.restore(&current.ui, from: snapshot.ui)
+        current = AppState(swiduxRestoring: current, from: snapshot)
+    }
+
+    @MainActor
+    private init(swiduxRestoring current: AppState, from snapshot: AppState) {
+        self.counters = SwiduxRestore.restored(current.counters, from: snapshot.counters)
+        self.ui = SwiduxRestore.restored(current.ui, from: snapshot.ui)
     }
 }
 ```
 
-Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, `applyRestore` emits the same `SwiduxRestore.restore` call for both properties. Overload resolution sends `counters` to `EntityStore.restore(from:)`, because plain assignment would discard pending change-tracking metadata, and sends `ui` to `UIState.applyRestore`. `SwiduxRestore` exists only for generated code; don't call it directly.
+Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, the restore emits the same `SwiduxRestore.restored` call for both properties. Overload resolution sends `counters` to `EntityStore.restore(from:)`, because plain assignment would discard pending change-tracking metadata, and sends `ui` to `UIState.applyRestore`. The results are assigned inside an initializer rather than to `current`'s properties in place, because an in-place write, or an `inout` argument, runs the property's observers. `SwiduxRestore` exists only for generated code; don't call it directly.
 
 ### What undo restores
 
 `UndoPlugin`'s `isUndoable` decides *when* a snapshot is taken. ``SwiduxObservable/restoresOnUndo`` decides *what* is restored from it. A snapshot is the whole state, so without an opt-out, undo reverts every change since the snapshot, including state an undoable action never touched.
 
-A `@Swidux` type that returns `false` from `static var restoresOnUndo` is left at its current value by its parent's `applyRestore`, whether or not the property is marked `@Slice`. Every plugin-owned slice Swidux ships opts out (`KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState`, `PersistenceState`), so plugin slices are never restored. See <doc:UndoRedo>.
+A `@Swidux` type that returns `false` from `static var restoresOnUndo` is left at its current value by its parent's `applyRestore`, whether or not the property is marked `@Slice`, and also when the property holds it as an optional or an array. Every plugin-owned slice Swidux ships opts out (`KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState`, `PersistenceState`), so plugin slices are never restored. See <doc:UndoRedo>.
 
 ## `@Slice`
 
@@ -244,7 +249,7 @@ The generated model is **CloudKit-safe by construction**, which is what lets the
 - **Must be a struct** (a diagnostic fires otherwise).
 - **Must satisfy `Identifiable & Equatable & Sendable` with `ID == UUID`** — the ``EntityStore`` contract.
 - **The file must be able to see SwiftData.** The expansion uses `@Model`, `FetchDescriptor` and `#Predicate`, and names in an expansion resolve against the imports of the file it expands in. `SwiduxPersistence` re-exports SwiftData, so `import SwiduxPersistence` is enough.
-- **Not generic, `private` or `fileprivate`**, for the same reasons as `@Swidux`.
+- **Not generic, `private` or `fileprivate`.** The `@Model` peer can't name a generic struct's parameters, and it doesn't compile at `fileprivate`, even at file scope.
 - **The same stored-property rules as `@Swidux`**, plus three of its own: `willSet`/`didSet` properties are mirrored like any other, a `let` with an initial value is an error (the memberwise initializer has no parameter for it, so it can't be loaded), and a `private` property is an error (the model reads it and rebuilds the struct from outside the struct; `fileprivate` works). `static` properties are never columns.
 - **`Optional<T>` and `T!` count as optional**, exactly like `T?`.
 
