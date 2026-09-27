@@ -359,7 +359,10 @@ public struct PersistedEntity<State> {
                     // stored payload is untouched for a build that can read it.
                     let loaded = try await loadRows(handle, observers)
                     return HydrateRead(succeeded: true) { state in
-                        state[keyPath: keyPath] = EntityStore(loaded.rows)
+                        // Recorded as arrivals from storage: a live store may
+                        // hold undo snapshots from before this read, and
+                        // restoring one must not delete what was loaded.
+                        state[keyPath: keyPath] = EntityStore(hydrating: loaded.rows)
                     }
                 } catch {
                     // Leave the store untouched — an unreadable database must
