@@ -41,7 +41,8 @@ struct FeatureFlagsPluginTests {
         userIDKeyPath: KeyPath<TestState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .manual,
         keyValueStore: any KeyValueStore = InMemoryKeyValueStore(),
-        onExposure: (@Sendable (String, FlagValue) -> Void)? = nil
+        onExposure: (@Sendable (String, FlagValue) -> Void)? = nil,
+        fetchTimeout: Duration = .seconds(30)
     ) -> FeatureFlagsPlugin<TestState, TestAction> {
         FeatureFlagsPlugin(
             state: \.featureFlags,
@@ -55,7 +56,8 @@ struct FeatureFlagsPluginTests {
             userIDKeyPath: userIDKeyPath,
             refreshPolicy: refreshPolicy,
             keyValueStore: keyValueStore,
-            onExposure: onExposure
+            onExposure: onExposure,
+            fetchTimeout: fetchTimeout
         )
     }
 
@@ -157,6 +159,51 @@ struct FeatureFlagsPluginTests {
         try await effect?({ _ in })
 
         #expect(service.fetchCount == 1)
+    }
+
+    @Test("a service that never returns can't latch isFetching for the session")
+    func hungServiceDoesNotLatchIsFetching() async throws {
+        let plugin = makePlugin(service: HangingFeatureFlagsService(), fetchTimeout: .milliseconds(50))
+        var state = TestState()
+
+        let effect = try #require(plugin.reduce(state: &state, action: .featureFlags(.refresh)))
+        var dispatched: [TestAction] = []
+        Task { try? await effect { dispatched.append($0) } }
+        var waited = Duration.zero
+        while dispatched.isEmpty, waited < .seconds(2) {
+            try await Task.sleep(for: .milliseconds(5))
+            waited += .milliseconds(5)
+        }
+
+        guard case .featureFlags(let failure)? = dispatched.first, case .refreshFailed = failure else {
+            Issue.record("expected refreshFailed once the fetch timed out, got \(dispatched)")
+            return
+        }
+        _ = plugin.reduce(state: &state, action: .featureFlags(failure))
+        #expect(!state.featureFlags.isFetching)
+        #expect(plugin.reduce(state: &state, action: .featureFlags(.refresh)) != nil)
+    }
+
+    @Test("cancelling the refresh effect reports a failure even if the service ignores it")
+    func cancelledRefreshOfHungServiceReportsFailure() async throws {
+        let plugin = makePlugin(service: HangingFeatureFlagsService(), fetchTimeout: .seconds(30))
+        var state = TestState()
+
+        let effect = try #require(plugin.reduce(state: &state, action: .featureFlags(.refresh)))
+        var dispatched: [TestAction] = []
+        let running = Task { try? await effect { dispatched.append($0) } }
+        try await Task.sleep(for: .milliseconds(20))
+        running.cancel()
+        var waited = Duration.zero
+        while dispatched.isEmpty, waited < .seconds(2) {
+            try await Task.sleep(for: .milliseconds(5))
+            waited += .milliseconds(5)
+        }
+
+        guard case .featureFlags(.refreshFailed)? = dispatched.first else {
+            Issue.record("expected refreshFailed after cancellation, got \(dispatched)")
+            return
+        }
     }
 
     @Test("manual policy never debounces")

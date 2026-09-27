@@ -161,6 +161,8 @@ public protocol FeatureFlagsService: Sendable {
 
 One method. Caching, hydration, evaluation all live in the plugin.
 
+The plugin bounds every fetch with its `fetchTimeout:` init parameter (default 30 seconds). A fetch still running at the deadline is cancelled and reported as `.refreshFailed`, and its result is dropped if it arrives later. That keeps a custom service that never returns from holding `isFetching`, which would otherwise block every later `.refresh` for the session. Keep the value above your service's own timeout so the service's error is the one reported.
+
 ### Built-in: `HTTPFeatureFlagsService`
 
 `URLSession` + `JSONDecoder`. Apps host their JSON anywhere — static file on a CDN, Cloudflare Worker, their own server. Zero backend infrastructure required. `Examples/ConfigWorker/` is a runnable shared Worker serving flags + killswitch for a whole portfolio from one URL (`GET /<appID>/flags`).

@@ -29,6 +29,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let refreshPolicy: RefreshPolicy
     private let keyValueStore: any KeyValueStore
     private let onExposure: (@Sendable (String, FlagValue) -> Void)?
+    private let fetchTimeout: Duration
 
     /// Creates the plugin and wires it into the host's root state and action types.
     ///
@@ -40,6 +41,12 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// used for bucketing when no `userIDKeyPath` resolves. Back it with a
     /// Keychain-minted value (see `KeyValueStore.deviceIdentity()`) so it
     /// survives reinstall.
+    ///
+    /// `fetchTimeout` bounds each `.refresh`: a `service.fetch()` still
+    /// running after it is cancelled and reported as `.refreshFailed`, so a
+    /// service that never returns can't hold `isFetching` for the session.
+    /// Keep it above the service's own timeout (``HTTPFeatureFlagsService``
+    /// defaults to 10 seconds) so the service's error is the one reported.
     public init(
         state: WritableKeyPath<RootState, FeatureFlagsState>,
         action toRootAction: @escaping @Sendable (FeatureFlagsAction) -> RootAction,
@@ -49,7 +56,8 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         userIDKeyPath: KeyPath<RootState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .automatic,
         keyValueStore: any KeyValueStore,
-        onExposure: (@Sendable (String, FlagValue) -> Void)? = nil
+        onExposure: (@Sendable (String, FlagValue) -> Void)? = nil,
+        fetchTimeout: Duration = .seconds(30)
     ) {
         self.stateKeyPath = state
         self.toRootAction = toRootAction
@@ -60,6 +68,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.refreshPolicy = refreshPolicy
         self.keyValueStore = keyValueStore
         self.onExposure = onExposure
+        self.fetchTimeout = fetchTimeout
     }
 
     /// Routes feature-flags actions and returns effects for service fetches,
@@ -106,9 +115,10 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             state.isFetching = true
             let service = self.service
             let lift = self.toRootAction
+            let timeout = self.fetchTimeout
             return Effect { send in
                 do {
-                    let config = try await service.fetch()
+                    let config = try await Self.fetch(from: service, timeout: timeout)
                     await send(lift(.refreshSucceeded(config, fetchedAt: Date())))
                 } catch {
                     // Deliberately unfiltered, cancellation included:
@@ -212,6 +222,40 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         }
     }
 
+    /// Awaits `service.fetch()` for at most `timeout`, then throws
+    /// ``FetchTimedOut``. `isFetching` clears only when the effect reports a
+    /// result, so an unbounded fetch — any custom service, not just the
+    /// deadline-bounded HTTP one — that never returns would block every later
+    /// `.refresh` for the session. The fetch runs in its own task because a
+    /// child task that ignores cancellation would hold a task group open; on
+    /// timeout (or cancellation of the effect) it is cancelled and its result,
+    /// if one ever arrives, is dropped.
+    private nonisolated static func fetch(
+        from service: any FeatureFlagsService,
+        timeout: Duration
+    ) async throws -> FeatureFlagsConfig {
+        let (outcomes, outcome) = AsyncStream<Result<FeatureFlagsConfig, any Error>>.makeStream()
+        let fetch = Task {
+            do {
+                outcome.yield(.success(try await service.fetch()))
+            } catch {
+                outcome.yield(.failure(error))
+            }
+        }
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            outcome.yield(.failure(FetchTimedOut(timeout: timeout)))
+        }
+        defer {
+            fetch.cancel()
+            timer.cancel()
+            outcome.finish()
+        }
+        var first = outcomes.makeAsyncIterator()
+        guard let result = await first.next() else { throw CancellationError() }
+        return try result.get()
+    }
+
     private func shouldDebounce(state: FeatureFlagsState) -> Bool {
         guard case .automatic(let minInterval) = refreshPolicy,
             let lastFetched = state.lastFetchedAt
@@ -223,4 +267,11 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         let elapsed = Date().timeIntervalSince(lastFetched)
         return elapsed >= 0 && elapsed < minInterval
     }
+}
+
+/// The plugin stopped waiting for a ``FeatureFlagsService/fetch()`` that ran
+/// past its `fetchTimeout`. Surfaces as `lastFetchError`.
+struct FetchTimedOut: Error, CustomStringConvertible {
+    let timeout: Duration
+    var description: String { "Feature-flags fetch timed out after \(timeout)" }
 }
