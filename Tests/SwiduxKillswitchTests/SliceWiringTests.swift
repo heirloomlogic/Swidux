@@ -33,7 +33,8 @@ struct KillswitchSliceWiringTests {
                     updateURL: URL(string: "https://example.com")
                 ),
                 lastFetch: Date(timeIntervalSince1970: 1_000),
-                fetchError: "timeout"
+                fetchError: "timeout",
+                isFetching: true
             ),
             unrelated: 7
         )

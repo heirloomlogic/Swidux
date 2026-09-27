@@ -28,7 +28,8 @@ struct ParentalGatePluginTests {
     func makePlugin(
         attemptLimit: Int = 3,
         cooldown: Duration = .seconds(30),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        keyValueStore: (any KeyValueStore)? = nil
     ) -> ParentalGatePlugin<TestState, TestAction> {
         ParentalGatePlugin(
             state: \.parental,
@@ -40,7 +41,8 @@ struct ParentalGatePluginTests {
             challengeSource: .fixed(fixedChallenge),
             attemptLimit: attemptLimit,
             cooldown: cooldown,
-            now: now
+            now: now,
+            keyValueStore: keyValueStore
         )
     }
 

@@ -7,6 +7,7 @@
 
 import Foundation
 import Swidux
+import Synchronization
 import Testing
 
 @testable import SwiduxKillswitch
@@ -285,6 +286,108 @@ struct KillswitchPluginTests {
         if case .fetchFailed = actions.first {
         } else {
             Issue.record("Expected fetchFailed, got \(actions)")
+        }
+    }
+
+    // MARK: - Cold launch
+
+    @Test("a cold-launch fetch shows the cached verdict before the network answers")
+    func coldLaunchServesCacheBeforeNetwork() async throws {
+        let events = Mutex<[String]>([])
+        let service = KillswitchService.mock(
+            result: {
+                events.withLock { $0.append("network") }
+                return KillswitchConfig()
+            },
+            cached: KillswitchConfig(minimumSupportedVersion: "2.0.0")
+        )
+        let plugin = makePlugin(service: service)
+        var state = TestState()  // cold launch: verdict .unknown, lastFetch nil
+
+        let effect = try #require(plugin.reduce(state: &state, action: .killswitch(.fetch)))
+        try await effect { action in
+            guard case .killswitch(.verdictReceived(let verdict, let fromNetwork)) = action else { return }
+            events.withLock { $0.append("\(verdict.isBlocked ? "blocked" : "allowed") fromNetwork:\(fromNetwork)") }
+        }
+
+        // The device already holds a config that blocks this build. Leaving the
+        // verdict `.unknown` for the length of the request would let a blocked
+        // build run on every launch until the network answers.
+        #expect(
+            events.withLock { $0 } == [
+                "blocked fromNetwork:false",
+                "network",
+                "allowed fromNetwork:true",
+            ])
+    }
+
+    @Test("a fetch after a verdict is known does not replay the cache first")
+    func warmFetchSkipsCachePreview() async throws {
+        let service = KillswitchService.mock(
+            result: { KillswitchConfig() },
+            cached: KillswitchConfig(minimumSupportedVersion: "2.0.0"),
+            cacheLifetime: 60
+        )
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        state.killswitch.verdict = .allowed
+        state.killswitch.lastFetch = Date(timeIntervalSinceNow: -120)
+
+        let actions = try await collectActions(
+            from: plugin.reduce(state: &state, action: .killswitch(.fetch)))
+
+        #expect(actions.count == 1)
+        if case .verdictReceived(.allowed, fromNetwork: true) = actions.first {
+        } else {
+            Issue.record("Expected only the network verdict, got \(actions)")
+        }
+    }
+
+    // MARK: - In-flight guard
+
+    @Test("a fetch while another is in flight is dropped until the first finishes")
+    func overlappingFetchIsDropped() {
+        let plugin = makePlugin()
+        var state = TestState()
+
+        let first = plugin.reduce(state: &state, action: .killswitch(.fetch))
+        let overlapping = plugin.reduce(state: &state, action: .killswitch(.forceFetch))
+
+        // Two concurrent requests apply in completion order, not issue order —
+        // a slow stale response could overwrite a newer verdict and its cache.
+        #expect(first != nil)
+        #expect(overlapping == nil)
+
+        _ = plugin.reduce(state: &state, action: .killswitch(.verdictReceived(.allowed, fromNetwork: true)))
+        #expect(plugin.reduce(state: &state, action: .killswitch(.forceFetch)) != nil)
+    }
+
+    @Test("a failed fetch releases the in-flight guard; a cache-served verdict does not")
+    func inFlightGuardReleasesOnlyOnCompletion() {
+        let plugin = makePlugin()
+        var state = TestState()
+
+        _ = plugin.reduce(state: &state, action: .killswitch(.forceFetch))
+        // The cold-launch cache preview lands mid-request; it is not the answer.
+        _ = plugin.reduce(state: &state, action: .killswitch(.verdictReceived(.allowed, fromNetwork: false)))
+        #expect(plugin.reduce(state: &state, action: .killswitch(.fetch)) == nil)
+
+        _ = plugin.reduce(state: &state, action: .killswitch(.fetchFailed("offline")))
+        #expect(plugin.reduce(state: &state, action: .killswitch(.fetch)) != nil)
+    }
+
+    @Test("a fresh window with no cache on disk re-dispatches as a network fetch")
+    func freshWindowWithoutCacheGoesToNetwork() async throws {
+        let plugin = makePlugin(service: .mock(cached: nil, cacheLifetime: 3600))
+        var state = TestState()
+        state.killswitch.lastFetch = Date()
+
+        let actions = try await collectActions(
+            from: plugin.reduce(state: &state, action: .killswitch(.fetch)))
+
+        if case .forceFetch = actions.first, actions.count == 1 {
+        } else {
+            Issue.record("Expected a single .forceFetch, got \(actions)")
         }
     }
 

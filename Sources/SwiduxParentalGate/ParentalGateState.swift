@@ -47,4 +47,33 @@ public nonisolated struct ParentalGateState: Sendable, Equatable {
         self.passedReasons = passedReasons
         self.cooldownUntil = cooldownUntil
     }
+
+    /// Builds an initial state carrying the attempt count and cooldown that
+    /// ``ParentalGatePlugin`` persisted to `store`.
+    ///
+    /// Pass the same store to the plugin's `keyValueStore:`. Everything else —
+    /// the pending gate, the challenge, `passedReasons` — starts fresh; only
+    /// the rate limit outlives the process. A persisted cooldown is re-armed
+    /// the next time the gate is requested.
+    public static func hydrated(from store: any KeyValueStore) -> ParentalGateState {
+        guard let lockout = store.value(.parentalGateLockout) else { return ParentalGateState() }
+        return ParentalGateState(attempts: max(0, lockout.attempts), cooldownUntil: lockout.cooldownUntil)
+    }
+}
+
+/// The part of the gate that has to outlive the process: without it,
+/// swiping the app away resets the attempt limit.
+struct ParentalGateLockout: Codable, Equatable, Sendable {
+    var attempts: Int
+    var cooldownUntil: Date?
+
+    init(_ state: ParentalGateState) {
+        attempts = state.attempts
+        cooldownUntil = state.cooldownUntil
+    }
+}
+
+extension KVKey where Value == ParentalGateLockout {
+    /// The persisted attempt count and cooldown deadline.
+    static let parentalGateLockout = KVKey<ParentalGateLockout>("swidux.parentalGate.lockout")
 }

@@ -120,4 +120,37 @@ struct KillswitchVerdictTests {
                 )
         )
     }
+
+    // MARK: - Malformed rules
+
+    @Test(
+        "a config-side rule that fails strict parsing is reported, not skipped silently",
+        arguments: [
+            (KillswitchConfig(minimumSupportedVersion: "2.0"), #"minimumSupportedVersion "2.0""#),
+            (KillswitchConfig(minimumSupportedVersion: "v2.0.0"), #"minimumSupportedVersion "v2.0.0""#),
+            (KillswitchConfig(minimumSupportedVersion: " 2.0.0"), #"minimumSupportedVersion " 2.0.0""#),
+            (KillswitchConfig(blockedVersions: ["0.9.0", "1.4"]), #"blockedVersions "1.4""#),
+            (KillswitchConfig(blockedRanges: ["1.4.0 ..< 1.5.0"]), #"blockedRanges "1.4.0 ..< 1.5.0""#),
+            (KillswitchConfig(blockedRanges: ["1.5.0..<1.4.0"]), #"blockedRanges "1.5.0..<1.4.0""#),
+        ]
+    )
+    func malformedRuleIsReported(config: KillswitchConfig, rule: String) {
+        // Strict config-side parsing is deliberate, so the rule stays dead and
+        // the verdict fails open. What changes is that it is dead *visibly*:
+        // `evaluate` logs every entry reported here. An operator who typed
+        // "2.0" into the incident lever otherwise sees their JSON served
+        // verbatim and believes every client is blocked.
+        #expect(KillswitchVerdict.evaluate(config, against: "1.0.0") == .allowed)
+        #expect(config.malformedRules == [rule])
+    }
+
+    @Test("a well-formed config reports nothing")
+    func wellFormedConfigReportsNothing() {
+        let config = KillswitchConfig(
+            minimumSupportedVersion: "1.2.0",
+            blockedVersions: ["1.4.2", "2.0.0-beta.1"],
+            blockedRanges: ["1.5.0..<1.5.3"]
+        )
+        #expect(config.malformedRules.isEmpty)
+    }
 }

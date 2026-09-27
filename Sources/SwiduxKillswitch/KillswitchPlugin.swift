@@ -90,49 +90,50 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
     ) -> Effect<KillswitchAction>? {
         switch action {
         case .fetch:
+            guard !state.isFetching else { return nil }
+            // A negative age means the wall clock moved backward past the
+            // last fetch; treat the cache as expired rather than letting a
+            // clock change pin this install to a stale verdict.
+            let cacheAge = state.lastFetch.map { Date().timeIntervalSince($0) }
+            guard let cacheAge, cacheAge >= 0, cacheAge < self.service.cacheLifetime else {
+                return startNetworkFetch(state: &state)
+            }
             let service = self.service
             let appVersion = self.appVersion()
-            let lastFetch = state.lastFetch
             return Effect { send in
-                // A negative age means the wall clock moved backward past the
-                // last fetch; treat the cache as expired rather than letting a
-                // clock change pin this install to a stale verdict.
-                let cacheAge = lastFetch.map { Date().timeIntervalSince($0) }
-                if let cacheAge, cacheAge >= 0, cacheAge < service.cacheLifetime,
-                    let cached = service.loadCached()
-                {
-                    let verdict = KillswitchVerdict.evaluate(
-                        cached, against: appVersion
-                    )
-                    await send(.verdictReceived(verdict, fromNetwork: false))
+                guard let cached = service.loadCached() else {
+                    // Fresh, but nothing on disk (the write failed). Take the
+                    // network path through the reducer, so the in-flight
+                    // guard sees it.
+                    await send(.forceFetch)
                     return
                 }
-                await Self.fetchFromNetwork(
-                    service: service, appVersion: appVersion, send: send
+                let verdict = KillswitchVerdict.evaluate(
+                    cached, against: appVersion
                 )
+                await send(.verdictReceived(verdict, fromNetwork: false))
             }
 
         case .forceFetch:
-            let service = self.service
-            let appVersion = self.appVersion()
-            return Effect { send in
-                await Self.fetchFromNetwork(
-                    service: service, appVersion: appVersion, send: send
-                )
-            }
+            guard !state.isFetching else { return nil }
+            return startNetworkFetch(state: &state)
 
         case .verdictReceived(let verdict, let fromNetwork):
             state.verdict = verdict
             state.fetchError = nil
             // Only a live fetch refreshes the freshness window. A cache-served
             // verdict re-stamping `lastFetch` would slide the window forever
-            // and starve the network path for the rest of the session.
+            // and starve the network path for the rest of the session. Nor
+            // does it end a fetch: the cold-launch preview lands while the
+            // request is still in flight.
             if fromNetwork {
                 state.lastFetch = Date()
+                state.isFetching = false
             }
 
         case .fetchFailed(let message):
             state.fetchError = message
+            state.isFetching = false
 
         case .openUpdateURL:
             guard let url = state.verdict.openableUpdateURL else { return nil }
@@ -142,9 +143,39 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
         return nil
     }
 
+    /// Marks a network fetch in flight and returns it. The fetch ends in
+    /// exactly one of `.verdictReceived(_, fromNetwork: true)` or
+    /// `.fetchFailed`, and each clears ``KillswitchState/isFetching``.
+    private func startNetworkFetch(
+        state: inout KillswitchState
+    ) -> Effect<KillswitchAction> {
+        state.isFetching = true
+        let service = self.service
+        let appVersion = self.appVersion()
+        // Nothing has decided the verdict yet: a cold launch. The device may
+        // already hold a config that blocks this build, so show it while the
+        // network answers rather than leave the build usable for the length
+        // of the request.
+        let previewsCache = state.verdict == .unknown
+        return Effect { send in
+            let preview = previewsCache ? service.loadCached() : nil
+            if let preview {
+                let verdict = KillswitchVerdict.evaluate(
+                    preview, against: appVersion
+                )
+                await send(.verdictReceived(verdict, fromNetwork: false))
+            }
+            await Self.fetchFromNetwork(
+                service: service, appVersion: appVersion,
+                fallsBackToCache: preview == nil, send: send
+            )
+        }
+    }
+
     nonisolated private static func fetchFromNetwork(
         service: KillswitchService,
         appVersion: String,
+        fallsBackToCache: Bool,
         send: @escaping Send<KillswitchAction>
     ) async {
         do {
@@ -155,7 +186,9 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             )
             await send(.verdictReceived(verdict, fromNetwork: true))
         } catch {
-            if let cached = service.loadCached() {
+            // A previewed cache is already the verdict, and the in-flight
+            // guard means nothing has rewritten the file since.
+            if fallsBackToCache, let cached = service.loadCached() {
                 let verdict = KillswitchVerdict.evaluate(
                     cached, against: appVersion
                 )

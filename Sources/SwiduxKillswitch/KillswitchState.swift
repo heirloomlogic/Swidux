@@ -19,6 +19,14 @@ public nonisolated struct KillswitchState: Sendable, Equatable {
     public var lastFetch: Date? = nil
     /// Human-readable description of the last fetch failure, or `nil`.
     public var fetchError: String? = nil
+    /// `true` while a network fetch is in flight.
+    ///
+    /// A `.fetch` or `.forceFetch` dispatched meanwhile is dropped, so two
+    /// requests can't overlap and apply in completion order rather than issue
+    /// order, with a slow, stale answer overwriting a newer verdict and its
+    /// cache. Cleared by the fetch's own outcome:
+    /// `.verdictReceived(_, fromNetwork: true)` or `.fetchFailed`.
+    public var isFetching: Bool = false
 
     /// `true` when the verdict is `.blocked`.
     public var isBlocked: Bool { verdict.isBlocked }
@@ -33,10 +41,12 @@ public nonisolated struct KillswitchState: Sendable, Equatable {
     public init(
         verdict: KillswitchVerdict = .unknown,
         lastFetch: Date? = nil,
-        fetchError: String? = nil
+        fetchError: String? = nil,
+        isFetching: Bool = false
     ) {
         self.verdict = verdict
         self.lastFetch = lastFetch
         self.fetchError = fetchError
+        self.isFetching = isFetching
     }
 }

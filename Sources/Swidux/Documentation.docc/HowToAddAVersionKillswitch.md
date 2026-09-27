@@ -1,10 +1,10 @@
 # Add a Version Killswitch
 
-Wire a remote-controlled blocker that prevents unsupported app versions from running, with an "Update" path back to the App Store.
+Wire a remote-controlled blocker that covers the UI of unsupported app versions, with an "Update" path back to the App Store.
 
 ## Overview
 
-By the end of this guide your app fetches a JSON config from a URL you control, evaluates it against the running version, and presents a blocking sheet whenever the server marks the build as unsupported. The verdict lives in your `AppState`, so any view can react to it.
+By the end of this guide your app fetches a JSON config from a URL you control, evaluates it against the running version, and covers the app with a non-dismissible overlay whenever the server marks the build as unsupported. The verdict lives in your `AppState`, so any view can react to it.
 
 ## Before you start
 
@@ -120,7 +120,7 @@ The `appVersion` closure runs every time `.fetch` evaluates, so it reflects the 
 
 ## Step 4: Trigger fetch on launch
 
-Dispatch `.killswitch(.fetch)` from your root view's `.task` so the verdict is available before the user can interact:
+Dispatch `.killswitch(.fetch)` from your root view's `.task`, so the verdict is decided as early in the launch as possible:
 
 ```swift
 struct RootView: View {
@@ -133,9 +133,13 @@ struct RootView: View {
 }
 ```
 
-`.fetch` is cache-aware: if the last fetch is within `cacheLifetime` and a cached config is on disk, the plugin evaluates the cached config and skips the network. That makes a launch fetch cheap to issue on every cold start. For a manual refresh — pull-to-refresh, a "Check for updates" button, or a post-purchase health check — dispatch `.killswitch(.forceFetch)` instead, which bypasses the freshness gate.
+`.fetch` is cache-aware: if a network fetch succeeded within `cacheLifetime` this session and a cached config is on disk, the plugin evaluates the cached config and skips the network. For a manual refresh — pull-to-refresh, a "Check for updates" button, or a post-purchase health check — dispatch `.killswitch(.forceFetch)` instead, which bypasses the freshness gate.
+
+The freshness window is session state, so a cold launch always goes to the network. It doesn't wait on it, though: while the verdict is still `.unknown`, the plugin first evaluates the config cached by a previous launch and dispatches that verdict (`fromNetwork: false`), then asks the network. A build that the device already knows is blocked is blocked as soon as that file is read, not after the request returns. On a first-ever launch there is no cache, so the verdict stays `.unknown` — which renders nothing — until the network answers, for at most `fetchTimeout`.
 
 If the network call fails and a cached config is available, the plugin dispatches `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)`. Your UI keeps a usable verdict and can still surface the error.
+
+Only one network fetch runs at a time. A `.fetch` or `.forceFetch` dispatched while one is in flight (`isFetching`) is dropped, so dispatching both at launch — `.fetch` from `.task` and `.forceFetch` on foreground — costs one request, and a slow response can never land after, and overwrite, a newer one.
 
 ## Step 5: Render the verdict
 
@@ -171,6 +175,46 @@ If the default blocker styling doesn't match your design, use the second overloa
 ```
 
 The closure receives the verdict's `title`, `message`, and a `hasUpdateURL` flag derived from `canOpenUpdateURL`, so your custom view doesn't have to pattern-match the verdict itself.
+
+### What the blocker covers
+
+The modifier is view-local: it disables and overlays the one view you attach it to, and nothing else. The store does not refuse actions while blocked. Anything that reaches the store without going through that view keeps working:
+
+- **Other scenes.** A second `WindowGroup` window, a `Settings` scene, a `MenuBarExtra`. Apply the modifier to the root view of *every* scene.
+- **Presentations.** A sheet, popover, or full-screen cover already up when the verdict flips is drawn above the overlay. Dismiss them when `store.killswitch.isBlocked` becomes true — drive each presentation's binding off state and clear it on the transition, or gate the `isPresented` getter on `!store.killswitch.isBlocked`.
+- **Commands and system entry points.** macOS menu commands (including Edit > Undo), keyboard shortcuts, App Intents, `onOpenURL`, and notification actions dispatch without touching the view tree. Disable your `Commands` with `.disabled(store.killswitch.isBlocked)`, and have intent and URL handlers check `isBlocked` before dispatching.
+
+```swift
+@main
+struct MyApp: App {
+    @State private var store = AppStore.configured()
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .killswitchBlocker(verdict: store.killswitch.verdict) {
+                    store.send(.killswitch(.openUpdateURL))
+                }
+                .environment(store)
+        }
+        .commands {
+            CommandMenu("Items") {
+                Button("New Item") { store.send(.items(.add)) }
+                    .keyboardShortcut("n")
+                    .disabled(store.killswitch.isBlocked)
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .killswitchBlocker(verdict: store.killswitch.verdict)
+                .environment(store)
+        }
+    }
+}
+```
+
+The blocker is a courtesy for a cooperative user, not enforcement — see <doc:SecurityPosture>. What it should not be is leaky by omission.
 
 ## Hosting the JSON config
 
@@ -210,6 +254,8 @@ The endpoint you pass to `KillswitchService.live(endpoint:fetchTimeout:cacheLife
 ```
 
 Range entries use the literal string `"a.b.c..<x.y.z"` — half-open, lower bound inclusive, upper bound exclusive.
+
+Every version in the config must be full `major.minor.patch` with no prefix or surrounding whitespace, even though the app's own marketing version may be `"2.0"`. A rule that doesn't parse is ignored — the app is *not* blocked — and logged at error level (`swidux` / `killswitch` in Console). Test an incident config against a device before you rely on it.
 
 **4. Allow everyone.** Sometimes you just want the killswitch live but quiet.
 

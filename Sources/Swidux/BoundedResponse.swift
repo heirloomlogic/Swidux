@@ -19,7 +19,8 @@ import Foundation
 /// object, so the body is streamed and abandoned the moment it grows past the
 /// cap.
 public enum BoundedResponse {
-    /// Fetches `request`, refusing anything larger than `limit`.
+    /// Fetches `request`, refusing anything larger than `limit` or slower than
+    /// `deadline`.
     ///
     /// Three guards, in the order that spends the least on a bad response:
     ///
@@ -33,6 +34,13 @@ public enum BoundedResponse {
     ///    the count exceeds `limit`, so the process never holds more than the
     ///    cap plus one chunk.
     ///
+    /// The deadline covers the whole exchange, headers and body together.
+    /// `URLRequest.timeoutInterval` can't do that job: it is an *idle* timeout,
+    /// reset by every packet, so a response that trickles in a byte at a time
+    /// never trips it, and `URLSession.shared` allows a transfer seven days.
+    /// When the deadline passes, the transfer is cancelled and the call throws
+    /// `URLError.timedOut`.
+    ///
     /// - Note: `URLSession.bytes(for:)` yields one byte at a time — it is the
     ///   only public streaming read, and its buffering keeps that cheaper than
     ///   it looks (roughly 100 ms to reach a 1 MB cap, nearly all of it inside
@@ -44,12 +52,40 @@ public enum BoundedResponse {
     ///   - request: The request to fetch.
     ///   - session: The session to fetch with.
     ///   - limit: The maximum accepted body size, in bytes.
+    ///   - deadline: The longest the whole exchange may take, or `nil` to rely
+    ///     on the session's own timeouts alone.
     /// - Returns: The response body, never larger than `limit`.
     /// - Throws: `URLError.badServerResponse` for a non-2xx status,
-    ///   `URLError.dataLengthExceedsMaximum` past the cap, and whatever the
-    ///   transport throws.
+    ///   `URLError.dataLengthExceedsMaximum` past the cap, `URLError.timedOut`
+    ///   past the deadline, and whatever the transport throws.
     public static func data(
         for request: URLRequest,
+        session: URLSession,
+        limit: Int,
+        deadline: Duration? = nil
+    ) async throws -> Data {
+        guard let deadline else {
+            return try await transfer(request, session: session, limit: limit)
+        }
+        return try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { try await transfer(request, session: session, limit: limit) }
+            group.addTask {
+                try await Task.sleep(for: deadline)
+                throw URLError(.timedOut)
+            }
+            // The first child to finish decides. Cancelling the other tears
+            // the transfer down — `bytes(for:)` and its iterator both honour
+            // task cancellation — and the group waits for that before it
+            // returns, so nothing outlives the call.
+            defer { group.cancelAll() }
+            guard let data = try await group.next() else { throw URLError(.timedOut) }
+            return data
+        }
+    }
+
+    /// The capped read itself, with no deadline of its own.
+    private static func transfer(
+        _ request: URLRequest,
         session: URLSession,
         limit: Int
     ) async throws -> Data {
