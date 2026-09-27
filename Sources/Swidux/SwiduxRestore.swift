@@ -23,6 +23,11 @@
 /// - A ``SwiduxObservable`` value recurses into its own `applyRestore`, unless
 ///   its type opts out through ``SwiduxObservable/restoresOnUndo`` — with or
 ///   without `@Slice`.
+/// - An optional or array of a ``SwiduxObservable`` type honors the same
+///   opt-out: an opted-out type is kept whole. Otherwise an optional recurses
+///   when both sides hold a value, and an array takes the snapshot's elements.
+///   No other container is looked into; a dictionary of state, say, is simply
+///   assigned.
 /// - Anything else is the snapshot's value.
 ///
 /// ## Why values rather than `inout`
@@ -56,5 +61,21 @@ public enum SwiduxRestore {
         var restored = current
         State.applyRestore(from: snapshot, to: &restored)
         return restored
+    }
+
+    /// The restored optional nested state — `current` unchanged when the type
+    /// opts out of undo restoration, whichever side is `nil`.
+    @MainActor
+    public static func restored<State: SwiduxObservable>(_ current: State?, from snapshot: State?) -> State? {
+        guard State.restoresOnUndo else { return current }
+        guard let current, let snapshot else { return snapshot }
+        return restored(current, from: snapshot)
+    }
+
+    /// The restored array of nested state — `current` unchanged when the element
+    /// type opts out of undo restoration, else the snapshot's elements.
+    @MainActor
+    public static func restored<State: SwiduxObservable>(_ current: [State], from snapshot: [State]) -> [State] {
+        State.restoresOnUndo ? snapshot : current
     }
 }

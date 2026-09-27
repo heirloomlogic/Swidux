@@ -170,7 +170,7 @@ Two things worth noticing. First, the nested `ui` property is `let` on the obser
 
 `UndoPlugin`'s `isUndoable` decides *when* a snapshot is taken. ``SwiduxObservable/restoresOnUndo`` decides *what* is restored from it. A snapshot is the whole state, so without an opt-out, undo reverts every change since the snapshot, including state an undoable action never touched.
 
-A `@Swidux` type that returns `false` from `static var restoresOnUndo` is left at its current value by its parent's `applyRestore`, whether or not the property is marked `@Slice`. Every plugin-owned slice Swidux ships opts out (`KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState`, `PersistenceState`), so plugin slices are never restored. See <doc:UndoRedo>.
+A `@Swidux` type that returns `false` from `static var restoresOnUndo` is left at its current value by its parent's `applyRestore`, whether or not the property is marked `@Slice`, and also when the property holds it as an optional or an array. Every plugin-owned slice Swidux ships opts out (`KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState`, `PersistenceState`), so plugin slices are never restored. See <doc:UndoRedo>.
 
 ## `@Slice`
 

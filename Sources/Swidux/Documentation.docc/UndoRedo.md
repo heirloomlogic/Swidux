@@ -106,7 +106,7 @@ nonisolated struct SessionState: Equatable, Sendable {
 }
 ```
 
-A parent's generated `applyRestore` then keeps the current value of every property of that type, through undo and redo alike. This holds whether the property is marked `@Slice` or held as a plain value.
+A parent's generated `applyRestore` then keeps the current value of every property of that type, through undo and redo alike. This holds whether the property is marked `@Slice` or held as a plain value, and when it is held as an optional (`SessionState?`) or an array (`[SessionState]`). Other containers, such as a dictionary of state, are restored from the snapshot as a whole.
 
 Plugin-owned slices are never restored. `KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState` and `PersistenceState` all opt out. Their values mirror something outside the state, such as a server verdict, a consent decision, a cooldown or an in-flight request, and only the plugin's own reducer keeps the two in step. Restoring them from a snapshot would lift a killswitch block, reverse an analytics opt-out without running the consent hook, hand back a revoked parental-gate pass, or latch a flag refresh that no request is left to clear.
 

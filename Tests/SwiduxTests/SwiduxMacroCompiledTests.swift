@@ -102,6 +102,15 @@ nonisolated struct StampedState: Equatable, Sendable {
     }
 }
 
+/// An opted-out type mounted optionally or in an array is still opted out.
+@Swidux
+nonisolated struct WrappedPinParent: Equatable, Sendable {
+    var maybePinned: PinnedState? = nil
+    var pinnedList: [PinnedState] = []
+    var maybeChild: RestorableChild? = nil
+    var children: [RestorableChild] = []
+}
+
 /// Top-level `private` (the same scope as `fileprivate` there), the usual shape
 /// of a state in a test or preview file.
 @Swidux
@@ -215,6 +224,24 @@ struct SwiduxMacroCompiledTests {
         StampedState.applyRestore(from: snapshot, to: &current)
 
         #expect(current == snapshot, "restored revision \(current.revision), snapshot had 5")
+    }
+
+    @Test("An opted-out type is kept through Optional and Array; a restorable one is restored")
+    func optOutHoldsThroughWrappers() {
+        let snapshot = WrappedPinParent(maybeChild: .init(value: 1), children: [.init(value: 1)])
+        var current = WrappedPinParent(
+            maybePinned: .init(value: 7),
+            pinnedList: [.init(value: 7)],
+            maybeChild: .init(value: 2),
+            children: [.init(value: 2), .init(value: 3)]
+        )
+
+        WrappedPinParent.applyRestore(from: snapshot, to: &current)
+
+        #expect(current.maybePinned == .init(value: 7), "opted-out state rolled back through Optional")
+        #expect(current.pinnedList == [.init(value: 7)], "opted-out state rolled back through Array")
+        #expect(current.maybeChild == .init(value: 1))
+        #expect(current.children == [.init(value: 1)])
     }
 
     @Test("A top-level fileprivate state works through a store")
