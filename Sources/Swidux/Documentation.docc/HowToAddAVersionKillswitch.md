@@ -1,10 +1,10 @@
 # Add a Version Killswitch
 
-Wire a remote-controlled blocker that prevents unsupported app versions from running, with an "Update" path back to the App Store.
+Wire a remote-controlled blocker that covers the UI of unsupported app versions, with an "Update" path back to the App Store.
 
 ## Overview
 
-By the end of this guide your app fetches a JSON config from a URL you control, evaluates it against the running version, and presents a blocking sheet whenever the server marks the build as unsupported. The verdict lives in your `AppState`, so any view can react to it.
+By the end of this guide your app fetches a JSON config from a URL you control, evaluates it against the running version, and covers the app with a non-dismissible overlay whenever the server marks the build as unsupported. The verdict lives in your `AppState`, so any view can react to it.
 
 ## Before you start
 
@@ -175,6 +175,46 @@ If the default blocker styling doesn't match your design, use the second overloa
 ```
 
 The closure receives the verdict's `title`, `message`, and a `hasUpdateURL` flag derived from `canOpenUpdateURL`, so your custom view doesn't have to pattern-match the verdict itself.
+
+### What the blocker covers
+
+The modifier is view-local: it disables and overlays the one view you attach it to, and nothing else. The store does not refuse actions while blocked. Anything that reaches the store without going through that view keeps working:
+
+- **Other scenes.** A second `WindowGroup` window, a `Settings` scene, a `MenuBarExtra`. Apply the modifier to the root view of *every* scene.
+- **Presentations.** A sheet, popover, or full-screen cover already up when the verdict flips is drawn above the overlay. Dismiss them when `store.killswitch.isBlocked` becomes true — drive each presentation's binding off state and clear it on the transition, or gate the `isPresented` getter on `!store.killswitch.isBlocked`.
+- **Commands and system entry points.** macOS menu commands (including Edit > Undo), keyboard shortcuts, App Intents, `onOpenURL`, and notification actions dispatch without touching the view tree. Disable your `Commands` with `.disabled(store.killswitch.isBlocked)`, and have intent and URL handlers check `isBlocked` before dispatching.
+
+```swift
+@main
+struct MyApp: App {
+    @State private var store = AppStore.configured()
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .killswitchBlocker(verdict: store.killswitch.verdict) {
+                    store.send(.killswitch(.openUpdateURL))
+                }
+                .environment(store)
+        }
+        .commands {
+            CommandMenu("Items") {
+                Button("New Item") { store.send(.items(.add)) }
+                    .keyboardShortcut("n")
+                    .disabled(store.killswitch.isBlocked)
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .killswitchBlocker(verdict: store.killswitch.verdict)
+                .environment(store)
+        }
+    }
+}
+```
+
+The blocker is a courtesy for a cooperative user, not enforcement — see <doc:SecurityPosture>. What it should not be is leaky by omission.
 
 ## Hosting the JSON config
 

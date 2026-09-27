@@ -284,6 +284,8 @@ extension View {
 
 Both overloads apply `.disabled(verdict.isBlocked)` to the modified content, so the underlying view tree stops responding to touches while blocked. The blocker layer is rendered as an overlay; supply your own to match the host app's design system.
 
+The modifier is view-local. It covers only the view it is applied to, and the plugin does not gate dispatch while blocked: other scenes, presentations already on screen (drawn above the overlay), menu commands, keyboard shortcuts, App Intents, and URL handlers all keep working unless you gate them. Apply the modifier to every scene's root, dismiss presentations when `isBlocked` becomes true, and disable commands on `isBlocked`. See <doc:HowToAddAVersionKillswitch#What-the-blocker-covers>.
+
 ## See Also
 
 - <doc:HowToAddAVersionKillswitch>
