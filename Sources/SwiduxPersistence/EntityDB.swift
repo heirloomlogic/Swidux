@@ -47,7 +47,7 @@ public actor EntityDB {
     /// writes from every other writer's — CloudKit's import, another process,
     /// or a second `EntityDB` on the same container. What this actor wrote came
     /// from the state it serves, so the scan has nothing to learn from it that
-    /// it can only learn the expensive way. See `changes(since:readers:)`.
+    /// it has to trace to a parent. See `changes(since:readers:)`.
     let transactionAuthor = "swidux.\(UUID().uuidString)"
 
     /// Test seam: makes the next read throw `error` rather than run, so the

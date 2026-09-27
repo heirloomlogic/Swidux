@@ -96,10 +96,11 @@ enum HistoryScanFailure: Error, Sendable {
     /// watermark past a change nobody read.
     case unresolvedChanges(entityName: String)
 
-    /// Another writer changed a row of a model no registration mirrors but a
-    /// registered one reaches through a relationship — a `@Relation` child. Its
-    /// value lives inside its parent's domain value, and nothing in the change
-    /// says which parent, so only a full read of the parents can deliver it.
+    /// Another writer deleted a row of a model no registration mirrors but a
+    /// registered one reaches through a relationship — a `@Relation` child —
+    /// without changing any row that embeds it. A deleted child can't be traced
+    /// to the parent that held it, so only a full read of the parents can
+    /// deliver the removal.
     case embeddedChange(entityName: String)
 
     /// More than one store behind the container. `DefaultHistoryToken` is a
@@ -155,8 +156,10 @@ extension EntityDB {
 
         let byName = Dictionary(
             readers.map { ($0.entityName, $0) }, uniquingKeysWith: { first, _ in first })
-        let embedded = embeddedEntityNames(registered: Set(byName.keys))
+        let relations = EmbeddedRelations(
+            registered: byName.mapValues(\.modelType), schema: modelContainer.schema)
         var changedPIDs: [String: [PersistentIdentifier]] = [:]
+        var embeddedPIDs: [String: [PersistentIdentifier]] = [:]
         var deletedPIDs: Set<PersistentIdentifier> = []
 
         // One pass. The window can hold every change of a first CloudKit import,
@@ -169,23 +172,32 @@ extension EntityDB {
                 scan.newWatermark = transaction.token
             }
             let isOwnWrite = transaction.author == transactionAuthor
+            var touched: Set<String> = []
+            var embeddedDeletions: Set<String> = []
             for change in transaction.changes {
                 let identifier = change.changedPersistentIdentifier
                 guard let reader = byName[identifier.entityName] else {
                     // A model a registered entity embeds: its rows *are* in
-                    // state, inside their parents. Skipping another writer's
-                    // change would consume it unread, and the parent's next save
-                    // would write the stale child back over it. Our own saves
-                    // wrote these children *from* state, so they are skipped:
-                    // escalating on them would make every local edit of a
-                    // subtree cost the next tick a full read.
-                    if embedded.contains(identifier.entityName), !isOwnWrite {
-                        scan.escalate(.embeddedChange(entityName: identifier.entityName))
+                    // state, inside their parents, so another writer's change
+                    // to one is traced to the registered row holding it —
+                    // skipping it would consume it unread, and the parent's next
+                    // save would write the stale child back over it. Our own
+                    // saves wrote these children *from* state, so they have
+                    // nothing to teach this scan.
+                    guard relations.modelTypes[identifier.entityName] != nil, !isOwnWrite else {
+                        // A model no registered entity mirrors or reaches. Its
+                        // rows are not in state, so nothing here has anything
+                        // to say.
+                        continue
                     }
-                    // A model no registered entity mirrors or reaches. Its rows
-                    // are not in state, so nothing here has anything to say.
+                    if case .delete = change {
+                        embeddedDeletions.insert(identifier.entityName)
+                    } else {
+                        embeddedPIDs[identifier.entityName, default: []].append(identifier)
+                    }
                     continue
                 }
+                touched.insert(reader.entityName)
                 switch change {
                 case .delete:
                     deletedPIDs.insert(identifier)
@@ -203,11 +215,25 @@ extension EntityDB {
                     scan.escalate(.unresolvedChanges(entityName: reader.entityName))
                 }
             }
+            // A deleted child has no row left to trace to its parent. The
+            // parent's own change is what delivers it — a cascade deletes the
+            // parent, and a save that drops a child rewrites the parent — so a
+            // deletion that arrived with a change to a registered row embedding
+            // its model is accounted for. One that arrived alone is not.
+            for entityName in embeddedDeletions
+            where touched.isDisjoint(with: relations.registeredAncestors[entityName] ?? []) {
+                scan.escalate(.embeddedChange(entityName: entityName))
+            }
         }
 
         // A window going to be re-read in full needs no rows resolved: the
         // full read finds them anyway, and only its tombstones are owed.
         guard scan.escalation == nil else { return scan }
+        let embedding = try embeddingRows(
+            of: embeddedPIDs, relations: relations, registered: Set(byName.keys))
+        for (entityName, ids) in embedding {
+            scan.rows.insert(changed: ids, for: entityName)
+        }
         for (entityName, identifiers) in changedPIDs {
             guard let reader = byName[entityName] else { continue }
             let resolved = try identities(of: identifiers, asConcrete: reader.modelType)
@@ -227,27 +253,6 @@ extension EntityDB {
             }
         }
         return scan
-    }
-
-    /// Every model a registered one reaches through its relationships, at any
-    /// depth, that is not itself registered.
-    ///
-    /// Read off the container's schema per scan rather than cached: it is a
-    /// walk over a handful of entities, and the container behind this actor is
-    /// the one whose history is being read.
-    func embeddedEntityNames(registered: Set<String>) -> Set<String> {
-        let entities = modelContainer.schema.entitiesByName
-        var embedded: Set<String> = []
-        var frontier = Array(registered)
-        while let name = frontier.popLast() {
-            for relationship in entities[name]?.relationships ?? []
-            where !registered.contains(relationship.destination)
-                && embedded.insert(relationship.destination).inserted
-            {
-                frontier.append(relationship.destination)
-            }
-        }
-        return embedded
     }
 
     /// The newest token in the store, or `nil` when it has no history yet.

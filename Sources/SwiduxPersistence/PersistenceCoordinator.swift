@@ -726,10 +726,12 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// re-hydration after a container rebuild both leave one), when the watermark has expired or the
     /// history fetch fails, when a deletion's tombstone carries no identity
     /// (every row deleted before `@Attribute(.preserveValueOnDeletion)` shipped),
-    /// when a changed row can't be resolved, when another writer changed a
-    /// `@Relation` child whose model isn't registered — its value lives inside a
-    /// parent, and nothing in the change says which — and when more than one
-    /// store sits behind the container.
+    /// when a changed row can't be resolved, when another writer deleted a
+    /// `@Relation` child without changing any row that embeds it — a deleted
+    /// child can't be traced to its parent — and when more than one store sits
+    /// behind the container. A child that was inserted or edited is traced
+    /// through its relationships to the registered row holding it, and only
+    /// that row is read.
     ///
     /// > Note: A parent's save writes its whole subtree from memory, so it is
     /// > last-writer-wins for its children too. A local edit to the parent that
