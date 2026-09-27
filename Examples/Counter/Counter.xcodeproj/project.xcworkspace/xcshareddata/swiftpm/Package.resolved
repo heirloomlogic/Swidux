@@ -1,13 +1,13 @@
 {
-  "originHash" : "5583d994196a57db83bd5adc3ce3a2620da681cbbab249c79f24f6f71e204277",
+  "originHash" : "0b25624052a02b1148559a8b0b596265a0d58f4f9f7c7edab12de149dd802fd9",
   "pins" : [
     {
       "identity" : "persnicket",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/HeirloomLogic/Persnicket",
       "state" : {
-        "revision" : "50f5f4e72f0481eb00f8254ff2cc3b9af606e1c1",
-        "version" : "2.0.0"
+        "revision" : "06bda7e73c3e4d1358f1e612225716bfaf17cca6",
+        "version" : "2.2.0"
       }
     },
     {
