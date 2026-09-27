@@ -490,6 +490,7 @@ public final class PersistenceCoordinator<State, Action> {
         var folds: [MergeFold] = []
         folds.reserveCapacity(entities.count)
         var allReadsSucceeded = true
+        var collapsedAway: [PersistedEntity<State>.Apply] = []
         for (index, entity) in entities.enumerated() {
             let deleted = scope.declaredDeletions(for: entity.entityName)
             let read: PersistedEntity<State>.MergeRead
@@ -502,10 +503,11 @@ public final class PersistenceCoordinator<State, Action> {
                 read = await entity.readForPartialMerge(handle, observers, reading)
             }
             allReadsSucceeded = allReadsSucceeded && read.succeeded
+            if let removal = read.collapsedAway { collapsedAway.append(removal) }
             folds.append(fold(read.apply, entity, writers[index], flushes[index], deleted: deleted))
         }
         await duringReadPhase?()
-        return MergePhase(folds: folds, allReadsSucceeded: allReadsSucceeded)
+        return MergePhase(folds: folds, collapsedAway: collapsedAway, allReadsSucceeded: allReadsSucceeded)
     }
 
     /// One entity's bound merge. Returns what it declined to act on, already
@@ -538,6 +540,10 @@ public final class PersistenceCoordinator<State, Action> {
     /// exists for callers that consume evidence once.
     fileprivate struct MergePhase {
         let folds: [MergeFold]
+
+        /// Each whole-table read's removal of what its collapse deleted from
+        /// disk — see ``PersistedEntity/MergeRead/collapsedAway``.
+        let collapsedAway: [PersistedEntity<State>.Apply]
 
         /// Whether every registered entity's read completed. A read that threw
         /// contributes a no-op fold, which is indistinguishable from "nothing
@@ -640,6 +646,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         store.mutate { state in
             for apply in phase.applies { apply(&state) }
         }
+        // A commit like any merge's: a merge whose read predates this one must
+        // re-read rather than fold older rows over it.
+        mergeRevision &+= 1
         // Replaces rather than merges, so it offers nothing to anything and can
         // settle no debt — hence `carryOver: nil`, "leave it as it is". And
         // only over a read that happened: a failed one left its store as it
@@ -931,7 +940,21 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // re-offers it.
         let flushes = writers.map { $0.recordFlushes() }
         let phase = await mergePhase(scope, flushes: flushes)
-        try check(attempt)
+        do {
+            try check(attempt)
+        } catch {
+            // A registered collapse deleted its losers on disk inside the
+            // read, and that is not undone by discarding the read. The retry's
+            // collapse finds nothing left to remove, so unless memory drops
+            // them now, nothing ever will — and an edit would re-upload one.
+            if case .newerCommit = error, !phase.collapsedAway.isEmpty {
+                store.mutate { state in
+                    for removal in phase.collapsedAway { removal(&state) }
+                }
+                mergeRevision &+= 1
+            }
+            throw error
+        }
         var carryOver = AttributedIDs()
         var leftAbsenceUndecided = false
         store.mutate { state in
@@ -1042,5 +1065,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         store.mutate { state in
             for apply in applies { apply(&state) }
         }
+        // The losers are gone from disk now, so a merge that read them before
+        // this must re-read rather than put them back.
+        mergeRevision &+= 1
     }
 }

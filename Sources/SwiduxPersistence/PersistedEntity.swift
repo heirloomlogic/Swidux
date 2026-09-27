@@ -74,6 +74,12 @@ public struct PersistedEntity<State> {
         /// Whether every fetch behind `apply` completed.
         let succeeded: Bool
 
+        /// Removes from state the rows a registered collapse deleted from disk
+        /// during this read, or `nil` when it deleted none. `apply` does the
+        /// same as part of the merge; this is for a caller that discards the
+        /// merge, because the deletions on disk are not discarded with it.
+        var collapsedAway: Apply? = nil
+
         /// The fold to apply. A no-op when `succeeded` is `false`.
         let apply: MergeApply
     }
@@ -368,7 +374,12 @@ public struct PersistedEntity<State> {
                 do {
                     let loaded = try await loadRows(handle, observers)
                     let incoming = EntityStore(loaded.rows)
-                    return MergeRead(succeeded: true) { state, context in
+                    var collapsedAway: Apply?
+                    if !loaded.removedIDs.isEmpty {
+                        let removedIDs = loaded.removedIDs
+                        collapsedAway = { state in state[keyPath: keyPath].remove(ids: removedIDs) }
+                    }
+                    return MergeRead(succeeded: true, collapsedAway: collapsedAway) { state, context in
                         var current = state[keyPath: keyPath]
                         // A collapsed-away loser would otherwise linger as a
                         // zombie until relaunch. Recorded as a deletion so it
