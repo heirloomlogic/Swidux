@@ -11,6 +11,9 @@ import Swidux
 /// Hosted in the app's root state via `@Slice var analytics: AnalyticsState`.
 @Swidux
 public nonisolated struct AnalyticsState: Sendable, Equatable {
+    /// `false`: undo and redo never roll this slice back; consent may only change through `.setOptedOut`, which runs the consent hook.
+    public static var restoresOnUndo: Bool { false }
+
     /// `true` when the user has opted out of analytics. Mapper events are
     /// dropped, explicit `track`/`identify`/`alias` actions become no-ops,
     /// and auto-identify is paused while opted out.

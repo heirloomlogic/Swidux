@@ -11,6 +11,9 @@ import Swidux
 /// Hosted in the app's root state via `@Slice var parentalGate: ParentalGateState`.
 @Swidux
 public nonisolated struct ParentalGateState: Sendable, Equatable {
+    /// `false`: undo and redo never roll this slice back; restoring it would erase a cooldown or hand back a revoked pass.
+    public static var restoresOnUndo: Bool { false }
+
     /// Reason the sheet is currently gating, or `nil` when no gate is active.
     public var pendingReason: String? = nil
     /// Currently-presented math challenge, or `nil`.

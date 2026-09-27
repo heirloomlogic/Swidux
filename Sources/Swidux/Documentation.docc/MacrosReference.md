@@ -30,7 +30,7 @@ For a struct named `MyState`, the macro emits:
    - `init(observer:)` — pack: read the observer tree into a struct snapshot.
    - `static func makeObserver(from:) -> MyStateObserver` — factory.
    - `static func apply(_:to:)` — unpack: assign struct fields back onto the observer. `@Observable` only fires notifications for fields whose values actually change.
-   - `static func applyRestore(from:to:)` — used during undo/redo. For ``EntityStore`` properties it calls `.restore(from:)` instead of plain assignment, so change tracking stays consistent.
+   - `static func applyRestore(from:to:)` — used during undo/redo. Every property restores through `SwiduxRestore.restore(_:from:)`, whose overloads choose by the property's resolved type: an ``EntityStore`` calls `.restore(from:)` so change tracking stays consistent, a ``SwiduxObservable`` value recurses into its own `applyRestore` unless its type opts out (see below), and anything else is assigned. Deciding by type rather than spelling means a `typealias` or a module-qualified `Swidux.EntityStore` behaves the same as `EntityStore<…>`.
 
 ### Requirements on the annotated struct
 
@@ -40,12 +40,12 @@ For a struct named `MyState`, the macro emits:
 
 ### Property handling rules
 
-The macro classifies each stored property into one of three kinds and generates code accordingly:
+The macro classifies each stored property into one of two kinds and generates code accordingly:
 
 | Property | Kind | Treatment |
 |---|---|---|
 | `var name: String` | leaf | Mirrored as `var name: String` on the observer; assigned directly in `apply`. |
-| `var counters: EntityStore<Counter>` | entityStore | Mirrored as a `var` on the observer; restored via `restore(from:)` during undo. |
+| `var counters: EntityStore<Counter>` | leaf | Mirrored as a `var` on the observer; restored via `restore(from:)` during undo, however the type is spelled. |
 | `@Slice var ui: UIState` | nested | Stored as `let ui: UIStateObserver` on the parent observer; recursive calls to the child's `apply` / `makeObserver` / `applyRestore`. |
 
 Static properties, computed properties, and `let` constants are skipped entirely.
@@ -151,13 +151,19 @@ extension AppState: SwiduxObservable {
 
     @MainActor
     static func applyRestore(from snapshot: AppState, to current: inout AppState) {
-        current.counters.restore(from: snapshot.counters)
-        UIState.applyRestore(from: snapshot.ui, to: &current.ui)
+        SwiduxRestore.restore(&current.counters, from: snapshot.counters)
+        SwiduxRestore.restore(&current.ui, from: snapshot.ui)
     }
 }
 ```
 
-Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, `applyRestore` calls `EntityStore.restore(from:)` on the entity-store property rather than assigning, because plain assignment would discard pending change-tracking metadata.
+Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, `applyRestore` emits the same `SwiduxRestore.restore` call for both properties. Overload resolution sends `counters` to `EntityStore.restore(from:)`, because plain assignment would discard pending change-tracking metadata, and sends `ui` to `UIState.applyRestore`. `SwiduxRestore` exists only for generated code; don't call it directly.
+
+### What undo restores
+
+`UndoPlugin`'s `isUndoable` decides *when* a snapshot is taken. ``SwiduxObservable/restoresOnUndo`` decides *what* is restored from it. A snapshot is the whole state, so without an opt-out, undo reverts every change since the snapshot, including state an undoable action never touched.
+
+A `@Swidux` type that returns `false` from `static var restoresOnUndo` is left at its current value by its parent's `applyRestore`, whether or not the property is marked `@Slice`. Every plugin-owned slice Swidux ships opts out (`KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState`, `PersistenceState`), so plugin slices are never restored. See <doc:UndoRedo>.
 
 ## `@Slice`
 

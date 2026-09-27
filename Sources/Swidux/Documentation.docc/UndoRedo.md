@@ -86,6 +86,27 @@ WindowGroup { ... }
 
 The `coalescing` predicate groups consecutive matching actions into a single undo step. The first coalescing action captures a snapshot; subsequent consecutive coalescing actions share that snapshot. A non-coalescing action or undo/redo resets the flag. Typing "hello" produces one undo entry, not five.
 
+## What undo restores
+
+Two separate decisions govern undo. `isUndoable` decides *when* a snapshot is taken. ``SwiduxObservable/restoresOnUndo`` decides *what* is restored from it.
+
+A snapshot is the whole root state, so restoring it reverts every change made since, including changes from actions you classified as non-undoable. In the example above, undoing a rename also reverts a later `.selectItem`. Keep state that must survive an undo in a type that opts out.
+
+A type opts out by returning `false`:
+
+```swift
+@Swidux
+nonisolated struct SessionState: Equatable, Sendable {
+    static var restoresOnUndo: Bool { false }
+
+    var lastSyncedAt: Date? = nil
+}
+```
+
+A parent's generated `applyRestore` then keeps the current value of every property of that type, through undo and redo alike. This holds whether the property is marked `@Slice` or held as a plain value.
+
+Plugin-owned slices are never restored. `KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState` and `PersistenceState` all opt out. Their values mirror something outside the state, such as a server verdict, a consent decision, a cooldown or an in-flight request, and only the plugin's own reducer keeps the two in step. Restoring them from a snapshot would lift a killswitch block, reverse an analytics opt-out without running the consent hook, hand back a revoked parental-gate pass, or latch a flag refresh that no request is left to clear.
+
 ## Undo and sync
 
 Undo is scoped to changes the local user made. If another device deletes an entity and the merge surfaces that mid-session, `restore(from:)` will not bring the row back, even though older undo snapshots still contain it.

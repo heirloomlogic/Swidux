@@ -11,6 +11,9 @@ import Swidux
 /// Hosted in the app's root state via `@Slice var featureFlags: FeatureFlagsState`.
 @Swidux
 public nonisolated struct FeatureFlagsState: Equatable, Sendable {
+    /// `false`: undo and redo never roll this slice back; restoring it would latch an in-flight refresh or discard newer config.
+    public static var restoresOnUndo: Bool { false }
+
     /// Last successfully fetched (or hydrated) config.
     public var config: FeatureFlagsConfig = .empty
 
