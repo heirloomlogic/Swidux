@@ -59,7 +59,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let identity: AnalyticsIdentity<RootState>?
     private let onConsentChange: (@Sendable (Bool) async -> Void)?
 
-    /// Number of fire-and-forget service calls in flight.
+    /// Number of queued service calls (and consent hooks) not yet finished.
     private var inflightCount: Int = 0
     /// Continuations parked in ``flush()`` waiting for inflight work to drain
     /// to zero, keyed so a timed-out waiter can be resumed individually.

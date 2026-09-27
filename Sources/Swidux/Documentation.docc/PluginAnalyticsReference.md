@@ -58,7 +58,7 @@ public init(
 
 `onConsentChange` fires on every `.setOptedOut` dispatch with the new opted-out value. Use it to drive a vendor SDK's own consent API — see *Consent* below.
 
-The plugin is a `final class` (not a struct) because it tracks pending fire-and-forget service calls so that `flush()` can deterministically await them — same reason `PersistencePlugin` and `UndoPlugin` are classes.
+The plugin is a `final class` (not a struct) because it queues service calls off the dispatch path and tracks them so that `flush()` can deterministically await them — same reason `PersistencePlugin` and `UndoPlugin` are classes.
 
 ### `AnalyticsState`
 
@@ -189,7 +189,9 @@ public protocol AnalyticsService: Sendable {
 }
 ```
 
-Implementations own batching, retry, network failure handling, and offline queueing. The plugin invokes `track`/`identify`/`alias`/`reset` fire-and-forget; only `flush` is awaited.
+Implementations own batching, retry, network failure handling, and offline queueing.
+
+Dispatch never waits for the service, but the plugin **serializes** its calls: `track`/`identify`/`alias`/`reset` run one at a time in dispatch order, each starting after the previous one returns. A conformer that awaits a network round trip inside `track` therefore delivers one event per round trip, and while a call is stalled (offline, a 60-second request timeout) every later event waits in memory behind it — opting out stops those events from being sent but doesn't release them until the stalled call returns. Enqueue the work and return promptly, as vendor SDKs do; upload from the service's own background queue.
 
 ### `MockAnalyticsService`
 

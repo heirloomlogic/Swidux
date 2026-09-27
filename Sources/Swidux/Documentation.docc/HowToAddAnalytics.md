@@ -116,6 +116,8 @@ struct MyAnalyticsService: AnalyticsService {
 
 Translate `AnalyticsValue` cases (`.string`, `.int`, `.double`, `.bool`, `.date`, `.array`, `.dict`, `.null`) into whatever your SDK takes. The mapping is mechanical: each case has an obvious target type.
 
+Return promptly from each method. The plugin calls the service one call at a time, in dispatch order, so a `track` that awaits an HTTP request holds back every event behind it for the length of the request — and keeps them in memory while it does. If you're writing a custom backend, append to a queue and upload from a background task instead of awaiting the network in `track`.
+
 ### Previews and tests
 
 Use the built-in `MockAnalyticsService` for backend-agnostic previews:
