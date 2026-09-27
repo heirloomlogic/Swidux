@@ -17,7 +17,7 @@ struct FeatureFlagsStateTests {
         #expect(state.config == .empty)
         #expect(state.lastFetchedAt == nil)
         #expect(state.localOverrides.isEmpty)
-        #expect(state.exposedKeys.isEmpty)
+        #expect(state.exposedValues.isEmpty)
         #expect(state.resolvedDeviceID == "")
         #expect(state.resolvedUserID == nil)
     }

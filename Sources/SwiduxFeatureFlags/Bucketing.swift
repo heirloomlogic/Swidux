@@ -11,9 +11,14 @@ import Foundation
 /// Same input always produces the same bucket — buckets are stable forever
 /// per `(id, flagKey)` pair.
 ///
-/// FNV-1a chosen because it's simple, dependency-free, and matches
-/// GrowthBook's algorithm so apps migrating from GrowthBook get compatible
-/// buckets.
+/// FNV-1a chosen because it's simple and dependency-free. It is not
+/// GrowthBook's bucketing (different input layout, modulus, and string
+/// encoding), so buckets don't carry over from GrowthBook.
+///
+/// > Note: FNV-1a has no final mixing step, so across flags the buckets of
+/// > one ID are not independent at small rollouts: two flags' 1% cohorts are
+/// > effectively disjoint. Changing the hash would re-bucket every user, so
+/// > it stays as is until a versioned hash can be introduced.
 public enum Bucketing {
     /// Returns a bucket in `[0, 100)` for the given identity and flag key.
     public static func bucket(id: String, flagKey: String) -> Int {

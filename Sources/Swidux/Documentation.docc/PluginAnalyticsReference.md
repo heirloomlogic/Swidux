@@ -58,7 +58,7 @@ public init(
 
 `onConsentChange` fires on every `.setOptedOut` dispatch with the new opted-out value. Use it to drive a vendor SDK's own consent API — see *Consent* below.
 
-The plugin is a `final class` (not a struct) because it tracks pending fire-and-forget service calls so that `flush()` can deterministically await them — same reason `PersistencePlugin` and `UndoPlugin` are classes.
+The plugin is a `final class` (not a struct) because it queues service calls off the dispatch path and tracks them so that `flush()` can deterministically await them — same reason `PersistencePlugin` and `UndoPlugin` are classes.
 
 ### `AnalyticsState`
 
@@ -189,7 +189,9 @@ public protocol AnalyticsService: Sendable {
 }
 ```
 
-Implementations own batching, retry, network failure handling, and offline queueing. The plugin invokes `track`/`identify`/`alias`/`reset` fire-and-forget; only `flush` is awaited.
+Implementations own batching, retry, network failure handling, and offline queueing.
+
+Dispatch never waits for the service, but the plugin **serializes** its calls: `track`/`identify`/`alias`/`reset` run one at a time in dispatch order, each starting after the previous one returns. A conformer that awaits a network round trip inside `track` therefore delivers one event per round trip, and while a call is stalled (offline, a 60-second request timeout) every later event waits in memory behind it — opting out stops those events from being sent but doesn't release them until the stalled call returns. Enqueue the work and return promptly, as vendor SDKs do; upload from the service's own background queue.
 
 ### `MockAnalyticsService`
 
@@ -228,7 +230,7 @@ Sets `currentScreen` to the given name **regardless of opt-out** (the screen sta
 
 ### `identify(userID:, properties:)`
 
-Sets `lastIdentifiedUserID = userID` and returns an effect calling `service.identify`. Skipped when opted out. Use this when the app needs to force identity before the auto-identify keypath would observe the change.
+Sets `lastIdentifiedUserID = userID` and returns an effect calling `service.identify`. Skipped when opted out. Use this when the app needs to force identity before the auto-identify keypath would observe the change — see *Explicit identify and auto-identify* below for how the two interact.
 
 ### `alias(newID:, previousID:)`
 
@@ -277,17 +279,31 @@ When configured with an `AnalyticsIdentity`, the plugin re-evaluates both the `u
 
 When opted out, auto-identify is paused: neither `lastIdentifiedUserID` nor `lastIdentifiedProperties` is updated. Opting back in re-establishes identity correctly on the next dispatch.
 
+### Explicit identify and auto-identify
+
+An explicit `.identify(userID:)` that names a different user than the `AnalyticsIdentity` currently derives overrides the derived identity until the derived `userID` changes:
+
+- Derived `nil` (auth state not landed yet), explicit `"u1"`: later dispatches neither `reset` nor re-identify while the derived ID stays `nil`.
+- The derived ID then catches up to `"u1"`: no second `identify`, unless the derived `userProperties` differ from what the explicit call sent — then `identify` fires once with the derived properties.
+- From then on the derived ID drives identity as usual: `"u1" → "u2"` fires `identify`, `"u1" → nil` fires `reset`.
+- The derived ID moving to any value other than the one it held at the explicit call ends the override the same way, including a move to `nil` (sign-out), which fires `reset`.
+- `.reset` and `.setOptedOut(true)` end the override. After opting back in, the derived identity is re-identified on the next dispatch.
+
+An explicit `.identify` naming the same user the identity derives is recorded like an auto-identify, so it suppresses a duplicate call and nothing else.
+
 ## Flushing
 
-`AnalyticsPlugin.flush()` awaits any pending fire-and-forget service calls spawned by `afterReduce`, then calls `service.flush()`. Call this on app shutdown to avoid losing in-flight events:
+`AnalyticsPlugin.flush()` awaits every service call the plugin has queued, explicit and mapped, then calls `service.flush()`. It waits without bound, so on shutdown paths use `flush(timeout:)`, which gives up once the deadline passes (queued work keeps running; the caller just stops waiting). `Store` has no typed accessor for a registered plugin, so keep a reference to the one you registered — see <doc:HowToAddAnalytics> Step 6:
 
 ```swift
 .onChange(of: scenePhase) { _, phase in
     if phase == .background {
-        Task { await store.analyticsPlugin.flush() }
+        Task { await analytics.flush(timeout: .seconds(2)) }
     }
 }
 ```
+
+`store.flush()` also reaches the plugin — it flushes every registered plugin in order — but through the unbounded `flush()`. That makes it the right sync point in tests and the wrong one on shutdown.
 
 ## Implementing an `AnalyticsService`
 

@@ -6,8 +6,14 @@
 /// Provider-agnostic analytics backend.
 ///
 /// Implementations handle their own batching, retry, network failure,
-/// and offline queueing. The plugin invokes these methods fire-and-forget
-/// for tracking and identify; only `flush` is awaited.
+/// and offline queueing.
+///
+/// Dispatch doesn't wait for these calls, but the plugin serializes them:
+/// each call starts only after the previous one returns, so they reach the
+/// service in dispatch order. A call that awaits a network round trip
+/// therefore holds back every later event, and those events stay queued in
+/// memory until it returns. Enqueue the work (as vendor SDKs do) and return
+/// promptly; do network I/O in the service's own background upload.
 ///
 /// ```swift
 /// // Mixpanel implementation lives in SwiduxMixpanelAnalytics:

@@ -147,7 +147,7 @@ public struct AnnouncementPlugin<RootState, RootAction>: SwiduxPlugin {
 
 The public `reduce` method follows a fixed pattern: guard-extract the local action, delegate to a private `reduceLocal`, and lift any returned effect. The private `reduceLocal` is where feature logic lives — it looks like any standard Swidux reducer.
 
-> Important: Domain plugins implement only `reduce`. The `willReduce` and `afterReduce` hooks are reserved for action-agnostic infrastructure like undo and persistence. See <doc:PluginArchitecture> for the full distinction.
+> Important: A domain plugin's own actions go through `reduce`. Leave `willReduce` to infrastructure like undo, which must see state before any reducer runs. Implement `afterReduce` only when the plugin has to react to *every* dispatch rather than its own actions: `AnalyticsPlugin` runs its event mapper and auto-identify there, and `FeatureFlagsPlugin` keeps its bucketing identity in sync. See <doc:PluginArchitecture> for the full distinction.
 
 ## Step 5: Wire Into the Host App
 

@@ -16,6 +16,20 @@ struct BucketingTests {
         #expect(a == b)
     }
 
+    /// Changing the hash re-buckets every existing user, which silently
+    /// reshuffles running experiments. A better hash needs a versioned wire
+    /// format, not an edit here.
+    @Test("buckets are pinned to the shipped hash")
+    func goldenBuckets() {
+        #expect(Bucketing.bucket(id: "user-123", flagKey: "checkout") == 87)
+        #expect(
+            Bucketing.bucket(id: "11111111-1111-1111-1111-111111111111", flagKey: "new_onboarding")
+                == 31
+        )
+        #expect(Bucketing.bucket(id: "device-1", flagKey: "k") == 22)
+        #expect(Bucketing.bucket(id: "", flagKey: "") == 53)
+    }
+
     @Test("bucket is in [0, 100)")
     func boundedRange() {
         for i in 0..<1000 {

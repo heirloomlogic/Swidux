@@ -151,27 +151,45 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             return nil
 
         case .recordExposure(let key):
-            guard !state.exposedKeys.contains(key) else { return nil }
-            guard let evaluation = evaluateForExposure(state: state, key: key) else {
-                return nil
-            }
-            state.exposedKeys.insert(key)
-            let callback = self.onExposure
-            return Effect { _ in
-                callback?(key, evaluation)
-            }
+            return fireExposure(key: key, value: evaluateUntyped(state: state, key: key), in: &state)
+
+        case .recordFlagExposure(let exposure):
+            let value = exposure.evaluate(
+                state.config,
+                state.localOverrides,
+                exposure.bucketingID ?? state.defaultBucketingID
+            )
+            return fireExposure(key: exposure.key, value: value, in: &state)
         }
     }
 
-    /// Resolves the value to record for an exposure. Returns `nil` if the
-    /// flag isn't present in the config (defensive — exposure for an unknown
-    /// flag is meaningless).
+    /// Fires `onExposure` unless `value` is `nil` (the read rendered its
+    /// default) or is the value this flag's last exposure already reported.
+    /// Deduping on the value rather than the key means a reassignment —
+    /// sign-in switching the bucketing identity, a refresh changing the
+    /// rollout — is recorded instead of attributing the user to the first
+    /// treatment they saw.
+    private func fireExposure(
+        key: String,
+        value: FlagValue?,
+        in state: inout FeatureFlagsState
+    ) -> Effect<RootAction>? {
+        guard let value, state.exposedValues[key] != value else { return nil }
+        state.exposedValues[key] = value
+        let callback = self.onExposure
+        return Effect { _ in
+            callback?(key, value)
+        }
+    }
+
+    /// Resolves the value to record for the deprecated key-only exposure.
+    /// Returns `nil` if the flag isn't present in the config.
     ///
-    /// Bucketing uses the same identity as default reads — the plugin-resolved
-    /// user ID when present, else the device ID — so the recorded exposure
-    /// matches what the user actually saw. Local overrides take precedence so
-    /// QA-toggled flags still record exposures.
-    private func evaluateForExposure(state: FeatureFlagsState, key: String) -> FlagValue? {
+    /// Without the flag's type this can't follow the read path: it records
+    /// any local override verbatim and a remote variant whether or not the
+    /// app can parse it, and it buckets by the default identity only.
+    /// ``FeatureFlagsAction/recordFlagExposure(_:)`` has none of these gaps.
+    private func evaluateUntyped(state: FeatureFlagsState, key: String) -> FlagValue? {
         if let override = state.localOverrides[key] { return override }
         guard let definition = state.config.flags[key] else { return nil }
         switch definition {
