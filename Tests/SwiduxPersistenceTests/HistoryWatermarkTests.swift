@@ -580,6 +580,31 @@ struct HistoryWatermarkTests {
             "the same window has to be re-offered, or a hold silently becomes a veto")
     }
 
+    @Test("a draft committed as its hold lifts can ask whether a peer deleted the row")
+    func aHeldDeletionIsVisibleToTheCommit() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+        #expect(!coordinator.isRemotelyDeleted(id))
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "the premise: the hold deferred the deletion")
+        #expect(coordinator.isRemotelyDeleted(id), "the one thing the app needs to know before committing")
+
+        // The documented shape: the editor goes away, its hold with it, and its
+        // draft is committed — before any merge can run. Committing would write
+        // the row back, and a live row refutes the tombstone on every peer.
+        coordinator.editing.release(id)
+        if !coordinator.isRemotelyDeleted(id) {
+            store.send(.add(Note(id: id, title: "draft", pinned: false)))
+        }
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "the deferred deletion lands once the hold lifts")
+        #expect(try await coordinator.fetchAll(of: Note.self).isEmpty, "and the draft did not resurrect it")
+        #expect(!coordinator.isRemotelyDeleted(id), "a settled deletion is no longer owed")
+    }
+
     // MARK: - Unanchored windows and the empty-snapshot guard
 
     @Test("an owed deletion survives a fallback tick that finds the table empty")

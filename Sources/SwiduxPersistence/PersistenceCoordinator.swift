@@ -63,6 +63,28 @@ public final class PersistenceCoordinator<State, Action> {
     /// The currently active database actor.
     public var database: EntityDB { handle.db }
 
+    /// Whether a deletion made elsewhere is waiting on `id` — read from history
+    /// or declared to ``mergeRemote(into:ids:deleted:policy:)``, deferred by an
+    /// ``editing`` hold, and not applied yet.
+    ///
+    /// Ask before committing a draft for a row you held. The hold deferred the
+    /// deletion, and releasing it writes nothing, so the next merge would apply
+    /// it — but a commit made first writes the row back, and a row storage
+    /// holds refutes the deletion on this device and every peer. The editor
+    /// usually closes, releases its hold, and commits in the same moment, so
+    /// that is the order a naive commit runs in.
+    ///
+    /// Answers from what ``mergeChanges(into:policy:)`` and
+    /// ``mergeRemote(into:ids:deleted:policy:)`` carry forward. A whole-table
+    /// ``rehydrate(into:policy:)`` on an anchored session re-infers deletions
+    /// on every call instead of carrying them, so it records nothing here.
+    ///
+    /// - Parameter id: The entity to ask about.
+    /// - Returns: `true` while a remote deletion of `id` is owed.
+    public func isRemotelyDeleted(_ id: UUID) -> Bool {
+        handle.anchor.carryOver.allDeleted.contains(id)
+    }
+
     /// Builds the stack from registered entities and a prepared container.
     ///
     /// - Parameters:
