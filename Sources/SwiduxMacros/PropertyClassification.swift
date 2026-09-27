@@ -44,7 +44,6 @@ func diagnoseSkippedStoredProperties(
 enum PropertyKind {
     case leaf
     case nested
-    case entityStore
 }
 
 struct ClassifiedProperty {
@@ -57,7 +56,7 @@ struct ClassifiedProperty {
         switch kind {
         case .nested:
             return "\(baseTypeName)Observer"
-        case .leaf, .entityStore:
+        case .leaf:
             return typeSyntax.trimmedDescription
         }
     }
@@ -91,26 +90,10 @@ func classifyProperties(of structDecl: StructDeclSyntax) -> [ClassifiedProperty]
             return identifier.name.text == "Slice"
         }
 
-        let isEntityStore: Bool = {
-            if let identifier = typeSyntax.as(IdentifierTypeSyntax.self) {
-                return identifier.name.text == "EntityStore"
-            }
-            return false
-        }()
-
-        let kind: PropertyKind
-        if hasNested {
-            kind = .nested
-        } else if isEntityStore {
-            kind = .entityStore
-        } else {
-            kind = .leaf
-        }
-
         return ClassifiedProperty(
             name: name,
             typeSyntax: typeSyntax,
-            kind: kind,
+            kind: hasNested ? .nested : .leaf,
             defaultValue: defaultValue
         )
     }

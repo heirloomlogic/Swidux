@@ -87,7 +87,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: SimpleState, to current: inout SimpleState) {
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -154,9 +154,9 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MultiState, to current: inout MultiState) {
-                        current.name = snapshot.name
-                        current.age = snapshot.age
-                        current.isActive = snapshot.isActive
+                        SwiduxRestore.restore(&current.name, from: snapshot.name)
+                        SwiduxRestore.restore(&current.age, from: snapshot.age)
+                        SwiduxRestore.restore(&current.isActive, from: snapshot.isActive)
                     }
                 }
                 """,
@@ -211,7 +211,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: StoreState, to current: inout StoreState) {
-                        current.items.restore(from: snapshot.items)
+                        SwiduxRestore.restore(&current.items, from: snapshot.items)
                     }
                 }
                 """,
@@ -271,8 +271,8 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MultiEntityState, to current: inout MultiEntityState) {
-                        current.decks.restore(from: snapshot.decks)
-                        current.cards.restore(from: snapshot.cards)
+                        SwiduxRestore.restore(&current.decks, from: snapshot.decks)
+                        SwiduxRestore.restore(&current.cards, from: snapshot.cards)
                     }
                 }
                 """,
@@ -334,8 +334,8 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: ParentState, to current: inout ParentState) {
-                        current.count = snapshot.count
-                        ChildState.applyRestore(from: snapshot.child, to: &current.child)
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                        SwiduxRestore.restore(&current.child, from: snapshot.child)
                     }
                 }
                 """,
@@ -397,8 +397,8 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: AppState, to current: inout AppState) {
-                        current.counters.restore(from: snapshot.counters)
-                        UIState.applyRestore(from: snapshot.ui, to: &current.ui)
+                        SwiduxRestore.restore(&current.counters, from: snapshot.counters)
+                        SwiduxRestore.restore(&current.ui, from: snapshot.ui)
                     }
                 }
                 """,
@@ -475,7 +475,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: SkippedState, to current: inout SkippedState) {
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -538,7 +538,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: CombinedState, to current: inout CombinedState) {
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -603,7 +603,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: QuietState, to current: inout QuietState) {
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -658,7 +658,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: NoDefaultState, to current: inout NoDefaultState) {
-                        current.name = snapshot.name
+                        SwiduxRestore.restore(&current.name, from: snapshot.name)
                     }
                 }
                 """,
@@ -711,7 +711,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     public static func applyRestore(from snapshot: PublicState, to current: inout PublicState) {
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -777,7 +777,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PersistenceState, to current: inout PersistenceState) {
-                        current.phase = snapshot.phase
+                        SwiduxRestore.restore(&current.phase, from: snapshot.phase)
                     }
                 }
                 """,
@@ -844,7 +844,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PersistenceState, to current: inout PersistenceState) {
-                        current.phase = snapshot.phase
+                        SwiduxRestore.restore(&current.phase, from: snapshot.phase)
                     }
                 }
                 """,
@@ -903,7 +903,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: OptionalPhaseState, to current: inout OptionalPhaseState) {
-                        current.phase = snapshot.phase
+                        SwiduxRestore.restore(&current.phase, from: snapshot.phase)
                     }
                 }
                 """,
@@ -977,8 +977,8 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: GenericPhaseState, to current: inout GenericPhaseState) {
-                        current.boxed = snapshot.boxed
-                        current.phases = snapshot.phases
+                        SwiduxRestore.restore(&current.boxed, from: snapshot.boxed)
+                        SwiduxRestore.restore(&current.phases, from: snapshot.phases)
                     }
                 }
                 """,
@@ -1058,8 +1058,8 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: CollectionState, to current: inout CollectionState) {
-                        current.phases = snapshot.phases
-                        current.map = snapshot.map
+                        SwiduxRestore.restore(&current.phases, from: snapshot.phases)
+                        SwiduxRestore.restore(&current.map, from: snapshot.map)
                     }
                 }
                 """,
@@ -1160,9 +1160,9 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MixedNestedState, to current: inout MixedNestedState) {
-                        current.config = snapshot.config
-                        current.handle = snapshot.handle
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.config, from: snapshot.config)
+                        SwiduxRestore.restore(&current.handle, from: snapshot.handle)
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -1245,7 +1245,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MemberBaseState, to current: inout MemberBaseState) {
-                        current.value = snapshot.value
+                        SwiduxRestore.restore(&current.value, from: snapshot.value)
                     }
                 }
                 """,
@@ -1323,7 +1323,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: ShadowState, to current: inout ShadowState) {
-                        current.phase = snapshot.phase
+                        SwiduxRestore.restore(&current.phase, from: snapshot.phase)
                     }
                 }
                 """,
@@ -1392,7 +1392,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: SliceParentState, to current: inout SliceParentState) {
-                        ChildState.applyRestore(from: snapshot.child, to: &current.child)
+                        SwiduxRestore.restore(&current.child, from: snapshot.child)
                     }
                 }
                 """,
@@ -1464,7 +1464,7 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: ComputedOnlyState, to current: inout ComputedOnlyState) {
-                        current.count = snapshot.count
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
                     }
                 }
                 """,
