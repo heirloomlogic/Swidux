@@ -157,6 +157,68 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 
+    // The extension names the struct as the compiler does — `Library.Book` — and
+    // so the model beside it, `Library.BookModel`.
+    func testNestedStructExtendsQualifiedName() throws {
+        assertMacroExpansion(
+            """
+            enum Library {
+                @Persisted
+                struct Book: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                }
+            }
+            """,
+            expandedSource: """
+                enum Library {
+                    struct Book: Identifiable, Equatable, Sendable {
+                        var id: UUID
+                    }
+
+                    @Model
+                    final class BookModel: PersistableModel {
+                        typealias Domain = Book
+
+                        @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+
+                        init(from domain: Book) throws {
+                            self.id = domain.id
+                        }
+
+                        func toDomain() throws -> Book {
+                            Book(
+                                id: id
+                            )
+                        }
+
+                        func update(from domain: Book) throws {
+
+                        }
+
+                        static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<BookModel> {
+                            FetchDescriptor<BookModel>(predicate: #Predicate {
+                                    ids.contains($0.id)
+                                })
+                        }
+
+                        static func swiduxBatchFetchDescriptor(
+                            persistentIDs: [PersistentIdentifier]
+                        ) -> FetchDescriptor<BookModel> {
+                            FetchDescriptor<BookModel>(predicate: #Predicate {
+                                persistentIDs.contains($0.persistentModelID)
+                            })
+                        }
+                    }
+                }
+
+                extension Library.Book: PersistableEntity {
+                    typealias Model = Library.BookModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
     func testInlineForeignKeyAndIgnored() throws {
         assertMacroExpansion(
             """

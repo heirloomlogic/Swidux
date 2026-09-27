@@ -118,7 +118,7 @@ extension PersistedMacro: ExtensionMacro {
         }
         return [
             generatePersistableEntityExtension(
-                structName: structDecl.name.text,
+                typeName: type.trimmedDescription,
                 accessLevel: accessLevel(of: structDecl)
             )
         ]

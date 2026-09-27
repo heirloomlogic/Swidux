@@ -75,8 +75,7 @@ nonisolated struct UIState: Equatable, Sendable {
 Keep the hand-written `init` if you have one — inline defaults are additive, not a
 replacement.
 
-**Spell nested types with their qualified name.** The observer is emitted as a *peer* at
-file scope, not nested inside your struct, so a bare inner name won't resolve there:
+**Spell nested types with their qualified name.** The observer is emitted as a *peer* beside your struct, not nested inside it, so a bare inner name won't resolve there:
 
 ```swift
 @Swidux
@@ -88,10 +87,9 @@ nonisolated struct PersistenceState: Equatable, Sendable {
 }
 ```
 
-The macro reports the bare spelling itself, on the property you wrote, naming the
-qualified form to use. Wrappers are seen through — `HydrationPhase?`, `[HydrationPhase]`,
-`[String: HydrationPhase]` and `Set<HydrationPhase>` are all caught. `@Persisted` applies
-the same rule for the same reason: its `@Model` shadow class is a file-scope peer too.
+The macro reports the bare spelling itself, on the property you wrote, naming the qualified form to use. Wrappers are seen through — `HydrationPhase?`, `[HydrationPhase]`, `[String: HydrationPhase]` and `Set<HydrationPhase>` are all caught, and so is a default value that names a nested type. `@Persisted` applies the same rule for the same reason: its `@Model` shadow class is a peer too.
+
+The struct itself may be nested in another type (`enum Feature { @Swidux struct State { … } }`). The peer is declared beside it, as `Feature.StateObserver` (or `Feature.StateModel` for `@Persisted`), and the generated extension names both by their qualified names.
 
 **`private(set)` and `internal(set)` are not preserved on the observer.** Every stored
 property is mirrored as a plain settable `var`, because ``SwiduxObservable/init(observer:)``

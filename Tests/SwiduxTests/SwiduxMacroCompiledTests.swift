@@ -69,6 +69,14 @@ nonisolated struct RestoreOptOutRoot: Equatable, Sendable {
     var document: Int = 0
 }
 
+/// A state nested in another type, as a feature namespace would hold it.
+enum NestingFeature {
+    @Swidux
+    nonisolated struct State: Equatable, Sendable {
+        var count: Int = 0
+    }
+}
+
 // MARK: - Tests
 
 @Suite("@Swidux compiled expansion")
@@ -149,5 +157,13 @@ struct SwiduxMacroCompiledTests {
         let state = CountedState(count: CountedState.limit)
 
         #expect(CountedState(observer: CountedState.makeObserver(from: state)) == state)
+    }
+
+    @Test("A state nested in another type conforms under its qualified name")
+    func nestedStateConforms() {
+        let state = NestingFeature.State(count: 3)
+        let observer: NestingFeature.StateObserver = NestingFeature.State.makeObserver(from: state)
+
+        #expect(NestingFeature.State(observer: observer) == state)
     }
 }

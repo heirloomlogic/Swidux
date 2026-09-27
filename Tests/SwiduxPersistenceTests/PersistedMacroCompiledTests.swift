@@ -49,6 +49,15 @@ nonisolated struct SpelledOptionalNote: Identifiable, Equatable, Sendable {
     @Relation(deleteRule: .nullify) var chapter: Optional<Chapter>
 }
 
+/// An entity nested in another type, as a feature namespace would hold it.
+enum NestingLibrary {
+    @Persisted
+    nonisolated struct Volume: Identifiable, Equatable, Sendable {
+        var id: UUID
+        var title: String = ""
+    }
+}
+
 // MARK: - Tests
 
 @Suite("@Persisted compiled expansion")
@@ -81,5 +90,13 @@ struct PersistedMacroCompiledTests {
         )
 
         #expect(try SpelledOptionalNoteModel(from: note).toDomain() == note)
+    }
+
+    @Test("An entity nested in another type conforms under its qualified name")
+    func nestedEntityConforms() throws {
+        let volume = NestingLibrary.Volume(id: UUID(), title: "kept")
+        let model: NestingLibrary.Volume.Model = try NestingLibrary.VolumeModel(from: volume)
+
+        #expect(try model.toDomain() == volume)
     }
 }

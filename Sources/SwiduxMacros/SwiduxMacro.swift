@@ -89,7 +89,7 @@ extension SwiduxMacro: ExtensionMacro {
         }?.name.text
         return [
             generateConformanceExtension(
-                structName: structDecl.name.text,
+                typeName: type.trimmedDescription,
                 properties: properties,
                 accessLevel: accessLevel
             )

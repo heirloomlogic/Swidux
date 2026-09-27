@@ -2,12 +2,15 @@ import SwiftParser
 import SwiftSyntax
 import SwiftSyntaxBuilder
 
+/// `typeName` is the extended type as the compiler names it — qualified when the
+/// struct is nested (`Feature.State`) — and the observer peer, declared beside the
+/// struct, is named by appending `Observer` to it (`Feature.StateObserver`).
 func generateConformanceExtension(
-    structName: String,
+    typeName: String,
     properties: [ClassifiedProperty],
     accessLevel: String?
 ) -> ExtensionDeclSyntax {
-    let observerName = "\(structName)Observer"
+    let observerName = "\(typeName)Observer"
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
 
     let initLines = properties.map { prop -> String in
@@ -46,7 +49,7 @@ func generateConformanceExtension(
     }.joined(separator: "\n")
 
     let source = """
-        extension \(structName): SwiduxObservable {
+        extension \(typeName): SwiduxObservable {
             \(accessPrefix)typealias Observer = \(observerName)
 
             @MainActor
@@ -55,19 +58,19 @@ func generateConformanceExtension(
             }
 
             @MainActor
-            \(accessPrefix)static func makeObserver(from state: \(structName)) -> \(observerName) {
+            \(accessPrefix)static func makeObserver(from state: \(typeName)) -> \(observerName) {
                 \(observerName)(
         \(makeArgs)
                 )
             }
 
             @MainActor
-            \(accessPrefix)static func apply(_ snapshot: \(structName), to observer: \(observerName)) {
+            \(accessPrefix)static func apply(_ snapshot: \(typeName), to observer: \(observerName)) {
         \(applyLines)
             }
 
             @MainActor
-            \(accessPrefix)static func applyRestore(from snapshot: \(structName), to current: inout \(structName)) {
+            \(accessPrefix)static func applyRestore(from snapshot: \(typeName), to current: inout \(typeName)) {
         \(restoreLines)
             }
         }

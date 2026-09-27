@@ -763,6 +763,68 @@ final class SwiduxMacroTests: XCTestCase {
         )
     }
 
+    // MARK: Nesting
+
+    // The extension names the struct as the compiler does — `Feature.State` — and
+    // so the observer beside it, `Feature.StateObserver`. A bare `State` would
+    // extend some other type, or none.
+    func testNestedStructExtendsQualifiedName() throws {
+        assertMacroExpansion(
+            """
+            enum Feature {
+                @Swidux
+                struct State: Equatable, Sendable {
+                    var count: Int = 0
+                }
+            }
+            """,
+            expandedSource: """
+                enum Feature {
+                    struct State: Equatable, Sendable {
+                        var count: Int = 0
+                    }
+
+                    @Observable
+                    @MainActor
+                    final class StateObserver: @unchecked Sendable {
+                        var count: Int
+
+                        init(count: Int = 0) {
+                            self.count = count
+                        }
+                    }
+                }
+
+                extension Feature.State: SwiduxObservable {
+                    typealias Observer = Feature.StateObserver
+
+                    @MainActor
+                    init(observer: Feature.StateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: Feature.State) -> Feature.StateObserver {
+                        Feature.StateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: Feature.State, to observer: Feature.StateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: Feature.State, to current: inout Feature.State) {
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
     // MARK: Edge Cases
 
     func testPropertyWithNoDefault() throws {

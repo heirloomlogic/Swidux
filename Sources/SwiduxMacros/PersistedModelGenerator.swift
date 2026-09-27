@@ -69,14 +69,18 @@ func generatePersistedModelClass(
 }
 
 /// Generates `extension <Struct>: PersistableEntity { typealias Model = <Struct>Model }`.
+///
+/// `typeName` is the extended type as the compiler names it — qualified when the
+/// struct is nested (`Library.Book`) — and the model peer, declared beside the
+/// struct, is named by appending `Model` to it (`Library.BookModel`).
 func generatePersistableEntityExtension(
-    structName: String,
+    typeName: String,
     accessLevel: String?
 ) -> ExtensionDeclSyntax {
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
     let source = """
-        extension \(structName): PersistableEntity {
-            \(accessPrefix)typealias Model = \(structName)Model
+        extension \(typeName): PersistableEntity {
+            \(accessPrefix)typealias Model = \(typeName)Model
         }
         """
     let sourceFile = Parser.parse(source: source)
