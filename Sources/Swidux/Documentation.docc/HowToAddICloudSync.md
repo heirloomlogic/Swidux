@@ -30,7 +30,7 @@ The resulting entitlements your built app must carry:
 | `com.apple.developer.icloud-services` | `[CloudKit]` |
 | `aps-environment` | `development` in dev builds, `production` in release archives |
 
-> Important: an **empty** `icloud-container-identifiers` array paired with a `CloudKit` services line is misconfiguration, not sync — `SyncPreflightService` will report the app as unavailable. The container id in the portal, the entitlement, and the `cloudKitContainerID` you pass in code must all match.
+> Important: an **empty** `icloud-container-identifiers` array paired with a `CloudKit` services line is misconfiguration, not sync. The container id in the portal, the entitlement, and the `cloudKitContainerID` you pass in code must all match. On macOS `SyncPreflightService.live` reads the app's own entitlements and reports an empty or non-matching list as `.misconfiguredNoEntitlement`. iOS has no public API for an app to read its own entitlements, so there a container CloudKit rejects is reported the same way from the account probe's `CKError.badContainer` — but an app with no iCloud entitlement at all makes CloudKit raise an exception the first time a container is created, so catch it in development.
 
 ## Step 2: Add the capabilities in Xcode
 
@@ -104,13 +104,17 @@ let status = await sync.setSyncEnabled(isOn, into: store)
 store.send(.syncSettingsChanged(mode: sync.mode, status: status))
 ```
 
-`setSyncEnabled` flushes pending writes, resolves availability, rebuilds the container in the *effective* mode (CloudKit only when actually usable, else a local fallback), swaps the active database behind the coordinator's handle, persists the user's choice, and re-hydrates via `merge` (never replace). It returns the resolved `SyncStatus`.
+`setSyncEnabled` flushes pending writes, resolves availability, rebuilds the container, swaps the active database behind the coordinator's handle, persists the user's choice, and re-hydrates via `merge` (never replace). It returns the resolved `SyncStatus`. Turning sync on builds the CloudKit-mirrored container whatever the account's state — the same container launch builds from the same preference — so a user who enables sync while signed out starts syncing when they sign in; only a build that isn't entitled stays local-only. Turning sync off consults no probe at all.
+
+The rebuilt container opens the same file as the one the app is running on, which is what keeps every row across a toggle. `SyncCoordinator` reads that URL from the running container, so there is no need to repeat it as `storeURL:`; pass one only when the running container isn't a single on-disk store.
 
 It takes the store rather than `inout State` because all of that is asynchronous. Every one of those `await`s is a window in which the user can keep editing, and a caller holding a state snapshot across them would overwrite whatever landed. Here the flush, preflight, and rebuild all complete first; only then does one suspension-free step pack a fresh snapshot, merge, and unpack. Nothing can interleave between that pack and the follow-up `send` either — the main actor can only be re-entered at a suspension point, and there is none.
 
 ## Step 6: Detect availability and degrade gracefully
 
-`SyncPreflightService` probes `FileManager.ubiquityIdentityToken` and `CKContainer.accountStatus`; `SyncStatus.resolve(desired:entitled:account:)` maps the result to a verdict-in-state enum:
+`SyncPreflightService` checks that the app is entitled to CloudKit, then probes `CKContainer.accountStatus`; `SyncStatus.resolve(desired:entitled:account:)` maps the result to a verdict-in-state enum. It consults neither probe for `.localOnly`, and never the account for a build that isn't entitled — creating a `CKContainer` in such a process raises an exception rather than returning an error.
+
+The entitlement check is not the iCloud Drive identity (`FileManager.ubiquityIdentityToken`), which is `nil` whenever the user has iCloud Drive switched off, even though CloudKit works for them. On macOS `.live` reads the process's own entitlements, which is definitive. On iOS, tvOS, watchOS, and visionOS no public API can, so the build is trusted — those platforms refuse to launch a binary claiming entitlements its profile doesn't grant, so a running build lacks CloudKit only if its entitlements file never asked for it. Pass `.live(containerID:isEntitled:)` your own check if you have a better signal.
 
 | `SyncStatus` | Meaning | Response |
 |---|---|---|
@@ -118,13 +122,13 @@ It takes the store rather than `inout State` because all of that is asynchronous
 | `.syncing` | Entitled, signed in, active | Healthy. |
 | `.unavailableNotSignedIn` | Entitled, no iCloud account | Show a gentle "Sign in to iCloud" banner; never assert. |
 | `.unavailableRestricted` | MDM/parental restriction | Inform; run local-only. |
-| `.misconfiguredNoEntitlement` | Sync requested but **not entitled** — a build/signing bug | Degrade to local-only; `assertionFailure` in **DEBUG only**, never crash release. |
+| `.misconfiguredNoEntitlement` | Sync requested but **not entitled**, or CloudKit rejected the build's container — a build/signing bug | Degrade to local-only; turning sync on hits an `assertionFailure` in **DEBUG only**, never crashes release. |
 
-Run the probe at launch and on `scenePhase → .active`, and disable the Settings toggle when the status isn't actionable by the user:
+Run the probe at launch and on `scenePhase → .active`, and disable the Settings toggle when the status isn't actionable by the user. Record the result with a dispatch, as in Step 5 — never by writing into a state snapshot taken before the `await`:
 
 ```swift
 let status = await sync.currentStatus()
-state.persistence.syncStatus = status
+store.send(.syncStatusChanged(status))
 ```
 
 The Keychain `−34018` condition (from `KeychainKeyValueStore`, used for analytics device-id) is a separate, always-present capability — it stays detected where it is and is not folded into the sync preflight.
@@ -142,6 +146,8 @@ observer.start()
 ```
 
 Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
+
+The debounce coalesces a burst into one callback, but never holds one longer than `maxWait` (10 seconds by default) from its first notification. A long first CloudKit import, or the app's own saves while the user keeps editing, would otherwise re-arm the debounce indefinitely and hold back every remote change until the stream stopped.
 
 `owning:` is optional but worth passing. `.NSPersistentStoreRemoteChange` is posted for every store in the process, so without it the observer merges on notifications from stores the app has nothing to do with. Given the handle it drops those. It re-reads the handle per notification, so a sync toggle that rebuilds the container needs no new observer.
 
@@ -163,7 +169,7 @@ A tick may read a row and decline to apply it — an editing hold is the one exe
 
 Calling `rehydrate(into:)` from the observer instead still works and is still correct — it is just O(N) per tick.
 
-`.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Feeding the app its own writes is a no-op: the rows it reads back are the ones it just wrote, and anything still pending is exempt from the merge, so the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
+`.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Feeding the app its own writes is a no-op: the rows it reads back are the ones it just wrote, and anything still pending is exempt from the merge, so the rule-#8 data-loss trap is neutralized by construction. Leave the observer running across a sync toggle: it re-reads the handle per notification, and a merge that was in flight when the container was swapped is discarded by the coordinator rather than applied.
 
 > Warning: Do not hand-roll this by snapshotting state around the `await`:
 >
@@ -250,7 +256,7 @@ Example UI copy: *"By default your data is stored only on this device. If you tu
 
 ## Testing
 
-The pure parts are unit-testable without entitlements: `SyncStatus.resolve(desired:entitled:account:)` (truth table), `SyncPreflightService.mock(ubiquityToken:account:)`, the `KVKey.syncMode` round-trip, and the opt-out toggle path against an in-memory container. Real two-device CloudKit mirroring requires entitlements and a signed-in device, so cover it with a manual smoke test: two-device sync, opt-out keeps data local, opt-in merges, signed-out iCloud degrades with a banner, and a build missing the entitlement trips the DEBUG assertion.
+The pure parts are unit-testable without entitlements: `SyncStatus.resolve(desired:entitled:account:)` (truth table), `SyncPreflightService.mock(entitled:account:)`, the `KVKey.syncMode` round-trip, and the toggle paths against an in-memory container. Real two-device CloudKit mirroring requires entitlements and a signed-in device, so cover it with a manual smoke test: two-device sync, opt-out keeps data local, opt-in merges, signed-out iCloud shows the banner and starts syncing after sign-in without another toggle, and a device with iCloud Drive switched off still syncs. A macOS build missing the entitlement reports `.misconfiguredNoEntitlement` and trips the DEBUG assertion when sync is turned on; on iOS the same build crashes inside CloudKit on the first `.iCloud` probe.
 
 ## See Also
 

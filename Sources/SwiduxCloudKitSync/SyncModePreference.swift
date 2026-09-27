@@ -19,9 +19,15 @@ extension KVKey where Value == SyncMode {
 ///
 /// Default is `.iCloud` for apps that link `SwiduxCloudKitSync` (sync-on with
 /// opt-out). Pass `.localOnly` to make sync strictly opt-in instead.
+///
+/// The default applies only when nothing is stored. A stored value that can't
+/// be decoded means a choice was made and can't be read, so it resolves to
+/// `.localOnly` — the reading that never uploads data the user may have kept
+/// off iCloud.
 public func resolveDesiredSyncMode(
     from store: any KeyValueStore,
     default defaultMode: SyncMode = .iCloud
 ) -> SyncMode {
-    store.value(.syncMode) ?? defaultMode
+    guard store.contains(.syncMode) else { return defaultMode }
+    return store.value(.syncMode) ?? .localOnly
 }

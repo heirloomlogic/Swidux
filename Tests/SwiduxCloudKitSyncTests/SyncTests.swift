@@ -10,6 +10,7 @@
 import Foundation
 import Swidux
 import SwiftData
+import Synchronization
 import Testing
 
 @testable import SwiduxCloudKitSync
@@ -97,6 +98,14 @@ struct SyncStatusResolveTests {
             SyncStatus.resolve(desired: .iCloud, entitled: false, account: .available) == .misconfiguredNoEntitlement)
     }
 
+    @Test("CloudKit rejecting the build's entitlements is a build misconfiguration too")
+    func rejectedByCloudKit() {
+        // Not "sign in to iCloud": nothing the user does fixes a bad container.
+        #expect(
+            SyncStatus.resolve(desired: .iCloud, entitled: true, account: .misconfigured) == .misconfiguredNoEntitlement
+        )
+    }
+
     @Test("iCloud, entitled, account state maps to status")
     func entitledAccounts() {
         #expect(SyncStatus.resolve(desired: .iCloud, entitled: true, account: .available) == .syncing)
@@ -129,6 +138,20 @@ struct SyncModePreferenceTests {
         store.setValue(SyncMode.localOnly, for: .syncMode)
         #expect(resolveDesiredSyncMode(from: store) == .localOnly)
     }
+
+    @Test("a stored choice that can't be decoded fails closed to local-only")
+    func undecodableFailsClosed() {
+        // Something is stored under the key, but not a `SyncMode` — an older
+        // build's `Bool`, say. That is not a fresh install: someone made a
+        // choice, and the one that can't upload their data is the safe reading.
+        let store = InMemoryKeyValueStore()
+        store.setValue(false, for: KVKey<Bool>(KVKey<SyncMode>.syncMode.name))
+        #expect(store.contains(.syncMode))
+        #expect(store.value(.syncMode) == nil)
+
+        #expect(resolveDesiredSyncMode(from: store) == .localOnly)
+        #expect(resolveDesiredSyncMode(from: store, default: .iCloud) == .localOnly)
+    }
 }
 
 // MARK: - Toggle
@@ -147,7 +170,7 @@ struct SyncCoordinatorTests {
         let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence, models: [ItemModel.self], mode: .localOnly,
             preflight: SyncPreflightService(
-                ubiquityTokenAvailable: { true },
+                isEntitled: { true },
                 accountState: {
                     await gate.pauseFirstCall()
                     return .available
@@ -184,7 +207,7 @@ struct SyncCoordinatorTests {
         let preferences = InMemoryKeyValueStore()
         let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence, models: [ItemModel.self], mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: preferences, makeContainer: { $0 == .iCloud ? cloud : local })
         let gate = SyncToggleGate()
         persistence.duringReadPhase = { await gate.pauseFirstCall() }
@@ -215,7 +238,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .iCloud,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store
         )
 
@@ -232,6 +255,106 @@ struct SyncCoordinatorTests {
         #expect(store.value(.syncMode) == .localOnly)
         // Data survives the toggle (merge-based rehydrate, never replace).
         #expect(appStore.items[id]?.label == "kept")
+    }
+
+    @MainActor
+    @Test("opting out consults no probe, so the mirrored container isn't held open on one")
+    func optOutSkipsPreflight() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: container)
+        let probes = Mutex(0)
+        var builtModes: [SyncMode] = []
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .iCloud,
+            preflight: SyncPreflightService(
+                isEntitled: {
+                    probes.withLock { $0 += 1 }
+                    return false
+                },
+                accountState: {
+                    probes.withLock { $0 += 1 }
+                    return .couldNotDetermine
+                }),
+            keyValue: InMemoryKeyValueStore(),
+            makeContainer: { mode in
+                builtModes.append(mode)
+                return container
+            })
+
+        let status = await sync.setSyncEnabled(false, into: makeItemsStore(persistence))
+
+        #expect(status == .localOnlyByChoice)
+        #expect(builtModes == [.localOnly])
+        // Neither probe can change an opt-out's outcome. The account probe is a
+        // CloudKit round trip the mirrored container would stay live across, and
+        // in an unentitled build it doesn't return at all.
+        #expect(probes.withLock { $0 } == 0)
+    }
+
+    @MainActor
+    @Test("enabling while signed out still attaches the mirror, so signing in later syncs")
+    func enableWhileSignedOutAttachesMirror() async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [ItemModel.self])
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: container)
+        let account = Mutex<ICloudAccountState>(.noAccount)
+        var builtModes: [SyncMode] = []
+        let preferences = InMemoryKeyValueStore()
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .localOnly,
+            preflight: SyncPreflightService(
+                isEntitled: { true },
+                accountState: { account.withLock { $0 } }),
+            keyValue: preferences,
+            makeContainer: { mode in
+                builtModes.append(mode)
+                return container
+            })
+
+        let first = await sync.setSyncEnabled(true, into: makeItemsStore(persistence))
+        #expect(first == .unavailableNotSignedIn)
+        #expect(sync.mode == .iCloud)
+        #expect(preferences.value(.syncMode) == .iCloud)
+        // The same container launch would build from that preference. A mirrored
+        // container tolerates a signed-out account and starts on sign-in; a
+        // local one would stay local until the next launch.
+        #expect(builtModes == [.iCloud])
+
+        // The user signs in and comes back. The status now describes the
+        // container that is actually active.
+        account.withLock { $0 = .available }
+        #expect(await sync.currentStatus() == .syncing)
+    }
+
+    @MainActor
+    @Test("the default rebuild opens the store the app launched with")
+    func defaultRebuildReusesLaunchStore() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("swidux-sync-store-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("group.store")
+
+        let launch = try CloudContainerFactory.makeContainer(models: [ItemModel.self], mode: .localOnly, url: url)
+        let persistence = PersistenceCoordinator<ItemsState, ItemsAction>(
+            entities: [.entity(\.items)], container: launch)
+        let id = UUID()
+        try await persistence.database.upsert(Item(id: id, label: "on disk"), as: ItemModel.self)
+        // No `storeURL:` and no builder — the shape an app-group app gets wrong
+        // by omission. Opting out rebuilds through `CloudContainerFactory`,
+        // which stays hermetic in `.localOnly`.
+        let sync = SyncCoordinator<ItemsState, ItemsAction>(
+            persistence: persistence, models: [ItemModel.self], mode: .iCloud,
+            preflight: .mock(entitled: true, account: .available),
+            keyValue: InMemoryKeyValueStore())
+
+        #expect(await sync.setSyncEnabled(false, into: makeItemsStore(persistence)) == .localOnlyByChoice)
+
+        // Not SwiftData's `default.store`: that would be a second, empty store,
+        // and everything written after the toggle would be missing next launch.
+        #expect(persistence.handle.storeURLs == [url.standardizedFileURL])
+        #expect(try await persistence.fetchAll(of: Item.self).map(\.id) == [id])
     }
 
     @MainActor
@@ -254,7 +377,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store,
             makeContainer: { _ in rebuilt }
         )
@@ -288,7 +411,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store,
             makeContainer: { _ in rebuilt }
         )
@@ -326,7 +449,7 @@ struct SyncCoordinatorTests {
             persistence: persistence,
             models: [ItemModel.self],
             mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: store,
             makeContainer: { _ in throw BuildFailed() }
         )
