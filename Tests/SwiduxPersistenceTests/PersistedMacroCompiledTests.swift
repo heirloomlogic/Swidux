@@ -10,7 +10,6 @@
 
 import Foundation
 import Swidux
-import SwiftData
 import Testing
 
 @testable import SwiduxPersistence

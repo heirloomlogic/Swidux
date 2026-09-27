@@ -243,6 +243,7 @@ The generated model is **CloudKit-safe by construction**, which is what lets the
 
 - **Must be a struct** (a diagnostic fires otherwise).
 - **Must satisfy `Identifiable & Equatable & Sendable` with `ID == UUID`** — the ``EntityStore`` contract.
+- **The file must be able to see SwiftData.** The expansion uses `@Model`, `FetchDescriptor` and `#Predicate`, and names in an expansion resolve against the imports of the file it expands in. `SwiduxPersistence` re-exports SwiftData, so `import SwiduxPersistence` is enough.
 - **Not generic, `private` or `fileprivate`**, for the same reasons as `@Swidux`.
 - **The same stored-property rules as `@Swidux`**, plus three of its own: `willSet`/`didSet` properties are mirrored like any other, a `let` with an initial value is an error (the memberwise initializer has no parameter for it, so it can't be loaded), and a `private` property is an error (the model reads it and rebuilds the struct from outside the struct; `fileprivate` works). `static` properties are never columns.
 - **`Optional<T>` and `T!` count as optional**, exactly like `T?`.
@@ -304,7 +305,7 @@ extension Card: PersistableEntity {
 }
 ```
 
-(`@Model` itself is a SwiftData macro; the compiler expands it over the generated class. The `SwiduxMacros` plugin emits the class as text and does not import SwiftData.)
+(`@Model` itself is a SwiftData macro; the compiler expands it over the generated class. The `SwiduxMacros` plugin emits the class as text and does not import SwiftData; the file it expands in sees SwiftData because `SwiduxPersistence` re-exports it.)
 
 ## Common errors
 

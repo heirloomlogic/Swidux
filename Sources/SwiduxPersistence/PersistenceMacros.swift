@@ -6,6 +6,15 @@
 //  in the `SwiduxMacros` compiler-plugin target.
 //
 
+// A macro expansion resolves names against the imports of the file it expands
+// in, and `@Persisted` expands to `@Model`, `FetchDescriptor` and `#Predicate`.
+// Re-exporting SwiftData makes `import SwiduxPersistence` — all the how-to
+// shows — enough; without it that file gets a wall of "unknown attribute
+// 'Model'" errors reported against generated code. This module's public API
+// already exposes SwiftData types (`ModelContainer`, `PersistentModel`), so a
+// client can't use it without SwiftData in the first place.
+@_exported import SwiftData
+
 /// Delete rule for an `@Relation`. Mirrors SwiftData's
 /// `Schema.Relationship.DeleteRule` case names so the generated
 /// `@Relationship(deleteRule:)` resolves in the model's SwiftData context.
