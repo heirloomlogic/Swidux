@@ -40,6 +40,26 @@ case .skip:
 
 Cancellation is cooperative: a stream or service must observe cancellation to stop its work. Keyed effects also suppress sends after cancellation, so a service that returns a stale successful result cannot publish it.
 
+## Report the cancellation with `onCancel`
+
+Suppression covers *every* send after cancellation, including one from a `catch` block. A plain `Effect` can clear its own in-flight flag that way; a keyed one cannot, because the store can't tell a cleanup action from a stale result. Name the cleanup action with `onCancel:` instead, and the store dispatches it for you:
+
+```swift
+case .search(let query):
+    state.isSearching = true
+    return cancellable(id: SearchID(), onCancel: .searchCancelled) { send in
+        await send(.results(try await api.search(query)))
+    }
+
+case .searchCancelled:
+    state.isSearching = false
+```
+
+The store dispatches `onCancel` when ``cancel(id:)``, ``Store/cancel(id:)``, or ``Store/cancelEffects()`` cancels the effect while it is still running — at once from view code, or right after the current action when a reducer returns ``cancel(id:)``. It is dispatched once, and never for an effect that already finished. Two cases don't dispatch it:
+
+- A `cancelInFlight` effect replacing this one. The action that started the replacement is already setting that state, and a late `.searchCancelled` would clear `isSearching` while the new search runs.
+- A scope nested inside another scope that is cancelled at the same time. The outer scope's `onCancel` covers both.
+
 ## Debounce with `cancelInFlight`
 
 Passing `cancelInFlight: true` cancels any effect already running under the id *before* starting the new one — the whole of debounce in one line:
@@ -65,7 +85,7 @@ When there is no reducer action to hang the cancellation on — a screen disappe
 }
 ```
 
-Ids with nothing running are ignored, so it is always safe to call.
+Ids with nothing running are ignored, so it is always safe to call. No reducer runs here that could reset an in-flight flag, so give the effect an `onCancel:` action if it sets one.
 
 ## What it does not replace
 

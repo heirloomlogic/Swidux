@@ -174,3 +174,143 @@ extension EffectCancellationRaceTests {
         #expect(ran.value)
     }
 }
+
+// MARK: - Reporting cancellation
+
+/// A keyed scope's sends are dropped once it is cancelled — that is what keeps
+/// a stale result out — so its `catch` block can't report the cancellation the
+/// way a plain effect's can. `onCancel:` is how it reports instead.
+extension EffectCancellationRaceTests {
+    /// A store whose `.noOp` starts a keyed search that parks until cancelled,
+    /// and whose `.effectAction` appends to `log`.
+    private func makeSearchStore(
+        log: SendableBox<[String]>,
+        started: AsyncStream<Void>.Continuation,
+        cancelInFlight: Bool = false
+    ) -> Store<TestState, TestAction> {
+        Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                return cancellable(id: "search", cancelInFlight: cancelInFlight, onCancel: .effectAction("cancelled")) {
+                    send in
+                    started.yield()
+                    do {
+                        try await Task.sleep(for: .seconds(60))
+                    } catch {
+                        await send(.effectAction("caught"))  // stale by construction: dropped
+                        throw error
+                    }
+                }
+            case .delete:
+                return cancel(id: "search")
+            case .effectAction(let entry):
+                log.value.append(entry)
+                return nil
+            default:
+                return nil
+            }
+        }
+    }
+
+    @Test("Store.cancel(id:) from view code dispatches the scope's onCancel")
+    func imperativeCancelReports() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancel(id: "search")  // `.onDisappear`, where no reducer runs
+
+        #expect(log.value == ["cancelled"], "the in-flight flag would stay set forever")
+        while store.hasInFlightEffects { await Task.yield() }
+        #expect(log.value == ["cancelled"], "the catch-block send is still suppressed")
+    }
+
+    @Test("A cancel(id:) effect dispatches onCancel after the action that returned it")
+    func cancelEffectReports() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.send(.delete(UUID()))
+
+        #expect(log.value == ["cancelled"])
+    }
+
+    @Test("cancelEffects() dispatches onCancel; the store stays usable")
+    func cancelEffectsReports() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancelEffects()
+
+        #expect(log.value == ["cancelled"])
+    }
+
+    @Test("A cancelInFlight replacement does not dispatch the replaced scope's onCancel")
+    func replacementDoesNotReport() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started, cancelInFlight: true)
+        var starts = startedStream.makeAsyncIterator()
+        store.send(.noOp)
+        await starts.next()
+
+        store.send(.noOp)  // the new search is still in flight; its reducer owns the flag
+        await starts.next()
+        #expect(log.value.isEmpty)
+
+        store.cancel(id: "search")
+        #expect(log.value == ["cancelled"], "reported once, for the scope actually cancelled")
+    }
+
+    @Test("onCancel is dispatched once, and not for a scope that already finished")
+    func onCancelOnlyForLiveScopes() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancel(id: "search")
+        store.cancel(id: "search")
+        #expect(log.value == ["cancelled"])
+
+        while store.hasInFlightEffects { await Task.yield() }
+        store.cancel(id: "search")
+        #expect(log.value == ["cancelled"])
+    }
+
+    @Test("Mapping an effect preserves onCancel")
+    func mappedOnCancelIsPreserved() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                let effect: Effect<String> = cancellable(id: "mapped", onCancel: "cancelled") { _ in
+                    started.yield()
+                    try await Task.sleep(for: .seconds(60))
+                }
+                return effect.map { .effectAction($0) }
+            case .effectAction(let entry):
+                log.value.append(entry)
+                return nil
+            default:
+                return nil
+            }
+        }
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancel(id: "mapped")
+
+        #expect(log.value == ["cancelled"])
+    }
+}

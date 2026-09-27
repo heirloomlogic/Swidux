@@ -267,16 +267,17 @@ public final class Store<State: SwiduxObservable, Action> {
             // `send` is synchronous on the MainActor, so the task is registered
             // before the completion hop below can possibly run.
             let id = UUID()
-            let scope = UUID()
-            if case .scope(let key, true) = eff.cancellation {
-                cancelCancellable(id: key)
+            var declared: (token: UUID, scope: ActiveScope)?
+            if case .scope(let key, let cancelInFlight) = eff.cancellation {
+                if cancelInFlight { cancelScopes(reporting: false) { scope, _ in scope.id == key } }
+                declared = (UUID(), eff.activeScope(id: key, send: send))
             }
             // Weak `registrar`, so binding the context does not retain the store.
             let context = EffectContext(registrar: self, taskID: id)
-            let task = Task { @concurrent [weak self] in
+            let task = Task { @concurrent [weak self, declared] in
                 await EffectContext.$current.withValue(context) {
                     do {
-                        try await eff.run(send, registeredScope: scope)
+                        try await eff.run(send, declaredScope: declared)
                     } catch is CancellationError {
                         // Expected on teardown / cancelEffects() / cancel(id:) — not an error.
                     } catch {
@@ -286,7 +287,10 @@ public final class Store<State: SwiduxObservable, Action> {
                 await self?.effectFinished(id)
             }
             var handle = EffectHandle(task: task)
-            if case .scope(let key, _) = eff.cancellation { handle.scopes[scope] = key }
+            if let declared {
+                declared.scope.cancellation.attach(task)
+                handle.scopes[declared.token] = declared.scope
+            }
             effectTasks[id] = handle
         }
     }
@@ -300,9 +304,14 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Streaming effects (`for await …`) end at their next suspension point.
     /// Called automatically when the store deinitializes; call it directly to
     /// tear down long-lived effects earlier (for example on scene teardown).
+    ///
+    /// Each running `cancellable(id:onCancel:_:)` scope's `onCancel` action is
+    /// dispatched afterwards, as for ``cancel(id:)``.
     public func cancelEffects() {
+        let reports = cancelScopes(reporting: true) { _, _ in true }
         for handle in effectTasks.values { handle.task.cancel() }
         effectTasks.removeAll()
+        dispatchReports(reports)
     }
 
     /// Cancels every in-flight effect tagged with `id` via
@@ -311,6 +320,10 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Safe to call from view or scene lifecycle code (e.g. `.onDisappear`);
     /// ids with nothing running are ignored. To cancel from *inside* a reducer,
     /// return the ``cancel(id:)`` effect instead.
+    ///
+    /// A cancelled keyed effect's own sends are dropped, including one from a
+    /// `catch` block, so it can't clear an in-flight flag itself. Give it an
+    /// `onCancel:` action, which this dispatches before returning.
     public func cancel(id: some Hashable & Sendable) {
         cancelCancellable(id: AnyHashableSendable(id))
     }
@@ -407,23 +420,55 @@ extension Store: @MainActor SwiduxDispatcher {}
 /// Only active scopes are retained. UUID tokens distinguish nested same-key scopes.
 private struct EffectHandle {
     let task: Task<Void, Never>
-    var scopes: [UUID: AnyHashableSendable] = [:]
+    var scopes: [UUID: ActiveScope] = [:]
 }
 
 extension Store: EffectCancellationRegistrar {
-    func register(_ taskID: UUID, scope: UUID, id: AnyHashableSendable, cancelInFlight: Bool) {
+    func register(_ scope: ActiveScope, token: UUID, in taskID: UUID, cancelInFlight: Bool) {
         guard let handle = effectTasks[taskID], !handle.task.isCancelled else { return }
-        if cancelInFlight { cancelCancellable(id: id, excluding: taskID) }
-        effectTasks[taskID]?.scopes[scope] = id
+        if cancelInFlight {
+            let hosted = Set(handle.scopes.keys)
+            cancelScopes(reporting: false) { $0.id == scope.id && !hosted.contains($1) }
+        }
+        scope.cancellation.attach(handle.task)
+        effectTasks[taskID]?.scopes[token] = scope
     }
 
     func unregister(_ taskID: UUID, scope: UUID) {
         effectTasks[taskID]?.scopes.removeValue(forKey: scope)
     }
 
-    func cancelCancellable(id: AnyHashableSendable, excluding taskID: UUID? = nil) {
-        for (key, handle) in effectTasks where key != taskID && handle.scopes.values.contains(id) {
-            handle.task.cancel()
+    func cancelCancellable(id: AnyHashableSendable) {
+        dispatchReports(cancelScopes(reporting: true) { scope, _ in scope.id == id })
+    }
+
+    /// Cancels every registered scope matching `predicate`, and returns the
+    /// `onCancel` reports of those it newly cancelled when `reporting`.
+    ///
+    /// A `cancelInFlight` replacement passes `false`: the action that started
+    /// the replacement is already handling the state the report would reset.
+    @discardableResult
+    private func cancelScopes(
+        reporting: Bool,
+        where predicate: (ActiveScope, UUID) -> Bool
+    ) -> [@MainActor @Sendable () -> Void] {
+        var reports: [@MainActor @Sendable () -> Void] = []
+        for handle in effectTasks.values {
+            for (token, scope) in handle.scopes where predicate(scope, token) {
+                if scope.cancellation.cancel(), reporting, let report = scope.onCancel {
+                    reports.append(report)
+                }
+            }
+        }
+        return reports
+    }
+
+    /// Dispatches `onCancel` reports once every cancellation is in place, so an
+    /// action a report triggers can't have its own effects swept up by it.
+    private func dispatchReports(_ reports: [@MainActor @Sendable () -> Void]) {
+        guard !reports.isEmpty else { return }
+        perform {
+            for report in reports { report() }
         }
     }
 }
