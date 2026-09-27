@@ -53,8 +53,7 @@ struct FeatureFlagsUndoRestoreTests {
                 return nil
             },
             plugins: plugins,
-            undoPlugin: undo,
-            isUndoable: isUndoable
+            undoPlugin: undo
         )
         defer { store.cancelEffects() }
 

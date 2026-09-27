@@ -304,8 +304,7 @@ struct StoreTests {
             initialState: TestState(),
             reducer: testReducer,
             plugins: plugins,
-            undoPlugin: undoPlugin,
-            isUndoable: { _ in true }
+            undoPlugin: undoPlugin
         )
 
         let entity = TestEntity(name: "Added")
@@ -329,8 +328,7 @@ struct StoreTests {
             initialState: TestState(),
             reducer: testReducer,
             plugins: plugins,
-            undoPlugin: undoPlugin,
-            isUndoable: { _ in true }
+            undoPlugin: undoPlugin
         )
 
         let entity = TestEntity(name: "Added")
@@ -367,8 +365,7 @@ struct StoreTests {
             reducer: testReducer,
             plugins: plugins,
             undoPlugin: undoPlugin,
-            persistencePlugin: persistencePlugin,
-            isUndoable: { _ in true }
+            persistencePlugin: persistencePlugin
         )
 
         let entity = TestEntity(name: "Tracked")
@@ -408,8 +405,7 @@ struct StoreTests {
             reducer: testReducer,
             plugins: plugins,
             undoPlugin: undoPlugin,
-            persistencePlugin: persistencePlugin,
-            isUndoable: { _ in true }
+            persistencePlugin: persistencePlugin
         )
 
         let entity = TestEntity(name: "Keep")
@@ -596,11 +592,7 @@ struct StoreTests {
             initialState: TestState(),
             reducer: testReducer,
             plugins: plugins,
-            undoPlugin: undoPlugin,
-            isUndoable: { action in
-                if case .noOp = action { return false }
-                return true
-            }
+            undoPlugin: undoPlugin
         )
 
         #expect(!store.canUndo)
@@ -633,8 +625,7 @@ struct StoreUndoManagerTests {
 
     private static func makeStore(
         _ entity: TestEntity,
-        coalescing: Bool = false,
-        isUndoable: (@Sendable (TestAction) -> Bool)? = isRename
+        coalescing: Bool = false
     ) -> Store<TestState, TestAction> {
         let never: @Sendable (TestAction) -> Bool = { _ in false }
         let undoPlugin = UndoPlugin<TestState, TestAction>(
@@ -643,9 +634,7 @@ struct StoreUndoManagerTests {
         plugins.register(undoPlugin)
         var initial = TestState()
         initial.items = EntityStore([entity])
-        return Store(
-            initialState: initial, reducer: testReducer, plugins: plugins, undoPlugin: undoPlugin,
-            isUndoable: isUndoable)
+        return Store(initialState: initial, reducer: testReducer, plugins: plugins, undoPlugin: undoPlugin)
     }
 
     /// Runs `body` as one UI event. With `groupsByEvent` (the default) the
@@ -679,7 +668,7 @@ struct StoreUndoManagerTests {
     @Test("an action the undo plugin doesn't snapshot registers nothing")
     func unsnapshottedActionRegistersNothing() {
         let a = TestEntity(name: "a")
-        let store = Self.makeStore(a, isUndoable: { _ in true })
+        let store = Self.makeStore(a)
         let undoManager = UndoManager()
         store.undoManager = undoManager
 
@@ -747,6 +736,31 @@ struct StoreUndoManagerTests {
 
         undoManager.undo()
         #expect(store.items[a.id]?.name == "a")
+    }
+
+    @Test("a narrower Store isUndoable can't make Edit ▸ Undo revert a step it never offered")
+    @available(*, deprecated, message: "Exercises the deprecated isUndoable: initializer.")
+    func narrowerIsUndoableKeepsStacksInStep() {
+        let a = TestEntity(name: "a")
+        let c = TestEntity(name: "c")
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(UndoPlugin<TestState, TestAction>())  // snapshots everything
+        var initial = TestState()
+        initial.items = EntityStore([a])
+        let store = Store(
+            initialState: initial, reducer: testReducer, plugins: plugins, isUndoable: Self.isRename)
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        event(undoManager) { store.send(.rename(a.id, "b")) }
+        event(undoManager) { store.send(.insert(c)) }
+
+        undoManager.undo()
+        #expect(store.items[c.id] == nil, "each Edit ▸ Undo step is the plugin's step, in order")
+        #expect(store.items[a.id]?.name == "b")
+        undoManager.undo()
+        #expect(store.items[a.id]?.name == "a")
+        #expect(!undoManager.canUndo && !store.canUndo, "the two stacks run out together")
     }
 
     @Test("a deallocated store takes its steps off the UndoManager")

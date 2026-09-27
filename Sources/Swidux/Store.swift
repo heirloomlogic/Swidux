@@ -67,9 +67,6 @@ public final class Store<State: SwiduxObservable, Action> {
         var persistence: PersistencePlugin<State, Action>?
     }
 
-    @ObservationIgnored
-    private let isUndoableAction: (@Sendable (Action) -> Bool)?
-
     /// The plugin ``undo()`` / ``redo()`` drive.
     private var undoPlugin: UndoPlugin<State, Action>? {
         explicitUndoPlugin ?? discoveredCorePlugins().undo
@@ -147,6 +144,10 @@ public final class Store<State: SwiduxObservable, Action> {
 
     /// Creates a store with the given initial state, reducer, and optional plugins.
     ///
+    /// Every snapshot the undo plugin takes is registered with the platform
+    /// `UndoManager` as one step, so the plugin's own `isUndoable` predicate
+    /// decides what the Edit menu and shake-to-undo offer.
+    ///
     /// - Parameters:
     ///   - initialState: The state the observer tree is built from.
     ///   - reducer: The app reducer.
@@ -160,24 +161,51 @@ public final class Store<State: SwiduxObservable, Action> {
     ///     on `plugins` is found automatically, so registering it once is
     ///     enough. Pass it only to drain through a plugin that is deliberately
     ///     *not* registered on the host.
-    ///   - isUndoable: Narrows which undo steps register with the platform
-    ///     `UndoManager` (menu items, gestures). **Usually leave this nil**:
-    ///     every step the undo plugin snapshots is registered, one per
-    ///     snapshot, so the plugin's own `isUndoable` predicate already decides.
     public init(
         initialState: State,
         reducer: @escaping (inout State, Action) -> Effect<Action>?,
         plugins: PluginHost<State, Action> = PluginHost(),
         undoPlugin: UndoPlugin<State, Action>? = nil,
-        persistencePlugin: PersistencePlugin<State, Action>? = nil,
-        isUndoable: (@Sendable (Action) -> Bool)? = nil
+        persistencePlugin: PersistencePlugin<State, Action>? = nil
     ) {
         self.observer = State.makeObserver(from: initialState)
         self.reduce = reducer
         self.plugins = plugins
         self.explicitUndoPlugin = undoPlugin
         self.explicitPersistencePlugin = persistencePlugin
-        self.isUndoableAction = isUndoable
+    }
+
+    /// Creates a store, ignoring a separate platform-undo predicate.
+    ///
+    /// `isUndoable` once chose which actions registered with the platform
+    /// `UndoManager`, apart from which the undo plugin snapshotted. The two
+    /// stacks could then disagree: a step the Edit menu offered undid
+    /// whichever snapshot was newest, not the one it named. Registration now
+    /// follows the plugin's snapshots exactly, so `isUndoable` is ignored —
+    /// pass that predicate to `UndoPlugin(isUndoable:)` instead.
+    ///
+    /// - Parameters:
+    ///   - initialState: The state the observer tree is built from.
+    ///   - reducer: The app reducer.
+    ///   - plugins: The registered plugins, in execution order.
+    ///   - undoPlugin: The plugin ``undo()`` / ``redo()`` drive.
+    ///   - persistencePlugin: The plugin ``mutate(_:)`` and undo/redo drain through.
+    ///   - isUndoable: Ignored.
+    @available(
+        *, deprecated,
+        message: "Platform undo registration follows the UndoPlugin; pass the predicate to UndoPlugin(isUndoable:)."
+    )
+    public convenience init(
+        initialState: State,
+        reducer: @escaping (inout State, Action) -> Effect<Action>?,
+        plugins: PluginHost<State, Action> = PluginHost(),
+        undoPlugin: UndoPlugin<State, Action>? = nil,
+        persistencePlugin: PersistencePlugin<State, Action>? = nil,
+        isUndoable: @escaping @Sendable (Action) -> Bool
+    ) {
+        self.init(
+            initialState: initialState, reducer: reducer, plugins: plugins, undoPlugin: undoPlugin,
+            persistencePlugin: persistencePlugin)
     }
 
     // MARK: - @dynamicMemberLookup
@@ -296,10 +324,9 @@ public final class Store<State: SwiduxObservable, Action> {
 
         // One platform step per snapshot. A coalesced action shares the step
         // its run opened, and registering it anyway left the Edit menu and
-        // shake-to-undo offering steps that undid nothing. Without a narrowing
-        // `isUndoable`, the plugin's own predicate — which decided whether to
-        // snapshot — is the whole rule.
-        if let undoPlugin, undoPlugin.snapshotCount != snapshotsBefore, isUndoableAction?(action) ?? true {
+        // shake-to-undo offering steps that undid nothing. Only a snapshot
+        // registers, so the two stacks can't disagree about which step is next.
+        if let undoPlugin, undoPlugin.snapshotCount != snapshotsBefore {
             registerPlatformStep { $0.undo() }
         }
 

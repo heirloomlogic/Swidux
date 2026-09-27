@@ -49,7 +49,9 @@ return Store(
 )
 ```
 
-`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, updating `canUndo`/`canRedo`, and registering each undo step with the platform `UndoManager`. The `undoPlugin:`, `persistencePlugin:`, and `isUndoable:` initializer parameters still exist, for driving a plugin that isn't registered or narrowing what reaches the Edit menu, but the defaults follow the registered plugins.
+`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, updating `canUndo`/`canRedo`, and registering each undo step with the platform `UndoManager`. The `undoPlugin:` and `persistencePlugin:` initializer parameters still exist, for driving a plugin that isn't registered, but the defaults follow the registered plugins.
+
+The Edit menu offers exactly the steps the plugin snapshotted, in the same order, so the two can't disagree about which step is next. `Store`'s old `isUndoable:` parameter, which filtered platform registration separately, is deprecated and ignored: a filter narrower than the plugin's predicate made an Edit ▸ Undo step revert whichever snapshot was newest rather than the one it offered. Put the predicate on `UndoPlugin(isUndoable:)`.
 
 ### 3. Wire platform UI
 
