@@ -164,18 +164,21 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 
     /// Fires `onExposure` unless `value` is `nil` (the read rendered its
-    /// default) or is the value this flag's last exposure already reported.
-    /// Deduping on the value rather than the key means a reassignment —
-    /// sign-in switching the bucketing identity, a refresh changing the
-    /// rollout — is recorded instead of attributing the user to the first
-    /// treatment they saw.
+    /// default) or this flag already reported it this session: the first
+    /// exposure per (flag, value). Deduping on the value rather than the key
+    /// means a reassignment — sign-in switching the bucketing identity, a
+    /// refresh changing the rollout — is recorded instead of attributing the
+    /// user to the first treatment they saw; keeping every reported value,
+    /// not just the last, means views that alternate between values don't
+    /// re-record on each appearance.
     private func fireExposure(
         key: String,
         value: FlagValue?,
         in state: inout FeatureFlagsState
     ) -> Effect<RootAction>? {
-        guard let value, state.exposedValues[key] != value else { return nil }
-        state.exposedValues[key] = value
+        guard let value, state.exposedValues[key, default: []].insert(value).inserted else {
+            return nil
+        }
         let callback = self.onExposure
         return Effect { _ in
             callback?(key, value)

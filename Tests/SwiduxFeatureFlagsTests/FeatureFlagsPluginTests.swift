@@ -481,6 +481,43 @@ struct FeatureFlagsPluginTests {
         #expect(log.all.map(\.value) == [.bool(false), .bool(true)])
     }
 
+    @Test("alternating identities record each rendered value once per session")
+    func alternatingIdentitiesRecordEachValueOnce() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(version: 1, flags: ["k": .boolean(rollout: 50)])
+        let account = idOnOtherSide(of: "device-1", key: "k")
+        plugin.afterReduce(state: &state, action: .unrelated)
+
+        // One view buckets by account, another by the default identity; both
+        // re-appear several times in a session.
+        for _ in 0..<3 {
+            try await record(.recordExposure(of: BoolFlag("k"), bucketingID: account), with: plugin, in: &state)
+            try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+        }
+
+        #expect(log.all.count == 2, "recorded \(log.all.map(\.value))")
+        #expect(Set(log.all.map(\.value)) == [.bool(true), .bool(false)])
+    }
+
+    @Test("toggling a QA override back and forth records each value once")
+    func toggledOverrideRecordsEachValueOnce() async throws {
+        let log = ExposureLog()
+        let plugin = exposurePlugin(log)
+        var state = TestState()
+        state.featureFlags.config = FeatureFlagsConfig(version: 1, flags: ["k": .boolean(rollout: 0)])
+
+        for _ in 0..<3 {
+            _ = plugin.reduce(state: &state, action: .featureFlags(.setLocalOverride(key: "k", value: .bool(true))))
+            try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+            _ = plugin.reduce(state: &state, action: .featureFlags(.clearLocalOverride(key: "k")))
+            try await record(.recordExposure(of: BoolFlag("k")), with: plugin, in: &state)
+        }
+
+        #expect(log.all.map(\.value) == [.bool(true), .bool(false)])
+    }
+
     @available(*, deprecated, message: "Exercises the deprecated key-only exposure.")
     @Test("the deprecated key-only exposure shares the value dedupe")
     func keyOnlyExposureSharesDedupe() async throws {

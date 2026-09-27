@@ -10,7 +10,7 @@ import Foundation
 /// Closed enum so the wire format and evaluation paths can never produce a
 /// runtime `Any`. Constructed by decoding the JSON wire format or supplied
 /// programmatically as a local override.
-public enum FlagValue: Sendable, Equatable, Codable {
+public enum FlagValue: Sendable, Hashable, Codable {
     case bool(Bool)
     case int(Int)
     case double(Double)
