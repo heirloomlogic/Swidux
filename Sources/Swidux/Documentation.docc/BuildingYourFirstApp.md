@@ -270,15 +270,13 @@ extension Store where State == AppState, Action == AppAction {
             reducer: { state, action in
                 reducer.reduce(state: &state, action: action, environment: environment)
             },
-            plugins: plugins,
-            undoPlugin: undoPlugin,
-            isUndoable: isUndoable
+            plugins: plugins
         )
     }
 }
 ```
 
-Registering `persistencePlugin` on `plugins` is enough — `Store` finds it there for `store.mutate { … }` and undo/redo, so it doesn't need to be named again as `persistencePlugin:`. `undoPlugin`/`isUndoable` still need their own parameters: only persistence auto-discovers.
+Registering the plugins on `plugins` is all the wiring they need. `Store` finds the `PersistencePlugin` there for `store.mutate { … }` and undo/redo, and the `UndoPlugin` for `store.undo()`/`redo()` and the platform `UndoManager`, whose undo steps follow the plugin's own `isUndoable`. The `undoPlugin:`, `persistencePlugin:`, and `isUndoable:` parameters still exist for a plugin you deliberately didn't register, or to narrow what reaches the Edit menu.
 
 ## Step 8: Build the views
 

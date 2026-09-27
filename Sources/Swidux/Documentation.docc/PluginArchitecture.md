@@ -23,11 +23,11 @@ A fifth method, `flush()`, runs once at shutdown to drain async buffers.
 
 All four hooks have default no-op implementations. Each plugin overrides only what it needs.
 
-## Core Middleware vs Domain Plugins
+## Core Plugins vs Domain Plugins
 
 The plugin system serves two structurally different roles. Recognizing which one a plugin fills determines where it lives, which hooks it uses, and how it couples to the host app.
 
-### Core Middleware
+### Core Plugins
 
 ``PersistencePlugin`` and ``UndoPlugin`` are **action-agnostic infrastructure**. They never inspect the `Action` type, never dispatch actions, and never return effects. They couple only to the shape of state:
 
@@ -71,10 +71,10 @@ The fix is to add `import Swidux<Plugin>` to that file.
 
 ### Comparison
 
-| | Core Middleware | Domain Plugins |
+| | Core Plugins | Domain Plugins |
 |---|---|---|
 | **Action knowledge** | None | Full — extracts and lifts actions |
-| **Lifecycle hooks** | `willReduce` or `afterReduce` | `reduce` only |
+| **Lifecycle hooks** | `willReduce` or `afterReduce` | `reduce`, plus `afterReduce` to react to every dispatch |
 | **Returns effects** | No | Yes |
 | **State coupling** | Keypath to ``EntityStore`` or `Equatable` constraint | Keypath to plugin's own state slice |
 | **Wiring** | Construction only | Keypath + action lifter + action extractor |
@@ -83,7 +83,7 @@ The fix is to add `import Swidux<Plugin>` to that file.
 
 ## The Decision Rule
 
-> Important: Does the middleware need to know your action type? If **no**, it's core middleware — put it in `Swidux` and use `willReduce` or `afterReduce`. If **yes**, it's a domain plugin — give it its own target and use `reduce`.
+> Important: Does the plugin need to know your action type? If **no**, it's a core plugin — put it in `Swidux` and use `willReduce` or `afterReduce`. If **yes**, it's a domain plugin — give it its own target and handle its own actions in `reduce`. A domain plugin that must also react to every dispatch, as `AnalyticsPlugin` and `FeatureFlagsPlugin` do, adds `afterReduce`.
 
 ## Hook Selection Guide
 
@@ -104,7 +104,7 @@ plugins.register(killswitchPlugin)   // 3. Domain plugins in any order
 plugins.register(paywallPlugin)
 ```
 
-Undo must come first — it snapshots state in `willReduce`, before the app reducer or any plugin modifies it. Persistence typically comes next so its `afterReduce` drain sees the final state. Domain plugins use only `reduce`, so their relative order rarely matters.
+Undo must come first — it snapshots state in `willReduce`, before the app reducer or any plugin modifies it. Persistence typically comes next so its `afterReduce` drain sees the final state. Domain plugins handle their own actions in `reduce`, so their relative order rarely matters.
 
 ## Service-Result Actions and Transition Observation
 
@@ -133,5 +133,5 @@ observers without any extra reducer logic.
 ## Next Steps
 
 - <doc:BuildingADomainPlugin> — Step-by-step guide to creating a domain plugin
-- <doc:PersistenceMiddlewareGuide> — Configure the built-in persistence middleware
-- <doc:UndoRedo> — Add undo/redo with the built-in undo middleware
+- <doc:PersistenceMiddlewareGuide> — Configure the built-in persistence plugin
+- <doc:UndoRedo> — Add undo/redo with the built-in undo plugin

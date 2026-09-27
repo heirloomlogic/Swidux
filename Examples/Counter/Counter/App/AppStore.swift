@@ -87,9 +87,7 @@ extension Store where State == AppState, Action == AppAction {
             reducer: { state, action in
                 reducer.reduce(state: &state, action: action, environment: environment)
             },
-            plugins: plugins,
-            undoPlugin: undoPlugin,
-            isUndoable: isUndoable
+            plugins: plugins
         )
     }
 }

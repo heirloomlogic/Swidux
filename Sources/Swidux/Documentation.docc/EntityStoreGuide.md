@@ -20,7 +20,7 @@ cards.sort { $0.sortIndex < $1.sortIndex } // Only marks moved entities
 cards.removeAll { $0.isArchived }          // Rebuilds index in one pass
 ```
 
-Every mutation is tracked in a ``ChangeSet`` that the middleware drains after each reducer call.
+Every mutation is tracked in a ``ChangeSet`` that the persistence plugin drains after each reducer call.
 
 ## Identity Is Stable
 

@@ -44,10 +44,10 @@ Everything that hangs off the dispatch cycle is a ``SwiduxPlugin``. Persistence,
 
 Two structural patterns:
 
-- **Core middleware** (``PersistencePlugin``, ``UndoPlugin``) — action-agnostic. Doesn't know your action type. Couples only to state shape (`Equatable` for undo; ``EntityStore`` keypaths for persistence).
+- **Core plugins** (``PersistencePlugin``, ``UndoPlugin``) — action-agnostic. Doesn't know your action type. Couples only to state shape (`Equatable` for undo; ``EntityStore`` keypaths for persistence).
 - **Domain plugins** (`KillswitchPlugin`, `ParentalGatePlugin`, `PaywallPlugin`, your own) — owns a state slice and an action enum. Wires into your root types via keypath + action lifter + extractor.
 
-The decision rule: *does this need to know your action type?* If no, write core middleware and use `willReduce` or `afterReduce`. If yes, write a domain plugin and use `reduce`.
+The decision rule: *does this need to know your action type?* If no, write a core plugin and use `willReduce` or `afterReduce`. If yes, write a domain plugin and use `reduce`.
 
 ## 7. Bind to the store, not to `@State`
 
