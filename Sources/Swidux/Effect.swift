@@ -76,6 +76,7 @@ public struct Effect<Action>: Sendable {
                 try Task.checkCancellation()
                 if declaredScope != nil {
                     // The store's task for this effect is the scope's unit of work.
+                    defer { scope.cancellation.finish() }
                     try await operation(scope.cancellation.guarding(send))
                 } else {
                     try await runInChildTask(scope, token: token, context: context, send: send)
@@ -103,8 +104,12 @@ public struct Effect<Action>: Sendable {
         let guardedSend = scope.cancellation.guarding(send)
         // An unstructured task inherits task-locals, so scopes nested in this
         // one see `nested` and spare this scope from `cancelInFlight`.
+        let cancellation = scope.cancellation
         let child = EffectContext.$current.withValue(nested) {
-            Task { try await operation(guardedSend) }
+            Task {
+                defer { cancellation.finish() }
+                try await operation(guardedSend)
+            }
         }
         scope.cancellation.attach(child)
         try await withTaskCancellationHandler {

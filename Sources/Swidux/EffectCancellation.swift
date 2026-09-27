@@ -66,6 +66,7 @@ struct ActiveScope: Sendable {
 final class ScopeCancellation: Sendable {
     private struct State {
         var isCancelled = false
+        var isFinished = false
         var cancelWork: (@Sendable () -> Void)?
     }
 
@@ -83,11 +84,20 @@ final class ScopeCancellation: Sendable {
         if cancelled { task.cancel() }
     }
 
-    /// Cancels the scope's work. Returns `false` if it was already cancelled.
+    /// Records that the scope's operation has returned or thrown, on the
+    /// scope's own task, at once. The registry forgets the scope a main-actor
+    /// hop later; a cancellation landing in between has nothing left to
+    /// cancel, and must not report that it did.
+    func finish() {
+        state.withLock { $0.isFinished = true }
+    }
+
+    /// Cancels the scope's work. Returns `false` if it was already cancelled,
+    /// or had already finished.
     @discardableResult
     func cancel() -> Bool {
         let work = state.withLock { state -> (@Sendable () -> Void)?? in
-            guard !state.isCancelled else { return nil }
+            guard !state.isCancelled, !state.isFinished else { return nil }
             state.isCancelled = true
             return .some(state.cancelWork)
         }
