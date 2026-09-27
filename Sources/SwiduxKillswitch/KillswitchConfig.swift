@@ -43,4 +43,16 @@ public struct KillswitchConfig: Codable, Sendable, Equatable {
         self.blockedMessage = blockedMessage
         self.updateURL = updateURL
     }
+
+    /// Every version rule that fails strict parsing, as `field "value"`.
+    ///
+    /// Such a rule never matches, so it fails open. Evaluation logs each one;
+    /// internal so a test can assert what is reported without scraping the
+    /// unified log.
+    var malformedRules: [String] {
+        let minimum = minimumSupportedVersion.map { [$0] } ?? []
+        return minimum.filter { SemanticVersion($0) == nil }.map { #"minimumSupportedVersion "\#($0)""# }
+            + (blockedVersions ?? []).filter { SemanticVersion($0) == nil }.map { #"blockedVersions "\#($0)""# }
+            + (blockedRanges ?? []).filter { VersionRange($0) == nil }.map { #"blockedRanges "\#($0)""# }
+    }
 }

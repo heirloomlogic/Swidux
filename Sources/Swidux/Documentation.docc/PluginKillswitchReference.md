@@ -237,6 +237,8 @@ The combination of `.forceFetch`'s cached-fallback behavior and `.fetch`'s cache
 
 A blocked verdict carries the config's `blockedTitle`, `blockedMessage`, and `updateURL` (parsed via `URL(string:)`) regardless of which check matched.
 
+Config-side versions parse strictly: `"2.0"`, `"v2.0.0"`, and `" 2.0.0"` (stray whitespace from a dashboard paste) are all rejected, as are ranges with spaces around `..<` or a lower bound that isn't below the upper. A rejected rule never matches, so it fails open. Every evaluation logs each rejected rule at error level to the `swidux` subsystem, `killswitch` category, with the offending string public — check Console after publishing an incident config, because the endpoint will happily serve a rule no client can apply.
+
 ## Remote config JSON shape
 
 `KillswitchConfig` derives its `Codable` conformance from synthesized keys, so the JSON keys match the property names. A representative file:

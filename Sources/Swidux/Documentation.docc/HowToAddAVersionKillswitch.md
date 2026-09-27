@@ -215,6 +215,8 @@ The endpoint you pass to `KillswitchService.live(endpoint:fetchTimeout:cacheLife
 
 Range entries use the literal string `"a.b.c..<x.y.z"` — half-open, lower bound inclusive, upper bound exclusive.
 
+Every version in the config must be full `major.minor.patch` with no prefix or surrounding whitespace, even though the app's own marketing version may be `"2.0"`. A rule that doesn't parse is ignored — the app is *not* blocked — and logged at error level (`swidux` / `killswitch` in Console). Test an incident config against a device before you rely on it.
+
 **4. Allow everyone.** Sometimes you just want the killswitch live but quiet.
 
 ```json
