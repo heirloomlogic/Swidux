@@ -258,4 +258,11 @@ struct SwiduxMacroCompiledTests {
 
         #expect(FileScopedState(observer: store.observer).count == 2)
     }
+
+    @Test("A state declared in a file importing only Swidux works")
+    func swiduxOnlyImportState() {
+        let state = SwiduxOnlyImportState(count: 4)
+
+        #expect(SwiduxOnlyImportState(observer: SwiduxOnlyImportState.makeObserver(from: state)) == state)
+    }
 }
