@@ -47,7 +47,23 @@ public struct PersistedEntity<State> {
     /// tick re-reads everything and offers the change again. A caller driving off
     /// a history watermark cannot — for it, evidence is consumed once, so a
     /// deferral it doesn't carry forward becomes a permanent loss.
-    typealias MergeApply = @MainActor (inout State, MergeContext) -> Withheld
+    typealias MergeApply = @MainActor (inout State, MergeContext) -> MergeOutcome
+
+    /// What one entity's merge fold left behind.
+    struct MergeOutcome {
+        /// The rows it declined to act on. See ``MergeApply``.
+        var withheld = Withheld()
+
+        /// Whether memory still holds a row the snapshot lacks that nothing
+        /// local accounts for — an absence this read could not turn into a
+        /// verdict, because the empty-snapshot guard or the policy forbade
+        /// inferring deletion from it.
+        ///
+        /// Only a whole-table read can leave one. It matters to whoever anchors
+        /// the read: a watermark taken before it would step over the tombstone
+        /// that could still settle the question.
+        var leftAbsenceUndecided = false
+    }
 
     /// A fetched merge, plus whether the fetch actually happened.
     ///
@@ -343,11 +359,16 @@ public struct PersistedEntity<State> {
                         // zombie until relaunch. Recorded as a deletion so it
                         // also propagates to any peer that still holds it.
                         current.remove(ids: loaded.removedIDs)
+                        // Deletions the caller declared — owed from a tombstone
+                        // an earlier tick read — are evidence, not inference, and
+                        // the guard below does not apply to them.
+                        let declared =
+                            context.policy.removesMissingEntities ? context.deletedIDs : []
                         // An empty snapshot is indistinguishable from a store
                         // that is unreadable or mid-import, so refuse to read
                         // "everything was deleted" out of it — the same stance
                         // hydration takes on a failed fetch.
-                        let removes =
+                        let infers =
                             context.policy.removesMissingEntities
                             && !(incoming.isEmpty && !current.isEmpty)
                         // Every held ID is a candidate: a full merge can write or
@@ -355,16 +376,30 @@ public struct PersistedEntity<State> {
                         let resolved = resolvePreserved(
                             current: current, incoming: incoming,
                             candidates: current.values.lazy.map(\.id), unreadable: loaded.undecodable,
-                            context: context, observers: observers, absenceRemoves: { _ in removes })
-                        current.reconcile(
-                            with: incoming, preserving: resolved.preserved, removingMissing: removes)
+                            context: context, observers: observers,
+                            absenceRemoves: { infers || declared.contains($0) })
+                        if infers {
+                            current.reconcile(
+                                with: incoming, preserving: resolved.preserved, removingMissing: true)
+                        } else {
+                            current.reconcile(
+                                with: incoming, deleting: declared, preserving: resolved.preserved)
+                        }
+                        // Whatever is still here, absent from storage, and owned
+                        // by nothing local is a question this read declined.
+                        let undecided =
+                            !infers
+                            && current.values.contains {
+                                !incoming.contains($0.id) && !resolved.preserved.contains($0.id)
+                                    && !current.changes.upserts.contains($0.id)
+                            }
                         state[keyPath: keyPath] = current
-                        return resolved.withheld
+                        return MergeOutcome(withheld: resolved.withheld, leftAbsenceUndecided: undecided)
                     }
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return MergeRead(succeeded: false) { _, _ in Withheld() }
+                    return MergeRead(succeeded: false) { _, _ in MergeOutcome() }
                 }
             },
             readForPartialMerge: { handle, observers, ids in
@@ -397,12 +432,12 @@ public struct PersistedEntity<State> {
                         current.reconcile(
                             with: incoming, deleting: deleting, preserving: resolved.preserved)
                         state[keyPath: keyPath] = current
-                        return resolved.withheld
+                        return MergeOutcome(withheld: resolved.withheld)
                     }
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return MergeRead(succeeded: false) { _, _ in Withheld() }
+                    return MergeRead(succeeded: false) { _, _ in MergeOutcome() }
                 }
             },
             collapseOnDisk: { handle, observers in

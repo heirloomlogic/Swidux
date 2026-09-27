@@ -580,6 +580,111 @@ struct HistoryWatermarkTests {
             "the same window has to be re-offered, or a hold silently becomes a veto")
     }
 
+    // MARK: - Unanchored windows and the empty-snapshot guard
+
+    @Test("an owed deletion survives a fallback tick that finds the table empty")
+    func aFallbackKeepsAnOwedDeletion() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "the only one")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+        #expect(coordinator.handle.anchor.carryOver.deletions(for: "NoteModel") == [id], "the premise: a debt")
+
+        // The editor closes, and the next tick falls back. Its whole-table read
+        // is empty, so the empty-snapshot guard refuses to *infer* anything —
+        // but this deletion is not inferred, it is owed from a tombstone.
+        coordinator.editing.release(id)
+        coordinator.failNextHistoryScan = HistoryScanFailure.fetchFailed("transient")
+        await coordinator.mergeChanges(into: store)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "the hold vetoed the deletion instead of deferring it")
+
+        // What the veto costs: the user edits the row they can still see, which
+        // re-inserts it on disk.
+        if store.notes[id] != nil { store.send(.add(Note(id: id, title: "edited", pinned: false))) }
+        await coordinator.corePlugin.flush()
+        #expect(try await coordinator.fetchAll(of: Note.self, flushPending: false).isEmpty)
+    }
+
+    @Test("a transient fallback does not consume the tombstone of the last row")
+    func aFallbackKeepsTheLastRowsTombstone() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "the only one")
+
+        try await remoteWrite(coordinator, deletions: [id])
+        coordinator.failNextHistoryScan = HistoryScanFailure.fetchFailed("transient")
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "the premise: the guard refuses to read an empty table as deletion")
+
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "the fallback anchored past the tombstone that would have settled it")
+    }
+
+    @Test("the documented launch hydrate anchors, so the first tick can remove the last row")
+    func theLaunchHydrateAnchors() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "the only one", pinned: false)])
+
+        // The launch sequence the guides show: hydrate a plain value, then build
+        // the store from it.
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
+
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "an unanchored first tick falls back, and the guard keeps the row")
+    }
+
+    @Test("a re-hydration after a container rebuild anchors, so the first tick can remove the last row")
+    func anUnanchoredRehydrateAnchors() async throws {
+        let container = try makeNotesContainer()
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+        let id = UUID()
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "the only one", pinned: false)])
+        let store = makeNotesStore(coordinator)
+        await coordinator.hydrate(into: store)
+
+        // What a sync toggle does: rebuild over the same store file, which
+        // discards the anchor, then re-hydrate additively.
+        coordinator.handle.db = EntityDB(modelContainer: container)
+        await coordinator.rehydrate(into: store, policy: .preferRemoteAdditive)
+
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil)
+    }
+
+    @Test("an additive re-hydration that left an absence undecided does not anchor past it")
+    func anUndecidedRehydrateDoesNotAnchor() async throws {
+        let container = try makeNotesContainer()
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+        let (kept, gone) = (UUID(), UUID())
+        try await remoteWrite(
+            coordinator,
+            writes: [Note(id: kept, title: "kept", pinned: false), Note(id: gone, title: "gone", pinned: false)])
+        let store = makeNotesStore(coordinator)
+        await coordinator.hydrate(into: store)
+
+        // Deleted elsewhere just before the rebuild, and never merged. The
+        // additive read may not conclude anything from its absence — so it must
+        // not anchor past the tombstone either, or nothing ever will.
+        try await remoteWrite(coordinator, deletions: [gone])
+        coordinator.handle.db = EntityDB(modelContainer: container)
+        await coordinator.rehydrate(into: store, policy: .preferRemoteAdditive)
+        #expect(store.notes[gone] != nil, "the premise: an additive read removes nothing")
+
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[gone] == nil)
+        #expect(store.notes[kept] != nil)
+    }
+
     @Test("an edit withheld by an editing hold is applied once the hold lifts")
     func withheldEditIsReOfferedAfterTheHoldLifts() async throws {
         let coordinator = try makeNotesCoordinator(debounce: .seconds(30))

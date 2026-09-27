@@ -350,9 +350,24 @@ public final class PersistenceCoordinator<State, Action> {
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// (it does **not** become empty) and the failure is reported via `onFailure`.
+    ///
+    /// Anchors ``mergeChanges(into:policy:)`` at the history token current when
+    /// the read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
+    /// remote-change tick after launch reads only what changed since.
     public func hydrate(into state: inout State) async {
+        // Anchored before the read: a write landing while the fetches are in
+        // flight gets a later token, so the first tick still sees it. Without
+        // an anchor that first tick falls back to a whole-table read, where a
+        // deletion of the last row is exactly what the empty-snapshot guard
+        // refuses to conclude — and the fallback's own anchor steps past the
+        // tombstone that proves it.
+        let anchor = handle.anchor
+        let token = try? await handle.db.currentHistoryToken()
         let applies = await hydratePhase()
         for apply in applies { apply(&state) }
+        if let token {
+            handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
+        }
     }
 
     /// Runs every registered entity's hydration read in registration order,
@@ -384,7 +399,11 @@ public final class PersistenceCoordinator<State, Action> {
     /// callers have and others don't, and neither answer changes what a merge is
     /// allowed to conclude.
     fileprivate enum MergeScope {
-        case wholeTable
+        /// Read every row, inferring deletion from absence where the policy and
+        /// the empty-snapshot guard allow it. `declaring` is what is already
+        /// owed from earlier ticks: its deletions came from tombstones, so they
+        /// are applied as declared ones are, whatever the guard decides.
+        case wholeTable(declaring: AttributedIDs)
 
         /// Read only these IDs, each already attributed to the entity that owns
         /// it, and treat `deleted` as the only evidence of removal. An entity
@@ -413,7 +432,7 @@ public final class PersistenceCoordinator<State, Action> {
         /// The IDs `entityName` was told were deleted.
         func declaredDeletions(for entityName: String) -> Set<UUID> {
             switch self {
-            case .wholeTable: []
+            case .wholeTable(let owed): owed.deletions(for: entityName)
             case .attributed(let ids): ids.deletions(for: entityName)
             case .unattributed(_, let deleted): deleted
             }
@@ -468,7 +487,26 @@ public final class PersistenceCoordinator<State, Action> {
 
     /// One entity's bound merge. Returns what it declined to act on, already
     /// keyed by the entity name the next history scan will match on.
-    fileprivate typealias MergeFold = @MainActor (inout State, MergePolicy?) -> AttributedIDs
+    fileprivate typealias MergeFold =
+        @MainActor (inout State, MergePolicy?) -> (carryOver: AttributedIDs, leftAbsenceUndecided: Bool)
+
+    /// What a whole-table merge does with its anchor when a fold left an
+    /// absence undecided — a row memory holds and storage lacks, kept because
+    /// nothing was allowed to conclude it was deleted.
+    ///
+    /// A token taken before that read lies after any tombstone that could still
+    /// settle the question, so installing it spends the evidence unread.
+    fileprivate enum UndecidedAbsence {
+        /// Anchor anyway: there is nothing better to stand on.
+        case anchor
+
+        /// Record the debt, but leave the existing watermark where it is, so the
+        /// next narrow tick rescans the window and finds the tombstone.
+        case keepWatermark
+
+        /// Record nothing, so the next tick falls back to a read that may infer.
+        case skip
+    }
 
     /// A merge phase's folds, plus what the phase can promise about them.
     ///
@@ -525,13 +563,13 @@ public final class PersistenceCoordinator<State, Action> {
             var resolved = mergePolicy
             if let entityPolicy { resolved = resolved.restricted(by: entityPolicy) }
             if let override { resolved = resolved.restricted(by: override) }
-            let withheld = merge(
+            let outcome = merge(
                 &state,
                 MergeContext(
                     policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held))
             var carryOver = AttributedIDs()
-            carryOver.record(withheld, for: entityName)
-            return carryOver
+            carryOver.record(outcome.withheld, for: entityName)
+            return (carryOver, outcome.leftAbsenceUndecided)
         }
     }
 
@@ -606,8 +644,10 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     ///
     /// The narrow path is an optimisation, never a weakening: anything that
     /// leaves a window unaccounted for falls back to the full read, and the
-    /// fallback keeps its empty-snapshot guard. It happens on the first tick
-    /// after launch or a container rebuild, when the watermark has expired or the
+    /// fallback keeps its empty-snapshot guard — which stops it *inferring* a
+    /// deletion from an empty table, never applying one a tombstone already
+    /// proved. It happens on a tick with no watermark (hydration and a
+    /// re-hydration after a container rebuild both leave one), when the watermark has expired or the
     /// history fetch fails, when a deletion's tombstone carries no identity
     /// (every row deleted before `@Attribute(.preserveValueOnDeletion)` shipped),
     /// when a changed row can't be resolved, when another writer changed a
@@ -656,7 +696,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             scan = try await scanHistory(since: watermark)
         } catch {
             try check(attempt)
-            try await rehydrateAnchoring(into: store, policy: policy, attempt: attempt, reason: error)
+            try await rehydrateAnchoring(
+                into: store, policy: policy, attempt: attempt, anchor: anchor, reason: error)
             return
         }
         try check(attempt)
@@ -702,6 +743,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         into store: Store<State, Action>,
         policy: MergePolicy?,
         attempt: MergeAttempt,
+        anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int),
         reason: any Error
     ) async throws(MergeConflict) {
         observers.report(.historyUnavailable(reason: "\(reason)"))
@@ -718,9 +760,36 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // declaration. That is the outcome this read would have reached had
         // nothing been held, and under ``MergePolicy/preferRemoteAdditive`` it
         // cannot arise at all.
+        //
+        // What is already owed is re-offered first, deletions by declaration:
+        // the debt this records replaces the old one, and an owed deletion the
+        // empty-snapshot guard kept from being inferred would otherwise vanish.
+        //
+        // If the read still left an absence undecided, the existing watermark
+        // is worth keeping when a rescan could succeed — the window behind it
+        // may hold the tombstone that settles it. A scan that failed for a
+        // reason that will recur gains nothing from a rescan but another
+        // fallback, so that case anchors anyway.
+        let rescanCouldSucceed = anchor.token != nil && Self.isTransient(reason)
         try await merge(
-            .wholeTable, into: store, policy: policy, attempt: attempt,
-            recordAnchor: token != nil, watermark: token)
+            .wholeTable(declaring: anchor.carryOver), into: store, policy: policy, attempt: attempt,
+            recordAnchor: token != nil, watermark: token,
+            ifAbsenceUndecided: rescanCouldSucceed ? .keepWatermark : .anchor)
+    }
+
+    /// Whether a scan that failed with `reason` might succeed if retried over
+    /// the same window.
+    ///
+    /// Every ``HistoryScanFailure`` but a failed fetch describes the window or
+    /// the store, and rescanning meets it again. An error the scan did not
+    /// classify is treated as transient.
+    private static func isTransient(_ reason: any Error) -> Bool {
+        switch reason {
+        case HistoryScanFailure.fetchFailed: true
+        case is HistoryScanFailure: false
+        case SwiftDataError.historyTokenExpired: false
+        default: true
+        }
     }
 
     /// Resolves the window since `watermark`, honouring the test seam.
@@ -785,17 +854,29 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     ///     ``MergePolicy/preferRemoteAdditive`` after a container rebuild,
     ///     where a row's absence says nothing about whether it was deleted.
     public func rehydrate(into store: Store<State, Action>, policy: MergePolicy? = nil) async {
-        // The carry-over is discarded on purpose: this path re-reads every row
-        // next time it runs, so a row it defers is re-offered without anyone
-        // having to remember it. Only a caller that consumes evidence once
-        // needs the bookkeeping.
+        // Where a watermark already exists, the carry-over is discarded on
+        // purpose: this path re-reads every row next time it runs, so a row it
+        // defers is re-offered without anyone having to remember it.
         //
         // Dropping it cannot leave a debt *wrong*, either. A whole-table read
         // offers everything, so anything still owed afterwards was already owed;
         // the most a stale entry costs is one by-ID read on a later tick, which
         // then finds nothing withheld and clears it.
+        //
+        // Where none exists — the re-hydration after a container rebuild, which
+        // discards the anchor — this read is the one to anchor on, with a token
+        // taken before it. Otherwise the next tick falls back to a whole-table
+        // read of its own, anchored *after* whatever a peer deleted meanwhile,
+        // and the empty-snapshot guard keeps a deleted last row in memory for
+        // good. Unless this read left an absence undecided: then the fallback
+        // is the read that may still decide it, and anchoring here would pass
+        // over the tombstone.
         await retryingMerge { attempt throws(MergeConflict) in
-            try await self.merge(.wholeTable, into: store, policy: policy, attempt: attempt)
+            let anchor = self.handle.anchor
+            let token = anchor.token == nil ? try? await self.handle.db.currentHistoryToken() : nil
+            try await self.merge(
+                .wholeTable(declaring: anchor.carryOver), into: store, policy: policy, attempt: attempt,
+                recordAnchor: token != nil, watermark: token, ifAbsenceUndecided: .skip)
         }
     }
 
@@ -822,7 +903,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         policy: MergePolicy?,
         attempt: MergeAttempt,
         recordAnchor: Bool = false,
-        watermark: DefaultHistoryToken? = nil
+        watermark: DefaultHistoryToken? = nil,
+        ifAbsenceUndecided: UndecidedAbsence = .anchor
     ) async throws(MergeConflict) -> Bool {
         try check(attempt)
         await corePlugin.flush()
@@ -836,8 +918,13 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         let phase = await mergePhase(scope, flushes: flushes)
         try check(attempt)
         var carryOver = AttributedIDs()
+        var leftAbsenceUndecided = false
         store.mutate { state in
-            for fold in phase.folds { carryOver.formUnion(fold(&state, policy)) }
+            for fold in phase.folds {
+                let outcome = fold(&state, policy)
+                carryOver.formUnion(outcome.carryOver)
+                leftAbsenceUndecided = leftAbsenceUndecided || outcome.leftAbsenceUndecided
+            }
         }
         mergeRevision &+= 1
         if recordAnchor, phase.allReadsSucceeded {
@@ -848,6 +935,13 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             var advancingToken = watermark
             if let watermark, let currentToken, watermark <= currentToken {
                 advancingToken = nil
+            }
+            if leftAbsenceUndecided {
+                switch ifAbsenceUndecided {
+                case .anchor: break
+                case .keepWatermark: advancingToken = nil
+                case .skip: return phase.allReadsSucceeded
+                }
             }
             handle.installAnchor(
                 watermark: advancingToken, carryOver: carryOver, ifGeneration: attempt.generation)
