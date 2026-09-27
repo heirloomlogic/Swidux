@@ -133,16 +133,43 @@ struct KillswitchPluginTests {
             var state = TestState()
             state.killswitch.lastFetch = Date()
 
+            let staleFetch = try #require(state.killswitch.lastFetch)
             let effect = plugin.reduce(
                 state: &state, action: .killswitch(.fetch)
             )
-            let actions = try await collectActions(from: effect)
-            #expect(actions.count == 1)
-            if case .verdictReceived(.allowed, fromNetwork: false) = actions.first {
-            } else {
-                Issue.record("Expected cache-served verdictReceived(.allowed), got \(actions)")
-            }
+            // Applied in the reducer, not by a later action: nothing can land
+            // in between and be overwritten by this older answer.
+            #expect(effect == nil)
+            #expect(state.killswitch.verdict == .allowed)
+            #expect(state.killswitch.lastFetch == staleFetch)
         }
+    }
+
+    @Test("a cache read inside the freshness window can't land after a newer network verdict")
+    func freshCacheReadCannotOverwriteNewerNetworkVerdict() async throws {
+        let service = KillswitchService(
+            fetch: { KillswitchConfig(minimumSupportedVersion: "2.0.0") },
+            loadCached: { KillswitchConfig() },  // the older config on disk
+            saveCached: { _ in },
+            cacheLifetime: 3_600
+        )
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        state.killswitch.verdict = .allowed
+        state.killswitch.lastFetch = Date()
+
+        // `.fetch` inside the window, then a `.forceFetch` whose network
+        // answer lands first.
+        let cacheRead = plugin.reduce(state: &state, action: .killswitch(.fetch))
+        let network = plugin.reduce(state: &state, action: .killswitch(.forceFetch))
+        for action in try await collectActions(from: network) {
+            _ = plugin.reduce(state: &state, action: .killswitch(action))
+        }
+        for action in try await collectActions(from: cacheRead) {
+            _ = plugin.reduce(state: &state, action: .killswitch(action))
+        }
+
+        #expect(state.killswitch.isBlocked, "the older cached verdict overwrote the newer network one")
     }
 
     @Test("fetch hits network when cache expired")
@@ -454,18 +481,19 @@ struct KillswitchPluginTests {
         #expect(plugin.reduce(state: &state, action: .killswitch(.fetch)) != nil)
     }
 
-    @Test("a fresh window with no cache on disk re-dispatches as a network fetch")
+    @Test("a fresh window with no cache on disk goes to the network, under the guard")
     func freshWindowWithoutCacheGoesToNetwork() async throws {
         let plugin = makePlugin(service: .mock(cached: nil, cacheLifetime: 3600))
         var state = TestState()
         state.killswitch.lastFetch = Date()
 
-        let actions = try await collectActions(
-            from: plugin.reduce(state: &state, action: .killswitch(.fetch)))
+        let effect = plugin.reduce(state: &state, action: .killswitch(.fetch))
+        #expect(state.killswitch.isFetching)
 
-        if case .forceFetch = actions.first, actions.count == 1 {
+        let actions = try await collectActions(from: effect)
+        if case .verdictReceived(.allowed, fromNetwork: true) = actions.first, actions.count == 1 {
         } else {
-            Issue.record("Expected a single .forceFetch, got \(actions)")
+            Issue.record("Expected a single network verdict, got \(actions)")
         }
     }
 

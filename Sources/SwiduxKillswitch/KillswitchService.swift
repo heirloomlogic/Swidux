@@ -33,7 +33,9 @@ public struct KillswitchService: Sendable {
     ///
     /// - Parameters:
     ///   - fetch: Fetches the latest config.
-    ///   - loadCached: Loads the last persisted config, or `nil`.
+    ///   - loadCached: Loads the last persisted config, or `nil`. Called
+    ///     synchronously on the main actor for a `.fetch` inside the
+    ///     freshness window, so keep it to a small local read.
     ///   - saveCached: Persists a config.
     ///   - cacheLifetime: How long a cached config is considered fresh, in
     ///     seconds.

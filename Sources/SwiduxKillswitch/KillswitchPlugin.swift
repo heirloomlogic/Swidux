@@ -96,24 +96,22 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             // last fetch; treat the cache as expired rather than letting a
             // clock change pin this install to a stale verdict.
             let cacheAge = state.lastFetch.map { Date().timeIntervalSince($0) }
-            guard let cacheAge, cacheAge >= 0, cacheAge < self.service.cacheLifetime else {
+            // Expired, or fresh with nothing on disk (the write failed): go to
+            // the network.
+            guard let cacheAge, cacheAge >= 0, cacheAge < service.cacheLifetime,
+                let cached = service.loadCached()
+            else {
                 return startNetworkFetch(state: &state)
             }
-            let service = self.service
-            let appVersion = self.appVersion()
-            return Effect { send in
-                guard let cached = service.loadCached() else {
-                    // Fresh, but nothing on disk (the write failed). Take the
-                    // network path through the reducer, so the in-flight
-                    // guard sees it.
-                    await send(.forceFetch)
-                    return
-                }
-                let verdict = KillswitchVerdict.evaluate(
-                    cached, against: appVersion
-                )
-                await send(.verdictReceived(verdict, fromNetwork: false))
-            }
+            // Read and applied here rather than by an effect's later action.
+            // A read in flight isn't covered by the in-flight guard, so a
+            // `.forceFetch` dispatched just after could land its newer network
+            // verdict first and then be overwritten by this older one. The
+            // read is one small local file. A cache-served verdict leaves
+            // `lastFetch` alone, as `.verdictReceived(_, fromNetwork: false)`
+            // does.
+            state.verdict = KillswitchVerdict.evaluate(cached, against: appVersion())
+            state.fetchError = nil
 
         case .forceFetch:
             guard !state.isFetching else { return nil }
