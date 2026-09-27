@@ -15,9 +15,11 @@
 // Onboarding a new app = adding its KV keys in the dashboard. No redeploy, no
 // new Worker, no new URL. See README.md / DEPLOY.md.
 
-// Segment grammar: lowercase slug. Rejecting anything else keeps the KV key
-// space exactly `<slug>/<slug>` — no traversal, no injection, no surprise reads.
-const SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
+// Route grammar: exactly `/<slug>/<slug>`, lowercase, each segment ≤ 64 chars.
+// One anchored regex keeps the KV key space exactly `<slug>/<slug>` — no
+// traversal, no injection, no `//`/trailing-slash aliases, and no key long
+// enough to trip KV's 512-byte key limit (an oversized `get()` key throws).
+const ROUTE = /^\/([a-z0-9][a-z0-9-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})$/;
 
 // Type-aware fail-open defaults for a key that isn't seeded yet. `{}` decodes
 // to an allow-everyone KillswitchConfig; the flags default decodes to a valid
@@ -61,17 +63,31 @@ export default {
     }
 
     // Expect exactly `/<appID>/<resource>`.
-    const parts = path.split("/").filter((s) => s.length > 0);
-    if (
-      parts.length !== 2 ||
-      !SEGMENT.test(parts[0]) ||
-      !SEGMENT.test(parts[1])
-    ) {
+    const match = ROUTE.exec(path);
+    if (!match) {
       return new Response("Not Found", { status: 404 });
     }
+    const [, appID, resource] = match;
 
-    const [appID, resource] = parts;
-    const stored = await env.CONFIG.get(`${appID}/${resource}`);
+    // A KV read failure is not "unseeded" — serving the type-aware default
+    // here would be indistinguishable from an intentional "no rules yet",
+    // which would lift an active killswitch block or wipe every client's
+    // cached feature flags for the KV outage's duration (both plugins treat
+    // a 200 response as authoritative and overwrite their disk cache with
+    // it). Fail closed instead: 503 + no-store tells the client "this
+    // answer isn't authoritative, don't cache it, try again" — clients that
+    // already hold a cached verdict/config keep it rather than treating an
+    // empty response as the truth.
+    let stored;
+    try {
+      stored = await env.CONFIG.get(`${appID}/${resource}`);
+    } catch {
+      return new Response("Service Unavailable", {
+        status: 503,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
     const body = stored ?? DEFAULTS[resource] ?? FALLBACK;
 
     return new Response(body, {
