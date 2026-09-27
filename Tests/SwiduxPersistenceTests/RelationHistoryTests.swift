@@ -330,4 +330,26 @@ struct RelationHistoryTests {
 
         #expect(store.books[book.id]?.chapters.map(\.heading) == ["keep"])
     }
+
+    @Test("a child-only write through the public database is not mistaken for the store's own")
+    func aPublicDatabaseWriteIsForeign() async throws {
+        let (coordinator, store, _) = try makeShelf()
+        var book = Book(id: UUID(), title: "t", chapters: [Chapter(id: UUID(), heading: "one")])
+        store.send(.put(book))
+        await coordinator.corePlugin.flush()
+        await coordinator.mergeChanges(into: store)  // anchor
+
+        // Tooling, an App Intent, an import: code writing through the same
+        // EntityDB the store flushes through, but not from the store's state.
+        book.chapters[0].heading = "renamed by tooling"
+        try await coordinator.database.upsert(book, as: BookModel.self)
+        await coordinator.mergeChanges(into: store)
+        #expect(store.books[book.id] == book, "a write to storage never reached memory")
+
+        // Or memory's stale child is written back by the next parent save.
+        store.send(.setTitle(book.id, "retitled"))
+        await coordinator.corePlugin.flush()
+        let disk = try await coordinator.fetchAll(of: Book.self, flushPending: false)
+        #expect(disk.first?.chapters.first?.heading == "renamed by tooling")
+    }
 }

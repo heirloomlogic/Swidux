@@ -325,7 +325,7 @@ public struct PersistedEntity<State> {
                     do {
                         // One transaction per batch: a crash can't persist a
                         // partial flush, and a failure is reported, not eaten.
-                        try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
+                        try await handle.db.applyFlush(writes: writes, deletions: deletions, as: E.Model.self)
                         await record { $0.markPersisted(touched) }
                     } catch {
                         // A batch that failed only in part saved everything
