@@ -68,7 +68,7 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 
     @Inline var styling: TextStyling = TextStyling()  // one opaque JSON Data column
     @ForeignKey var deckID: UUID                      // scalar parent reference
-    @Relation(deleteRule: .cascade, inverse: \TagModel.card)
+    @Relation(deleteRule: .cascade)
     var tags: [Tag]                                   // SwiftData relationship
     @Ignored var renderedPreview: String?             // derived; omitted from the model
 }
@@ -79,7 +79,7 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 | *(none)* | Mirror the property directly (SwiftData persists scalars and `Codable` composites). |
 | `@Inline` | Force a `Codable` value into a single JSON `Data` column (keeps a CloudKit record compact; sidesteps SwiftData `Codable`-attribute edge cases). |
 | `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar column. |
-| `@Relation(deleteRule:inverse:)` | A SwiftData relationship to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow. `inverse` is a key path on the generated model, e.g. `\TagModel.card`. `deleteRule` is a `SwiduxDeleteRule` (`.cascade`, `.nullify`, `.noAction`, `.deny`). |
+| `@Relation(deleteRule:)` | A SwiftData relationship to another `@Persisted` entity, owned by this one. The property's type references the *domain* type (`[Tag]` / `Tag?`); the model substitutes the `…Model` shadow. `deleteRule` is a `SwiduxDeleteRule` (`.cascade`, `.nullify`, `.noAction`, `.deny`). There is no `inverse:`: bidirectional relations are unsupported. A to-many relation is unordered, so sort in the domain when order matters. |
 | `@Ignored` | Exclude a derived/denormalized property. Must be optional so it can be reconstructed as `nil` on load. |
 
 > Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints — so the same generated model works for both local and synced containers. The cost is that rows sharing an `id` are possible. `EntityDB` handles them by converging rather than by assuming uniqueness: writes update every matching row, deletions remove every matching row, and `fetchAll` collapses to one value per `id`. Nothing deletes a duplicate as a side effect of a write.

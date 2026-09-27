@@ -11,7 +11,7 @@ enum PersistedPropertyKind {
     case inlineBlob
     /// `@Relation`: a SwiftData relationship to another `@Persisted` entity's
     /// generated model. `elementBaseName` is the related domain type's name.
-    case relation(deleteRule: String?, inverse: String?, cardinality: RelationCardinality, elementBaseName: String)
+    case relation(deleteRule: String?, cardinality: RelationCardinality, elementBaseName: String)
     /// `@Ignored`: a derived/denormalized field with no column. Must be optional
     /// (or otherwise defaultable) so `toDomain()` can reconstruct it as `nil`.
     case ignored
@@ -31,7 +31,21 @@ struct PersistedProperty {
     /// The default-value expression the user wrote on the domain property
     /// (`var x: T = <expr>`), if any. Propagated onto the generated model so
     /// non-optional attributes are CloudKit-safe.
-    let defaultExpr: String?
+    let defaultValue: ExprSyntax?
+    /// The property's binding, where property-level diagnostics are anchored.
+    let binding: PatternBindingSyntax
+    /// The `@Relation` attribute's `inverse:` argument, if one was written.
+    /// Always diagnosed: see `SwiduxDiagnostic.relationInverseUnsupported`.
+    let relationInverse: LabeledExprSyntax?
+    /// Whether a `@Relation`'s declared type has a shape the generator can
+    /// map: `[T]`, `T?` or `T`, with `T` naming a type directly.
+    let hasSupportedRelationShape: Bool
+    /// The access level the property spells, if any; the generated model never
+    /// republishes it wider. See `memberAccessPrefix`.
+    let accessLevel: AccessLevel?
+
+    /// `defaultValue` as source text, the form the generator emits.
+    var defaultExpr: String? { defaultValue?.trimmedDescription }
 
     /// Whether this is the entity's identity column.
     ///
@@ -49,46 +63,97 @@ struct PersistedProperty {
 func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedProperty] {
     structDecl.memberBlock.members.compactMap { member -> PersistedProperty? in
         guard let varDecl = member.decl.as(VariableDeclSyntax.self) else { return nil }
-        // Accept both `var` and `let` stored properties; skip computed ones.
+        // Accept both `var` and `let` stored properties; skip type-level and
+        // computed ones.
         guard
             varDecl.bindingSpecifier.tokenKind == .keyword(.var)
-                || varDecl.bindingSpecifier.tokenKind == .keyword(.let)
+                || varDecl.bindingSpecifier.tokenKind == .keyword(.let),
+            !isTypeMember(varDecl),
+            !isLazy(varDecl)
         else { return nil }
         guard let binding = varDecl.bindings.first,
+            isStoredBinding(binding),
+            !isInitializedLet(varDecl),
             let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
-            let typeAnnotation = binding.typeAnnotation,
-            binding.accessorBlock == nil
+            let typeAnnotation = binding.typeAnnotation
         else { return nil }
 
         let name = pattern.identifier.text
         let typeSyntax = typeAnnotation.type
-        let isOptional = typeSyntax.is(OptionalTypeSyntax.self)
-        let defaultExpr = binding.initializer?.value.trimmedDescription
+        let isOptional = optionalWrappedType(of: typeSyntax) != nil
+        let defaultValue = binding.initializer?.value
+
+        func property(
+            _ kind: PersistedPropertyKind,
+            inverse: LabeledExprSyntax? = nil,
+            supportedShape: Bool = true
+        ) -> PersistedProperty {
+            PersistedProperty(
+                name: name,
+                typeSyntax: typeSyntax,
+                kind: kind,
+                isOptional: isOptional,
+                defaultValue: defaultValue,
+                binding: binding,
+                relationInverse: inverse,
+                hasSupportedRelationShape: supportedShape,
+                accessLevel: AccessLevel(varDecl.modifiers)
+            )
+        }
 
         if marker(named: "Ignored", on: varDecl) != nil {
-            return PersistedProperty(
-                name: name, typeSyntax: typeSyntax, kind: .ignored, isOptional: isOptional, defaultExpr: defaultExpr)
+            return property(.ignored)
         }
         if let relation = marker(named: "Relation", on: varDecl) {
             let (rule, inverse) = relationArguments(relation)
-            let (cardinality, element) = relationShape(of: typeSyntax)
-            return PersistedProperty(
-                name: name,
-                typeSyntax: typeSyntax,
-                kind: .relation(deleteRule: rule, inverse: inverse, cardinality: cardinality, elementBaseName: element),
-                isOptional: isOptional,
-                defaultExpr: defaultExpr
+            let shape = relationShape(of: typeSyntax)
+            return property(
+                .relation(deleteRule: rule, cardinality: shape.cardinality, elementBaseName: shape.element),
+                inverse: inverse,
+                supportedShape: shape.isSupported
             )
         }
         if marker(named: "Inline", on: varDecl) != nil {
-            return PersistedProperty(
-                name: name, typeSyntax: typeSyntax, kind: .inlineBlob, isOptional: isOptional, defaultExpr: defaultExpr)
+            return property(.inlineBlob)
         }
         // `@ForeignKey` is a documentation/intent marker; functionally a scalar
         // column, so it falls through to `.mirror`.
-        return PersistedProperty(
-            name: name, typeSyntax: typeSyntax, kind: .mirror, isOptional: isOptional, defaultExpr: defaultExpr)
+        return property(.mirror)
     }
+}
+
+/// Whether a declaration is a `let` with an initial value. Swift leaves such a
+/// property out of the memberwise initializer, so the generated `toDomain()`
+/// has no way to pass it back; `@Persisted` diagnoses it and skips it here.
+func isInitializedLet(_ varDecl: VariableDeclSyntax) -> Bool {
+    varDecl.bindingSpecifier.tokenKind == .keyword(.let) && varDecl.bindings.first?.initializer != nil
+}
+
+/// The wrapped type when `type` is optional — spelled `T?`, `T!`,
+/// `Optional<T>` or `Swift.Optional<T>` — and `nil` otherwise.
+func optionalWrappedType(of type: TypeSyntax) -> TypeSyntax? {
+    if let optional = type.as(OptionalTypeSyntax.self) {
+        return optional.wrappedType
+    }
+    if let unwrapped = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) {
+        return unwrapped.wrappedType
+    }
+    let generic: (name: String, arguments: GenericArgumentClauseSyntax?)?
+    if let identifier = type.as(IdentifierTypeSyntax.self) {
+        generic = (identifier.name.text, identifier.genericArgumentClause)
+    } else if let member = type.as(MemberTypeSyntax.self),
+        member.baseType.as(IdentifierTypeSyntax.self)?.name.text == "Swift"
+    {
+        generic = (member.name.text, member.genericArgumentClause)
+    } else {
+        generic = nil
+    }
+    guard let generic, generic.name == "Optional", let arguments = generic.arguments?.arguments,
+        arguments.count == 1, let argument = arguments.first
+    else { return nil }
+    // Built through `Syntax` because the argument's static type differs across
+    // swift-syntax releases (a type, or a type-or-expression choice).
+    return TypeSyntax(Syntax(argument.argument))
 }
 
 // MARK: - Attribute parsing helpers
@@ -106,17 +171,18 @@ private func marker(named markerName: String, on varDecl: VariableDeclSyntax) ->
     return nil
 }
 
-/// Extracts `deleteRule:` and `inverse:` argument source text from a `@Relation`.
-private func relationArguments(_ attribute: AttributeSyntax) -> (deleteRule: String?, inverse: String?) {
+/// Extracts the `deleteRule:` source text and the `inverse:` argument from a
+/// `@Relation`.
+private func relationArguments(_ attribute: AttributeSyntax) -> (deleteRule: String?, inverse: LabeledExprSyntax?) {
     guard case .argumentList(let args) = attribute.arguments else { return (nil, nil) }
     var rule: String?
-    var inverse: String?
+    var inverse: LabeledExprSyntax?
     for arg in args {
         switch arg.label?.text {
         case "deleteRule":
             rule = arg.expression.trimmedDescription
         case "inverse":
-            inverse = arg.expression.trimmedDescription
+            inverse = arg
         default:
             break
         }
@@ -126,14 +192,22 @@ private func relationArguments(_ attribute: AttributeSyntax) -> (deleteRule: Str
 
 /// Determines the cardinality and related element base type name of a relation
 /// property from its declared type (`[Foo]`, `Foo?`, or `Foo`).
-private func relationShape(of typeSyntax: TypeSyntax) -> (RelationCardinality, String) {
+///
+/// `isSupported` is `false` when the element doesn't name a type directly —
+/// `[Foo]?`, `[[Foo]]`, `Set<Foo>` — since appending `Model` to it names nothing.
+private func relationShape(
+    of typeSyntax: TypeSyntax
+) -> (cardinality: RelationCardinality, element: String, isSupported: Bool) {
+    let cardinality: RelationCardinality
+    let element: TypeSyntax
     if let array = typeSyntax.as(ArrayTypeSyntax.self) {
-        return (.toMany, baseName(of: array.element))
+        (cardinality, element) = (.toMany, array.element)
+    } else if let wrapped = optionalWrappedType(of: typeSyntax) {
+        (cardinality, element) = (.toOneOptional, wrapped)
+    } else {
+        (cardinality, element) = (.toOne, typeSyntax)
     }
-    if let optional = typeSyntax.as(OptionalTypeSyntax.self) {
-        return (.toOneOptional, baseName(of: optional.wrappedType))
-    }
-    return (.toOne, baseName(of: typeSyntax))
+    return (cardinality, baseName(of: element), isDirectlyNamedType(element))
 }
 
 private func baseName(of typeSyntax: TypeSyntax) -> String {

@@ -30,25 +30,27 @@ For a struct named `MyState`, the macro emits:
    - `init(observer:)` — pack: read the observer tree into a struct snapshot.
    - `static func makeObserver(from:) -> MyStateObserver` — factory.
    - `static func apply(_:to:)` — unpack: assign struct fields back onto the observer. `@Observable` only fires notifications for fields whose values actually change.
-   - `static func applyRestore(from:to:)` — used during undo/redo. For ``EntityStore`` properties it calls `.restore(from:)` instead of plain assignment, so change tracking stays consistent.
+   - `static func applyRestore(from:to:)` — used during undo/redo. Every property restores through `SwiduxRestore.restore(_:from:)`, whose overloads choose by the property's resolved type: an ``EntityStore`` calls `.restore(from:)` so change tracking stays consistent, a ``SwiduxObservable`` value recurses into its own `applyRestore` unless its type opts out (see below), and anything else is assigned. Deciding by type rather than spelling means a `typealias` or a module-qualified `Swidux.EntityStore` behaves the same as `EntityStore<…>`.
 
 ### Requirements on the annotated struct
 
 - **Must be a struct.** Applying `@Swidux` to a class or enum emits a diagnostic.
 - **Should declare `Equatable` and `Sendable`.** The protocol requires both. The example projects also mark the struct `nonisolated` so it can cross the `@MainActor` boundary inside ``Store``.
-- **Stored `var` properties only.** Computed properties, `let` properties, and properties with explicit accessors are ignored.
+- **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs or unpacks the value.
+- **Not generic, `private` or `fileprivate`.** The generated peer can't name a generic struct's parameters, and it must name the struct from outside its body. Both are diagnosed. For generic state, hand-write the ``SwiduxObservable`` conformance.
+- **Every stored property must be visible to the macro.** Each of these is a compile error rather than a property whose value silently resets on every dispatch: a stored property inside `#if` (declare it unconditionally and move the `#if` into its type or value), a tuple-pattern declaration (`var (a, b): (Int, Int)`), a combined declaration (`var a: Int, b: Int`), a missing type annotation, and a `lazy` property.
 
 ### Property handling rules
 
-The macro classifies each stored property into one of three kinds and generates code accordingly:
+The macro classifies each stored property into one of two kinds and generates code accordingly:
 
 | Property | Kind | Treatment |
 |---|---|---|
 | `var name: String` | leaf | Mirrored as `var name: String` on the observer; assigned directly in `apply`. |
-| `var counters: EntityStore<Counter>` | entityStore | Mirrored as a `var` on the observer; restored via `restore(from:)` during undo. |
+| `var counters: EntityStore<Counter>` | leaf | Mirrored as a `var` on the observer; restored via `restore(from:)` during undo, however the type is spelled. |
 | `@Slice var ui: UIState` | nested | Stored as `let ui: UIStateObserver` on the parent observer; recursive calls to the child's `apply` / `makeObserver` / `applyRestore`. |
 
-Static properties, computed properties, and `let` constants are skipped entirely.
+Static properties, computed properties, and `let` constants are skipped entirely. Properties with `willSet`/`didSet` observers are stored and are not skipped.
 
 ### Requirements the generated code imposes
 
@@ -73,8 +75,7 @@ nonisolated struct UIState: Equatable, Sendable {
 Keep the hand-written `init` if you have one — inline defaults are additive, not a
 replacement.
 
-**Spell nested types with their qualified name.** The observer is emitted as a *peer* at
-file scope, not nested inside your struct, so a bare inner name won't resolve there:
+**Spell nested types with their qualified name.** The observer is emitted as a *peer* beside your struct, not nested inside it, so a bare inner name won't resolve there:
 
 ```swift
 @Swidux
@@ -86,10 +87,9 @@ nonisolated struct PersistenceState: Equatable, Sendable {
 }
 ```
 
-The macro reports the bare spelling itself, on the property you wrote, naming the
-qualified form to use. Wrappers are seen through — `HydrationPhase?`, `[HydrationPhase]`,
-`[String: HydrationPhase]` and `Set<HydrationPhase>` are all caught. `@Persisted` applies
-the same rule for the same reason: its `@Model` shadow class is a file-scope peer too.
+The macro reports the bare spelling itself, on the property you wrote, naming the qualified form to use. Wrappers are seen through — `HydrationPhase?`, `[HydrationPhase]`, `[String: HydrationPhase]` and `Set<HydrationPhase>` are all caught, and so is a default value that names a nested type. `@Persisted` applies the same rule for the same reason: its `@Model` shadow class is a peer too.
+
+The struct itself may be nested in another type (`enum Feature { @Swidux struct State { … } }`). The peer is declared beside it, as `Feature.StateObserver` (or `Feature.StateModel` for `@Persisted`), and the generated extension names both by their qualified names.
 
 **`private(set)` and `internal(set)` are not preserved on the observer.** Every stored
 property is mirrored as a plain settable `var`, because ``SwiduxObservable/init(observer:)``
@@ -98,6 +98,8 @@ reset to its default on every dispatch. The narrowed setter still guards the red
 path, and ``Store``'s `@dynamicMemberLookup` exposes read-only key paths, so
 `store.someSlice.field = …` doesn't compile. That leaves `store.observer` as the only
 way in. A write through it is overwritten by the next dispatch's `apply`.
+
+**A member's own access level is preserved.** Each observer property takes the narrower of the struct's access and the property's, so an internal field of a `public` struct stays internal on the observer instead of becoming a public, settable property reachable through `store.observer` from other modules. A `private` property becomes `fileprivate` on the observer, because the generated extension that reads it is a separate declaration in the same file. `@Persisted` applies the same rule to its model's columns. The observer's initializer still takes every property at the struct's access level, so in a `public` struct each stored property's *type* must be public.
 
 ### Example expansion
 
@@ -151,13 +153,19 @@ extension AppState: SwiduxObservable {
 
     @MainActor
     static func applyRestore(from snapshot: AppState, to current: inout AppState) {
-        current.counters.restore(from: snapshot.counters)
-        UIState.applyRestore(from: snapshot.ui, to: &current.ui)
+        SwiduxRestore.restore(&current.counters, from: snapshot.counters)
+        SwiduxRestore.restore(&current.ui, from: snapshot.ui)
     }
 }
 ```
 
-Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, `applyRestore` calls `EntityStore.restore(from:)` on the entity-store property rather than assigning, because plain assignment would discard pending change-tracking metadata.
+Two things worth noticing. First, the nested `ui` property is `let` on the observer — the child observer instance never changes, only its properties do. That's how SwiftUI gets per-field granularity across the boundary. Second, `applyRestore` emits the same `SwiduxRestore.restore` call for both properties. Overload resolution sends `counters` to `EntityStore.restore(from:)`, because plain assignment would discard pending change-tracking metadata, and sends `ui` to `UIState.applyRestore`. `SwiduxRestore` exists only for generated code; don't call it directly.
+
+### What undo restores
+
+`UndoPlugin`'s `isUndoable` decides *when* a snapshot is taken. ``SwiduxObservable/restoresOnUndo`` decides *what* is restored from it. A snapshot is the whole state, so without an opt-out, undo reverts every change since the snapshot, including state an undoable action never touched.
+
+A `@Swidux` type that returns `false` from `static var restoresOnUndo` is left at its current value by its parent's `applyRestore`, whether or not the property is marked `@Slice`. Every plugin-owned slice Swidux ships opts out (`KillswitchState`, `AnalyticsState`, `ParentalGateState`, `FeatureFlagsState`, `PaywallState`, `PersistenceState`), so plugin slices are never restored. See <doc:UndoRedo>.
 
 ## `@Slice`
 
@@ -235,6 +243,10 @@ The generated model is **CloudKit-safe by construction**, which is what lets the
 
 - **Must be a struct** (a diagnostic fires otherwise).
 - **Must satisfy `Identifiable & Equatable & Sendable` with `ID == UUID`** — the ``EntityStore`` contract.
+- **The file must be able to see SwiftData.** The expansion uses `@Model`, `FetchDescriptor` and `#Predicate`, and names in an expansion resolve against the imports of the file it expands in. `SwiduxPersistence` re-exports SwiftData, so `import SwiduxPersistence` is enough.
+- **Not generic, `private` or `fileprivate`**, for the same reasons as `@Swidux`.
+- **The same stored-property rules as `@Swidux`**, plus three of its own: `willSet`/`didSet` properties are mirrored like any other, a `let` with an initial value is an error (the memberwise initializer has no parameter for it, so it can't be loaded), and a `private` property is an error (the model reads it and rebuilds the struct from outside the struct; `fileprivate` works). `static` properties are never columns.
+- **`Optional<T>` and `T!` count as optional**, exactly like `T?`.
 
 ### Property handling and markers
 
@@ -245,7 +257,7 @@ By default every stored property is mirrored directly onto the model — SwiftDa
 | *(none)* | Mirror directly as `var name: T = <default>` — see the CloudKit-safe default rules above. |
 | `@Inline` | Store a `Codable` value as one opaque JSON `Data` column (defaulting to `Data()`), exposed through a read-only `get throws` accessor of the original type. Write through the domain value and `update(from:)`. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
 | `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar. |
-| `@Relation(deleteRule:inverse:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?` / `Tag`); the model substitutes the `…Model` shadow (always **optional** for CloudKit safety, `= nil`) and the converters map element-by-element. A non-optional to-one `@Relation` is a diagnostic. `deleteRule` is a `SwiduxDeleteRule`; `inverse` is a key path on the generated model (`\TagModel.card`). |
+| `@Relation(deleteRule:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?`); the model substitutes the `…Model` shadow (always **optional** for CloudKit safety, `= nil`) and the converters map element-by-element. A non-optional to-one `@Relation` is a diagnostic. `deleteRule` is a `SwiduxDeleteRule`. A relation is an **owned value composition**: the parent's value contains its children, so there is no back-reference and no `inverse:`. Bidirectional relations are unsupported, and writing `inverse:` is a diagnostic; give the child a `@ForeignKey` `UUID` if it needs to name its parent. A to-many relation is **unordered**: SwiftData stores it as a set, so the array loads in no particular order and a reorder-only change is not saved. Sort in the domain, or store an explicit position, when order matters. |
 | `@Ignored` | Exclude a derived field. Must be **optional** so `toDomain()` can reconstruct it as `nil` — a diagnostic fires on a non-optional `@Ignored` property. |
 
 ### Example expansion
@@ -293,7 +305,7 @@ extension Card: PersistableEntity {
 }
 ```
 
-(`@Model` itself is a SwiftData macro; the compiler expands it over the generated class. The `SwiduxMacros` plugin emits the class as text and does not import SwiftData.)
+(`@Model` itself is a SwiftData macro; the compiler expands it over the generated class. The `SwiduxMacros` plugin emits the class as text and does not import SwiftData; the file it expands in sees SwiftData because `SwiduxPersistence` re-exports it.)
 
 ## Common errors
 
@@ -312,6 +324,7 @@ If you see **"call to main actor-isolated initializer … in a synchronous nonis
 - **The struct must be `nonisolated`** in practice. The generated extension methods are `@MainActor`, but reducers run with the struct passed `inout` from non-isolated contexts inside ``Store``. Marking the struct `nonisolated` lets it cross that boundary.
 - **Properties must be `Sendable`.** The struct itself declares `Sendable`, so the compiler will reject any non-`Sendable` field.
 - **Computed properties are not observed.** If you want a derived value to participate in observation, store it (and update it inside the reducer) — or compute it inline in the view.
+- **Default values are copied into the generated code.** A leaf's default becomes the observer initializer's default argument, and a mirrored or `@Inline` property's default becomes the model's column default. So a default that names one of the struct's nested types (`= Phase.idle`) or `Self` (`= Self.limit`) fails outside the struct just as a type annotation does. Both are diagnosed on the default; write `MyState.Phase.idle` or `MyState.limit`.
 - **You can opt out.** For exotic shapes (collections of state slices, generic state), hand-write conformance to ``SwiduxObservable`` instead of using the macro. The protocol requires four methods; the macro just removes the boilerplate.
 
 ## See Also

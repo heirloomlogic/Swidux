@@ -13,6 +13,9 @@ import Swidux
 /// Hosted in the app's root state via `@Slice var killswitch: KillswitchState`.
 @Swidux
 public nonisolated struct KillswitchState: Sendable, Equatable {
+    /// `false`: undo and redo never roll this slice back; the verdict reflects the server, not anything the user did.
+    public static var restoresOnUndo: Bool { false }
+
     /// Latest evaluated verdict; defaults to `.unknown`.
     public var verdict: KillswitchVerdict = .unknown
     /// Timestamp of the last successful fetch, or `nil`.

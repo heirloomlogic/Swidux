@@ -18,17 +18,30 @@ extension SwiduxMacro: PeerMacro {
             return []
         }
 
+        let unsupported = unsupportedStructDiagnostics(of: structDecl, macro: "Swidux")
+        guard unsupported.isEmpty else {
+            for diagnostic in unsupported { context.diagnose(diagnostic) }
+            return []
+        }
+
         diagnoseSkippedStoredProperties(of: structDecl, includesLetBindings: false, in: context)
         let properties = classifyProperties(of: structDecl)
 
         // Driven off the classified properties, not every member, so the
-        // diagnostic covers exactly the types that reach the file-scope peer.
+        // diagnostic covers exactly the types that reach the peer. A leaf's
+        // default is copied into the observer's initializer; a slice's isn't.
         diagnoseUnqualifiedNestedTypes(
             of: structDecl,
             in: properties.map(\.typeSyntax),
+            defaultValues: properties.filter { $0.kind == .leaf }.compactMap(\.defaultValue),
             generatedDeclaration: "observer class",
             in: context
         )
+
+        for property in properties where property.isMarkedSlice && property.kind != .nested {
+            context.diagnose(
+                Diagnostic(node: property.typeSyntax, message: SwiduxDiagnostic.sliceRequiresNamedType))
+        }
 
         let accessLevel = structDecl.modifiers.first { modifier in
             switch modifier.name.tokenKind {
@@ -58,7 +71,10 @@ extension SwiduxMacro: ExtensionMacro {
         conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
-        guard let structDecl = declaration.as(StructDeclSyntax.self) else {
+        // The peer expansion reports why an unsupported struct gets nothing.
+        guard let structDecl = declaration.as(StructDeclSyntax.self),
+            unsupportedStructDiagnostics(of: structDecl, macro: "Swidux").isEmpty
+        else {
             return []
         }
 
@@ -73,7 +89,7 @@ extension SwiduxMacro: ExtensionMacro {
         }?.name.text
         return [
             generateConformanceExtension(
-                structName: structDecl.name.text,
+                typeName: type.trimmedDescription,
                 properties: properties,
                 accessLevel: accessLevel
             )
