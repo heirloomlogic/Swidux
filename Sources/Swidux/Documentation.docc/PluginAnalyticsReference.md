@@ -291,15 +291,17 @@ An explicit `.identify` naming the same user the identity derives is recorded li
 
 ## Flushing
 
-`AnalyticsPlugin.flush()` awaits any pending fire-and-forget service calls spawned by `afterReduce`, then calls `service.flush()`. Call this on app shutdown to avoid losing in-flight events:
+`AnalyticsPlugin.flush()` awaits every service call the plugin has queued, explicit and mapped, then calls `service.flush()`. It waits without bound, so on shutdown paths use `flush(timeout:)`, which gives up once the deadline passes (queued work keeps running; the caller just stops waiting). `Store` has no typed accessor for a registered plugin, so keep a reference to the one you registered — see <doc:HowToAddAnalytics> Step 6:
 
 ```swift
 .onChange(of: scenePhase) { _, phase in
     if phase == .background {
-        Task { await store.analyticsPlugin.flush() }
+        Task { await analytics.flush(timeout: .seconds(2)) }
     }
 }
 ```
+
+`store.flush()` also reaches the plugin — it flushes every registered plugin in order — but through the unbounded `flush()`. That makes it the right sync point in tests and the wrong one on shutdown.
 
 ## Implementing an `AnalyticsService`
 

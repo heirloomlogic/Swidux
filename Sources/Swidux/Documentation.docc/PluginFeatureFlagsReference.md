@@ -185,8 +185,8 @@ state.variant(of: .checkoutLayout)
 state.value(of: .maxFreeUploads)
 ```
 
-Reads are pure synchronous functions. Per-property observation works as it does for any other state slice — views re-render only when the flag they read changes.
+Reads are pure synchronous functions. Observation is per *property* of the slice, not per flag: every read depends on `config` and `localOverrides` (and bucketed reads on the resolved identity), so a view that reads any flag re-renders whenever the config changes — even if the flag it reads is unchanged. A refresh that returns an identical config doesn't notify, because the assignment is equality-checked.
 
 ## Action semantics (selected)
 
-`refreshSucceeded(FeatureFlagsConfig, fetchedAt:)` is dispatched on every `.refresh` (including debounced refreshes that return an unchanged config). Consume config transitions by observing `FeatureFlagsState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
+`refreshSucceeded(FeatureFlagsConfig, fetchedAt:)` is dispatched for every fetch that succeeds, including one that returns an unchanged config. A `.refresh` that is debounced by `RefreshPolicy.automatic`, or that arrives while a fetch is already in flight, does not fetch and dispatches nothing. Consume config transitions by observing `FeatureFlagsState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
