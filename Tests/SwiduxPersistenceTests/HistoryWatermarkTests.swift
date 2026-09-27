@@ -778,6 +778,25 @@ struct HistoryWatermarkTests {
         #expect(log.contains(.historyPruned))
     }
 
+    @Test("the documented launch hydrate prunes too")
+    func theLaunchHydratePrunes() async throws {
+        let container = try makeNotesContainer()
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = try makeNotesCoordinator(
+            container: container, debounce: .seconds(30), historyRetention: .seconds(-60),
+            onDiagnostic: onDiagnostic)
+        try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+
+        // Hydrating a plain value before the store exists is what both guides
+        // show, so it is the launch path nearly every app takes.
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        try await poll(until: { log.contains(.historyPruned) })
+
+        #expect(log.contains(.historyPruned), "retention was inert for every app following the guides")
+        #expect(try await coordinator.database.historyTransactionCount() == 0)
+    }
+
     @Test("history is pruned once per session, not on every hydration")
     func pruningRunsOncePerSession() async throws {
         let container = try makeNotesContainer()

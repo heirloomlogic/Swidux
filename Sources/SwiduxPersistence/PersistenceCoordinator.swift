@@ -77,10 +77,9 @@ public final class PersistenceCoordinator<State, Action> {
     ///     remote edits and deletions surface mid-session. Individual entities
     ///     can narrow it via ``PersistedEntity/entity(_:policy:collapse:)``.
     ///   - historyRetention: How long SwiftData persistent-history transactions
-    ///     are kept before ``hydrate(into:)-(Store)`` prunes them, once per
-    ///     launch. Defaults to seven days. Pass `nil` to never prune.
-    ///     Ignored for a CloudKit-mirrored store — see
-    ///     ``pruneHistory(before:)``.
+    ///     are kept before hydration prunes them, once per launch. Defaults
+    ///     to seven days. Pass `nil` to never prune. Ignored for a
+    ///     CloudKit-mirrored store — see ``pruneHistory(before:)``.
     ///   - onFailure: Called when a save or fetch fails. Every failure is
     ///     logged regardless; supply a handler to additionally surface it
     ///     (e.g. dispatch an action that shows a "couldn't save" banner).
@@ -195,8 +194,8 @@ public final class PersistenceCoordinator<State, Action> {
 
     /// Deletes persistent-history transactions recorded before `cutoff`.
     ///
-    /// Runs automatically once per launch from ``hydrate(into:)-(Store)``, using
-    /// ``historyRetention``. History is on by default for any file-backed
+    /// Runs automatically once per launch from whichever `hydrate(into:)` runs
+    /// first, using ``historyRetention``. History is on by default for any file-backed
     /// SwiftData store and nothing else trims it, so left alone it grows for the
     /// life of the app — deciding that policy is the library's job, not each
     /// app's.
@@ -225,6 +224,19 @@ public final class PersistenceCoordinator<State, Action> {
         else { return 0 }
         observers.report(.historyPruned(count: removed))
         return removed
+    }
+
+    /// Prunes history once per session, if the app hasn't opted out. Called
+    /// from both hydration overloads, since either may be the one a launch
+    /// runs.
+    private func pruneHistoryIfNeeded() async {
+        guard !hasPrunedHistory, let retention = historyRetention else { return }
+        hasPrunedHistory = true
+        // Detached: nothing here is load-bearing — the watermark lasts one
+        // session and any expiry falls back to a full read — and apps gate their
+        // UI on hydration returning.
+        let cutoff = Date(timeIntervalSinceNow: -TimeInterval(retention.components.seconds))
+        Task { await self.pruneHistory(before: cutoff) }
     }
 
     /// Every registered entity's history reader, in registration order.
@@ -370,6 +382,7 @@ public final class PersistenceCoordinator<State, Action> {
         if let token, phase.allReadsSucceeded {
             handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
         }
+        await pruneHistoryIfNeeded()
     }
 
     /// Runs every registered entity's hydration read in registration order,
@@ -812,17 +825,6 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             throw injected
         }
         return try await handle.db.changes(since: watermark, readers: historyReaders)
-    }
-
-    /// Prunes history once per session, if the app hasn't opted out.
-    private func pruneHistoryIfNeeded() async {
-        guard !hasPrunedHistory, let retention = historyRetention else { return }
-        hasPrunedHistory = true
-        // Detached: nothing here is load-bearing — the watermark lasts one
-        // session and any expiry falls back to a full read — and apps gate their
-        // UI on hydration returning.
-        let cutoff = Date(timeIntervalSinceNow: -TimeInterval(retention.components.seconds))
-        Task { await self.pruneHistory(before: cutoff) }
     }
 
     /// Re-hydration that reconciles stored rows into the live `EntityStore`s
