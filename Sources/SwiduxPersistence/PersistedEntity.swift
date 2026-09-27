@@ -136,26 +136,45 @@ public struct PersistedEntity<State> {
         /// Reports any duplicates it collapsed on the way past. A registered
         /// resolver does not make them go away — rows sharing a *surviving* ID
         /// are converged, not deleted — so both branches have something to say.
+        /// Rows it could not decode are reported and returned, not thrown: one
+        /// row a newer app version wrote must not hide every row of the entity.
         @MainActor
         func loadRows(
             _ handle: DatabaseHandle,
             _ observers: PersistenceObservers
-        ) async throws -> (rows: [E], removedIDs: Set<UUID>) {
+        ) async throws -> (rows: [E], removedIDs: Set<UUID>, undecodable: Set<UUID>) {
             let rows: [E]
             let removedIDs: Set<UUID>
             let duplicates: Int
+            let undecodable: UndecodableRows
             if let collapse {
-                let outcome = try await handle.db.collapseDuplicates(
+                let collapsed = try await handle.db.collapsingDuplicates(
                     as: E.Model.self, using: collapse)
-                (rows, removedIDs, duplicates) = (
-                    outcome.survivors, outcome.removedIDs, outcome.duplicateRowCount
+                (rows, removedIDs, duplicates, undecodable) = (
+                    collapsed.outcome.survivors, collapsed.outcome.removedIDs,
+                    collapsed.outcome.duplicateRowCount, collapsed.undecodable
                 )
             } else {
                 let fetched = try await handle.db.fetchAllCollapsing(E.Model.self)
-                (rows, removedIDs, duplicates) = (fetched.domains, [], fetched.duplicatesCollapsed)
+                (rows, removedIDs, duplicates, undecodable) = (
+                    fetched.domains, [], fetched.duplicatesCollapsed, fetched.undecodable
+                )
             }
             reportDuplicates(duplicates, to: observers)
-            return (rows, removedIDs)
+            reportUndecodable(undecodable, to: observers)
+            return (rows, removedIDs, undecodable.ids)
+        }
+
+        /// Reports the rows a read found but could not decode, when there were
+        /// any — as a fetch failure naming them, since the app has lost sight of
+        /// those rows even though the read around them succeeded.
+        @MainActor
+        func reportUndecodable(_ undecodable: UndecodableRows, to observers: PersistenceObservers) {
+            guard let error = undecodable.firstError else { return }
+            observers.onFailure(
+                PersistenceFailure(
+                    operation: .fetch, entityType: entityTypeName, underlying: error,
+                    failedIDs: undecodable.ids))
         }
 
         /// Emits the duplicate-collapse diagnostic, when there was one.
@@ -178,6 +197,11 @@ public struct PersistedEntity<State> {
         /// from absence on the full path, declared outright on the partial one.
         /// It is the only thing the two paths disagree about here.
         ///
+        /// `unreadable` is what storage holds but this build could not decode.
+        /// Those rows are locally owned: storage said nothing this merge could
+        /// understand, so it neither overwrites them nor reads their absence
+        /// from the snapshot as a deletion.
+        ///
         /// `candidates` is every ID this merge could possibly act on. It exists
         /// so "in-memory wins" costs what the merge costs: `reconcile` consults
         /// the preserved set only for rows it is about to write or remove, so
@@ -192,6 +216,7 @@ public struct PersistedEntity<State> {
             current: EntityStore<E>,
             incoming: EntityStore<E>,
             candidates: some Sequence<UUID>,
+            unreadable: Set<UUID>,
             context: MergeContext,
             observers: PersistenceObservers,
             absenceRemoves: (UUID) -> Bool
@@ -200,10 +225,11 @@ public struct PersistedEntity<State> {
             // one primitive serves every policy. Candidates the store doesn't
             // hold are dropped: preserving one would block the insert that
             // additive merging is supposed to make.
-            let preserved =
+            var preserved =
                 context.policy.remoteWinsOnConflict
                 ? context.locallyOwnedIDs
                 : context.locallyOwnedIDs.union(candidates.lazy.filter(current.contains))
+            if !unreadable.isEmpty { preserved.formUnion(unreadable) }
             // Report only holds that actually cost something. The hold is in
             // force on every tick an open editor produces, so reporting one per
             // tick would drown the channel and say nothing about a leak.
@@ -224,7 +250,7 @@ public struct PersistedEntity<State> {
             for id in context.heldIDs {
                 guard let held = current[id] else { continue }
                 guard let stored = incoming[id] else {
-                    if absenceRemoves(id) { withheld.deleted.insert(id) }
+                    if !unreadable.contains(id), absenceRemoves(id) { withheld.deleted.insert(id) }
                     continue
                 }
                 if stored != held { withheld.changed.insert(id) }
@@ -293,6 +319,9 @@ public struct PersistedEntity<State> {
                 do {
                     // Removals are implicit here: the whole store is replaced
                     // by the survivors.
+                    // A row that would not decode is left out, and was
+                    // reported: hiding it beats hiding the whole entity, and the
+                    // stored payload is untouched for a build that can read it.
                     let loaded = try await loadRows(handle, observers)
                     return { state in state[keyPath: keyPath] = EntityStore(loaded.rows) }
                 } catch {
@@ -325,8 +354,8 @@ public struct PersistedEntity<State> {
                         // remove any row in the table.
                         let resolved = resolvePreserved(
                             current: current, incoming: incoming,
-                            candidates: current.values.lazy.map(\.id), context: context,
-                            observers: observers, absenceRemoves: { _ in removes })
+                            candidates: current.values.lazy.map(\.id), unreadable: loaded.undecodable,
+                            context: context, observers: observers, absenceRemoves: { _ in removes })
                         current.reconcile(
                             with: incoming, preserving: resolved.preserved, removingMissing: removes)
                         state[keyPath: keyPath] = current
@@ -347,6 +376,8 @@ public struct PersistedEntity<State> {
                     // collapsed on read, and still reported.
                     let fetched = try await handle.db.fetchCollapsing(ids: ids, as: E.Model.self)
                     reportDuplicates(fetched.duplicatesCollapsed, to: observers)
+                    reportUndecodable(fetched.undecodable, to: observers)
+                    let unreadable = fetched.undecodable.ids
                     let incoming = EntityStore(fetched.domains)
                     return MergeRead(succeeded: true) { state, context in
                         var current = state[keyPath: keyPath]
@@ -361,8 +392,8 @@ public struct PersistedEntity<State> {
                         // and consults the preserved set for nothing else.
                         let resolved = resolvePreserved(
                             current: current, incoming: incoming,
-                            candidates: incoming.values.map(\.id) + deleting, context: context,
-                            observers: observers, absenceRemoves: { deleting.contains($0) })
+                            candidates: incoming.values.map(\.id) + deleting, unreadable: unreadable,
+                            context: context, observers: observers, absenceRemoves: { deleting.contains($0) })
                         current.reconcile(
                             with: incoming, deleting: deleting, preserving: resolved.preserved)
                         state[keyPath: keyPath] = current

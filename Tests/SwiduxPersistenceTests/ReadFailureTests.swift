@@ -188,6 +188,26 @@ struct ReadFailureTests {
         #expect(coordinator.handle.anchor.token != before, "a tick that read everything moves on")
     }
 
+    @Test("a tick whose read threw does not report itself as merged")
+    func aFailedReadIsNotReportedAsMerged() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30), onDiagnostic: onDiagnostic)
+        let store = makeNotesStore(coordinator)
+        let id = UUID()
+        store.send(.add(Note(id: id, title: "mine", pinned: false)))
+        await coordinator.corePlugin.flush()
+        await coordinator.mergeChanges(into: store)
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
+        log.clear()
+
+        await coordinator.database.failNextFetch(with: unreadable)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(
+            !log.contains(.remoteChangesMerged),
+            "the healthy-merge signal must not describe a tick that merged nothing")
+    }
+
     @Test("one entity's failed read pins the window even though the other was read")
     func oneFailedReadOfTwoPinsTheWindow() async throws {
         let coordinator = try makeTaggedCoordinator()

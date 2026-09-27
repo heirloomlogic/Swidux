@@ -247,7 +247,8 @@ public final class PersistenceCoordinator<State, Action> {
     ///     Pass `false` on a hot path where staleness is acceptable. Never pass
     ///     `true` from inside a persist handler — the flush would await itself.
     /// - Returns: Every persisted row of `E`, in fetch order.
-    /// - Throws: Whatever the underlying fetch throws. Failures are reported to
+    /// - Throws: Whatever the underlying fetch throws, or the decoding error of
+    ///   the first row that cannot be decoded. Failures are reported to
     ///   `onFailure` **and** rethrown: unlike hydration there is no state to
     ///   leave untouched here, so swallowing the error could only present an
     ///   unreadable database as "no data".
@@ -302,22 +303,32 @@ public final class PersistenceCoordinator<State, Action> {
     private func collapsingRead<E: PersistableEntity>(
         of type: E.Type,
         flushPending: Bool,
-        _ read: (EntityDB) async throws -> (domains: [E], duplicatesCollapsed: Int)
+        _ read: (EntityDB) async throws -> CollapsedRead<E>
     ) async throws -> [E] {
         if flushPending { await corePlugin.flush() }
+        let fetched: CollapsedRead<E>
         do {
-            let fetched = try await read(handle.db)
-            if fetched.duplicatesCollapsed > 0 {
-                observers.report(
-                    .duplicateRowsCollapsed(
-                        entityType: "\(E.self)", count: fetched.duplicatesCollapsed))
-            }
-            return fetched.domains
+            fetched = try await read(handle.db)
         } catch {
             observers.onFailure(
                 PersistenceFailure(operation: .fetch, entityType: "\(E.self)", underlying: error))
             throw error
         }
+        if fetched.duplicatesCollapsed > 0 {
+            observers.report(
+                .duplicateRowsCollapsed(
+                    entityType: "\(E.self)", count: fetched.duplicatesCollapsed))
+        }
+        // A result with rows missing is not "every row", which is what these
+        // promise; say which rows, and refuse.
+        if let error = fetched.undecodable.firstError {
+            observers.onFailure(
+                PersistenceFailure(
+                    operation: .fetch, entityType: "\(E.self)", underlying: error,
+                    failedIDs: fetched.undecodable.ids))
+            throw error
+        }
+        return fetched.domains
     }
 
     /// The same rows as ``fetchAll(of:flushPending:)``, as a change-free
@@ -664,9 +675,13 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // The scan runs *before* the flush that `merge` performs: the by-ID read
         // has to see local intent already on disk, or a delete the user just undid
         // has nothing there to refute its own tombstone with.
-        try await merge(
+        let merged = try await merge(
             .attributed(scan.rows), into: store, policy: policy, attempt: attempt,
             recordAnchor: true, watermark: scan.newWatermark)
+        // A tick whose read threw merged nothing, and the window stays open for
+        // the next one. Reporting it as merged would make a stuck entity read
+        // as healthy traffic.
+        guard merged else { return }
         // The debt is reported beside the total rather than folded into it. Both
         // numbers are read off the same merge, so a tick that only re-offered
         // what it already owed — the shape of every tick a leaked hold produces —
@@ -791,6 +806,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// A stale read never reaches the folds. Successful folds and their history
     /// accounting commit together without an intervening suspension. Failed
     /// reads preserve the existing anchor and debt.
+    ///
+    /// - Returns: Whether every entity's read succeeded.
+    @discardableResult
     private func merge(
         _ scope: MergeScope,
         into store: Store<State, Action>,
@@ -798,7 +816,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         attempt: MergeAttempt,
         recordAnchor: Bool = false,
         watermark: DefaultHistoryToken? = nil
-    ) async throws(MergeConflict) {
+    ) async throws(MergeConflict) -> Bool {
         try check(attempt)
         await corePlugin.flush()
         try check(attempt)
@@ -827,6 +845,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             handle.installAnchor(
                 watermark: advancingToken, carryOver: carryOver, ifGeneration: attempt.generation)
         }
+        return phase.allReadsSucceeded
     }
 
     /// Re-hydration restricted to the rows a caller already knows changed.
