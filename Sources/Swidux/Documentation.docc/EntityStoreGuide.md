@@ -98,4 +98,8 @@ An ID leaves the set as soon as it becomes local again — an explicit `store[id
 cards.remotelyRemovedIDs.count
 ```
 
+### Remote creations are not undoable either
+
+The mirror case: a row that `merge` or `reconcile` inserted *after* an undo snapshot was taken is kept when that snapshot is restored, rather than recorded as a deletion — which would sync out and delete another device's creation everywhere. The store remembers each such arrival internally, and every snapshot carries its own copy of that record, so `restore` can tell a row that arrived after the snapshot from one the local user deleted before it. The row is otherwise the user's like any other: undo and redo of their own edits to it, and of their own deletion of it, work as usual.
+
 Stores that never sync never populate it, and `restore` takes exactly the path it did before.
