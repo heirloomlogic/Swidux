@@ -303,11 +303,7 @@ effects — that's the discipline.
   Production builds log and continue; the in-memory state is unchanged. The
   API does not throw — there is no useful runtime recovery from inside an
   effect, and `try?` would just hide the problem.
-- **Keychain unreachable** — an unsigned build, a locked device, or a missing
-  entitlement makes ``KeychainKeyValueStore`` writes fail for reasons no caller
-  can fix. These log and return `false`; they do **not** trap, because a test
-  host built without code signing would otherwise crash on its first write.
-  Malformed queries still assert in DEBUG.
+- **Keychain unreachable** — an unsigned build, a locked device, or a missing entitlement makes ``KeychainKeyValueStore`` writes fail for reasons no caller can fix. These log and return `false`; they do **not** trap, because a test host built without code signing would otherwise crash on its first write. Malformed queries still assert in DEBUG. ``KeychainKeyValueStore/deviceIdentity(key:)`` additionally distinguishes an unreadable item (locked keychain before first unlock, or an existing item that fails to decode) from a genuinely missing one: it only mints and persists a new identity when the item is confirmed absent, never when it merely couldn't be read — reading an existing identity right after a reboot must not look like reinstalling the app. An unreadable item yields an unpersisted, session-only identity instead.
 
 `setValue` and `removeValue` return `@discardableResult Bool` — `true` when the
 store holds the intended state. Ignore it for `UserDefaults`, which has no

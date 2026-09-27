@@ -42,9 +42,7 @@ GET /                      ->   "swidux-config: ok"  (health target)
 - `worker.js` — the router above. Reads `env.CONFIG.get("<appID>/<resource>")`.
 - `wrangler.toml` — Worker name (`swidux-config`) and the `CONFIG` KV binding
   (ids are placeholders you fill in during setup).
-- `seeds/<appID>/<resource>.json` — representative seed configs you push into KV.
-  `seeds/counter/killswitch.json` is the soft-minimum killswitch shape;
-  `seeds/counter/flags.json` mirrors the Counter example's flags.
+- `seeds/<appID>/<resource>.json` — representative seed configs you push into KV. `seeds/counter/killswitch.json` is `{}` — "no rules yet," safe to copy as-is for a new app; the library has no "soft" minimum, so the actual force-update shape lives only in DEPLOY.md's incident runbook, never in a seed you'd copy by habit. `seeds/counter/flags.json` mirrors the Counter example's flags.
 
 Wire shapes: `KillswitchConfig` (`Sources/SwiduxKillswitch/KillswitchConfig.swift`)
 and `FeatureFlagsConfig` (`Sources/SwiduxFeatureFlags/FeatureFlagsConfig.swift`).
@@ -118,9 +116,7 @@ Each app uses its own `appID`; nothing else differs.
 
 ## Cost & limits
 
-Free tier covers a portfolio comfortably: 100k Worker requests/day and a
-generous KV read quota. Each request is one KV read, edge-cached for the
-`Cache-Control` window, so origin load stays near zero even at scale.
+Cloudflare's CDN does **not** cache Worker responses — the `Cache-Control` header above is a hint to the requesting client (`URLSession`, a browser), not an edge cache. Every request invokes the Worker and reads KV. The free tier's 100k Worker requests/day and generous KV read quota cover a portfolio comfortably under normal app traffic, but neither this Worker nor the free tier rate-limits an individual caller: a script looping `GET /<random>/<random>` burns through the daily request quota, after which the Worker errors for the rest of the UTC day (clients that already hold a cached killswitch verdict or flags config are unaffected — they keep what they have; see the fail-closed behavior on KV errors below). If that's a real risk for your deployment, add a Cloudflare zone rate-limiting rule for the config host, or move to a paid plan.
 
 ## Freshness: the backend can't fix client staleness
 

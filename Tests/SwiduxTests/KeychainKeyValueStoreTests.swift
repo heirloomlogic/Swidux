@@ -272,6 +272,41 @@ struct KeychainKeyValueStoreTests {
         #expect(store.removeValue(for: .deviceID))
         #expect(store.setValue(nil, for: .deviceID))
     }
+
+    @Test("deviceIdentity does not overwrite an existing item it merely failed to decode")
+    func deviceIdentityPreservesUndecodableExistingItem() {
+        let service = "swidux.tests.\(UUID().uuidString)"
+        defer { wipe(service: service) }
+
+        // Write a raw, non-JSON payload directly under the deviceID account —
+        // simulates an item written by something else (an earlier app version,
+        // a hand-rolled Keychain write) that `value(_:)` can't decode as `String`.
+        let raw = Data("not-json".utf8)
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: KVKey<String>.deviceID.name,
+            kSecValueData as String: raw,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+        #expect(SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess)
+
+        let store = KeychainKeyValueStore(service: service)
+        let sessionOnly = store.deviceIdentity()
+        #expect(UUID(uuidString: sessionOnly) != nil)
+
+        // The stored payload itself must be untouched — a failed decode must
+        // never be "fixed" by silently minting over it.
+        var readQuery = addQuery
+        readQuery[kSecValueData as String] = nil
+        readQuery[kSecAttrAccessible as String] = nil
+        readQuery[kSecReturnData as String] = true
+        readQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        #expect(SecItemCopyMatching(readQuery as CFDictionary, &result) == errSecSuccess)
+        #expect(result as? Data == raw)
+    }
 }
 
 // MARK: - Failure classification

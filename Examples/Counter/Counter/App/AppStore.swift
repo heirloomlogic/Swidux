@@ -89,7 +89,6 @@ extension Store where State == AppState, Action == AppAction {
             },
             plugins: plugins,
             undoPlugin: undoPlugin,
-            persistencePlugin: persistencePlugin,
             isUndoable: isUndoable
         )
     }

@@ -29,11 +29,13 @@ import Foundation
 
 @Swidux
 struct AppState: Equatable, Sendable {
-    var items = EntityStore<Item>()
-    var tags  = EntityStore<Tag>()
-    @Slice var ui = UIState()
+    var items: EntityStore<Item> = .init()
+    var tags: EntityStore<Tag> = .init()
+    @Slice var ui: UIState = .init()
 }
 ```
+
+`@Swidux` requires an explicit type annotation on every stored property — it needs the type at macro-expansion time, and can't always infer one from the initializer.
 
 `@Swidux` generates an `@Observable` companion class and `SwiduxObservable` conformance. `@Slice` marks nested state slices that get their own observer class for per-property observation granularity.
 
@@ -120,12 +122,13 @@ extension Store where State == AppState, Action == AppAction {
             reducer: { state, action in
                 reducer.reduce(state: &state, action: action, environment: environment)
             },
-            plugins: plugins,
-            persistencePlugin: persistencePlugin
+            plugins: plugins
         )
     }
 }
 ```
+
+Registering `persistencePlugin` on `plugins` is all the wiring it needs — `Store` finds it there for `store.mutate { … }` and undo/redo, the two paths that drain outside the plugin lifecycle, so you don't have to name it a second time as `persistencePlugin:`. That parameter still exists, for draining through a plugin you deliberately didn't register.
 
 `Store` handles the snapshot pattern internally — packing the observer tree into a struct, running the reducer, then unpacking only changed properties back. Views access state through `@dynamicMemberLookup`, which forwards to the generated observer class tree.
 

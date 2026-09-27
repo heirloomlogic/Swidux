@@ -24,17 +24,18 @@ import os
 /// Keychain again at steady state.
 ///
 /// ```swift
-/// extension KVKey where Value == String {
-///     static let deviceID = KVKey<String>("device-id")
-/// }
-///
 /// let kv = KeychainKeyValueStore(service: "com.example.myapp")
-/// let deviceID = kv.value(.deviceID) ?? {
-///     let new = UUID().uuidString
-///     kv.setValue(new, for: .deviceID)
-///     return new
-/// }()
+/// let deviceID = kv.deviceIdentity()   // reads, or mints-and-persists, ``KVKey/deviceID``
 /// ```
+///
+/// Use ``KeyValueStore/deviceIdentity(key:)`` rather than hand-rolling the
+/// read-or-mint pattern above: it ships with Swidux under the fixed key
+/// ``KVKey/deviceID``, and this type's own overload additionally distinguishes
+/// "no identity yet" from "couldn't read the identity right now" so a locked
+/// keychain never mints a second identity over an existing one. An app that
+/// mints under a key of its own choosing instead — as the snippet above used
+/// to — silently reshuffles every existing user's identity the day it switches
+/// to the shared helper, because the two keys never collide.
 ///
 /// ## Accessibility
 ///
@@ -122,13 +123,15 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     /// Controls when stored items are readable. See Apple's
     /// `kSecAttrAccessible` documentation for the full semantics.
     public enum Accessibility: Sendable {
-        /// Accessible after first unlock. Migrates with a device backup and
-        /// can sync via iCloud Keychain if the app enables it.
+        /// Accessible after first unlock. Migrates via an encrypted device
+        /// backup. This store never sets `kSecAttrSynchronizable`, so items
+        /// never sync through iCloud Keychain regardless of accessibility.
         case afterFirstUnlock
         /// Accessible after first unlock. **This device only** — excluded
-        /// from iCloud Keychain and device-to-device migration. Default.
+        /// from encrypted-backup migration too. Default.
         case afterFirstUnlockThisDeviceOnly
-        /// Accessible only while the device is unlocked. iCloud-syncable.
+        /// Accessible only while the device is unlocked. Migrates via an
+        /// encrypted device backup; see ``afterFirstUnlock`` on iCloud sync.
         case whenUnlocked
         /// Accessible only while the device is unlocked. This device only.
         case whenUnlockedThisDeviceOnly
@@ -194,6 +197,31 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     /// Both missing keys (`errSecItemNotFound`) and decode failures return
     /// `nil`; only decode failures and unexpected Keychain errors are logged.
     public func value<Value>(_ key: KVKey<Value>) -> Value? {
+        switch lookup(key) {
+        case .found(let value): return value
+        case .missing, .failed: return nil
+        }
+    }
+
+    /// The outcome of a Keychain lookup, distinguishing "no item" from
+    /// "an item may exist but couldn't be read" — the distinction
+    /// ``deviceIdentity(key:)`` needs so a transient read failure never mints
+    /// over an identity that's still there. ``value(_:)`` collapses `.missing`
+    /// and `.failed` to `nil`; use `lookup(_:)` where that distinction matters.
+    enum LookupResult<Value> {
+        /// Found and decoded successfully.
+        case found(Value)
+        /// No item exists for this key (`errSecItemNotFound`).
+        case missing
+        /// An item may exist but couldn't be read: an environment failure
+        /// (locked keychain, missing entitlement) or a decode failure.
+        /// Callers must not treat this like `.missing` and write over it.
+        case failed
+    }
+
+    /// Reads `key`, distinguishing `.missing` from `.failed`. See
+    /// ``LookupResult``.
+    func lookup<Value>(_ key: KVKey<Value>) -> LookupResult<Value> {
         var query = baseQuery(account: key.name)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -202,22 +230,22 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
         case errSecSuccess:
-            guard let data = result as? Data else { return nil }
+            guard let data = result as? Data else { return .failed }
             do {
-                return try decoder.decode(Value.self, from: data)
+                return .found(try decoder.decode(Value.self, from: data))
             } catch {
                 logger.error(
                     "Decode failed for key '\(key.name, privacy: .public)': \(error.localizedDescription, privacy: .public)"
                 )
-                return nil
+                return .failed
             }
         case errSecItemNotFound:
-            return nil
+            return .missing
         default:
             logger.error(
                 "Keychain read failed for key '\(key.name, privacy: .public)': OSStatus \(status)"
             )
-            return nil
+            return .failed
         }
     }
 

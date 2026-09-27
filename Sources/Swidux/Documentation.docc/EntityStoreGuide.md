@@ -22,6 +22,23 @@ cards.removeAll { $0.isArchived }          // Rebuilds index in one pass
 
 Every mutation is tracked in a ``ChangeSet`` that the middleware drains after each reducer call.
 
+## Identity Is Stable
+
+The subscript and `modify` both enforce that an entity's ID never drifts from the key you accessed it under. Assigning a value under a different key, or changing the ID inside `modify`'s transform, corrupts the index and the change tracking that persistence and undo rely on — so both are `precondition` failures, not silently ignored:
+
+```swift
+cards[card.id] = card                        // OK — value.id matches the key
+cards[otherCard.id] = card                    // Fails a precondition: IDs differ
+cards.modify(card.id) { $0.id = UUID() }      // Fails a precondition: ID changed in place
+```
+
+This is a process-terminating crash in both Debug and Release — it's a programmer error, not a recoverable condition. If you need to replace an entity's identity (for example, swapping a locally-generated UUID for a server-issued one once a create request completes), delete the old ID and insert the new value instead of trying to mutate the ID in place:
+
+```swift
+cards[localID] = nil
+cards[serverID] = card   // card.id == serverID
+```
+
 ## Bulk Deletion
 
 Each `cards[id] = nil` shifts the storage array's tail and reindexes the shifted entries — O(tail) per delete, so a loop of k subscript deletes costs O(n·k). To delete many entities at once, use `remove(ids:)` (when you have the IDs) or `removeAll(where:)` (when you have a predicate) instead: both remove everything in a single pass with one index rebuild, record the same deletions, and cancel pending upserts exactly like the subscript.

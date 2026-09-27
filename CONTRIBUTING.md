@@ -42,9 +42,13 @@ all of this — the first and only manifest evaluation already sees the sentinel
 
 ## Linting
 
-CI runs `swift-format lint --strict` and fails on violations, so run the linter
-locally before opening a PR. With the sentinel in place, Persnoop lints on every
-`swift build`. To reformat in place, use the Persnipe command plugin:
+CI runs `swift-format lint --strict` and fails on violations, so run the linter locally before opening a PR. With the sentinel in place, Persnoop lints on every `swift build` — but that in-build pass is **not** the same check: `--strict` promotes additional rules (for example, a `///` doc comment with a `- Parameters:` section but no `- Returns:` only fails under `--strict`), so a clean `swift build` can still fail CI. Run the exact CI command before pushing:
+
+```sh
+xcrun swift-format lint --strict --parallel --recursive --configuration .swift-format Sources Tests
+```
+
+To reformat in place, use the Persnipe command plugin:
 
 ```sh
 swift package plugin --allow-writing-to-package-directory format-source-code
