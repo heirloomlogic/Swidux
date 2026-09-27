@@ -8,6 +8,7 @@ import SwiftSyntaxBuilder
 func generateConformanceExtension(
     typeName: String,
     properties: [ClassifiedProperty],
+    keptLets: [String] = [],
     accessLevel: String?
 ) -> ExtensionDeclSyntax {
     let observerName = "\(typeName)Observer"
@@ -50,9 +51,14 @@ func generateConformanceExtension(
     // (or passing its properties `inout`) would run every observer in the tree
     // on each undo, and an observer that touches a sibling — `didSet {
     // revision += 1 }` — would leave the restored state unequal to its snapshot.
-    let restoreLines = properties.map { prop -> String in
-        "        self.\(prop.name) = SwiduxRestore.restored(current.\(prop.name), from: snapshot.\(prop.name))"
-    }.joined(separator: "\n")
+    //
+    // It must initialize every stored property, not only the mirrored ones: a
+    // `let` without a default (diagnosed, since `init(observer:)` can't set
+    // it) keeps `current`'s value, and a `let` with one is already set.
+    let restoreLines =
+        (properties.map { prop -> String in
+            "        self.\(prop.name) = SwiduxRestore.restored(current.\(prop.name), from: snapshot.\(prop.name))"
+        } + keptLets.map { "        self.\($0) = current.\($0)" }).joined(separator: "\n")
 
     let source = """
         extension \(typeName): SwiduxObservable {

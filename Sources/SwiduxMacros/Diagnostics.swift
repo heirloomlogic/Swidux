@@ -22,6 +22,7 @@ enum SwiduxDiagnostic: DiagnosticMessage {
     case relationInverseUnsupported
     case relationUnsupportedShape
     case inlineColumnCollision(property: String, column: String)
+    case letRequiresDefault
 
     var severity: DiagnosticSeverity { .error }
 
@@ -88,6 +89,9 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .inlineColumnCollision(let property, let column):
             return
                 "@Inline property '\(property)' stores its blob in a generated '\(column)' column, which collides with the property '\(column)'; rename one of them"
+        case .letRequiresDefault:
+            return
+                "A let without a default can't be rebuilt by the generated init(observer:), which reads only the var properties the observer mirrors; give it a default, or make it a var"
         }
     }
 
@@ -116,6 +120,7 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .relationInverseUnsupported: return "relationInverseUnsupported"
         case .relationUnsupportedShape: return "relationUnsupportedShape"
         case .inlineColumnCollision: return "inlineColumnCollision"
+        case .letRequiresDefault: return "letRequiresDefault"
         }
     }
 

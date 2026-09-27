@@ -103,6 +103,26 @@ private func isStoredInstanceProperty(_ varDecl: VariableDeclSyntax, includesLet
     return isStoredBinding(first)
 }
 
+/// The names of the struct's instance `let` properties that have no default.
+///
+/// `@Swidux` doesn't mirror `let`s, but every initializer it generates must
+/// still initialize them. The restoring initializer keeps `current`'s value;
+/// `init(observer:)` has no value to give them, so `@Swidux` diagnoses them
+/// (`letRequiresDefault`). A `let` with a default is already initialized and
+/// must not be assigned again.
+func undefaultedLetNames(of structDecl: StructDeclSyntax) -> [String] {
+    structDecl.memberBlock.members.flatMap { member -> [String] in
+        guard let varDecl = member.decl.as(VariableDeclSyntax.self),
+            varDecl.bindingSpecifier.tokenKind == .keyword(.let),
+            !isTypeMember(varDecl)
+        else { return [] }
+        return varDecl.bindings.compactMap { binding in
+            guard binding.initializer == nil else { return nil }
+            return binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text
+        }
+    }
+}
+
 /// Whether a declaration carries `@Persisted`'s `@Ignored` marker.
 private func isMarkedIgnored(_ varDecl: VariableDeclSyntax) -> Bool {
     varDecl.attributes.contains { attribute in

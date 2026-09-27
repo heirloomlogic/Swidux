@@ -39,6 +39,15 @@ extension SwiduxMacro: PeerMacro {
             in: context
         )
 
+        for member in structDecl.memberBlock.members {
+            guard let varDecl = member.decl.as(VariableDeclSyntax.self),
+                varDecl.bindingSpecifier.tokenKind == .keyword(.let), !isTypeMember(varDecl)
+            else { continue }
+            for binding in varDecl.bindings where binding.initializer == nil {
+                context.diagnose(Diagnostic(node: binding, message: SwiduxDiagnostic.letRequiresDefault))
+            }
+        }
+
         for property in properties where property.isMarkedSlice && property.kind != .nested {
             context.diagnose(
                 Diagnostic(node: property.typeSyntax, message: SwiduxDiagnostic.sliceRequiresNamedType))
@@ -80,6 +89,7 @@ extension SwiduxMacro: ExtensionMacro {
             generateConformanceExtension(
                 typeName: type.trimmedDescription,
                 properties: properties,
+                keptLets: undefaultedLetNames(of: structDecl),
                 accessLevel: accessLevel
             )
         ]

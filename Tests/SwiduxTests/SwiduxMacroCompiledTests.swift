@@ -118,6 +118,37 @@ private nonisolated struct FileScopedState: Equatable, Sendable {
     var count: Int = 0
 }
 
+/// Declares its own initializer, a defaulted `let` and property-wrapped storage.
+/// The generated initializers must initialize every stored property without
+/// assigning the `let` twice, and must not collide with the struct's own init.
+/// (Not `nonisolated`: the compiler rejects a property wrapper there, macro or not.)
+@Swidux
+struct OwnInitState: Equatable, Sendable {
+    let kind: String = "doc"
+    var count: Int = 0
+    @Clamped var level: Int = 0
+
+    init(count: Int, level: Int = 0) {
+        self.count = count
+        self.level = level
+    }
+}
+
+/// Clamps to 0...10.
+@propertyWrapper
+struct Clamped: Equatable, Sendable {
+    private var value: Int
+
+    var wrappedValue: Int {
+        get { value }
+        set { value = min(max(newValue, 0), 10) }
+    }
+
+    init(wrappedValue: Int) {
+        value = min(max(wrappedValue, 0), 10)
+    }
+}
+
 // MARK: - Tests
 
 @Suite("@Swidux compiled expansion")
@@ -264,5 +295,26 @@ struct SwiduxMacroCompiledTests {
         let state = SwiduxOnlyImportState(count: 4)
 
         #expect(SwiduxOnlyImportState(observer: SwiduxOnlyImportState.makeObserver(from: state)) == state)
+    }
+
+    @Test("A state with its own init, a defaulted let and wrapped storage restores and packs")
+    func ownInitStateRestoresAndPacks() {
+        let snapshot = OwnInitState(count: 1, level: 3)
+        var current = OwnInitState(count: 2, level: 7)
+
+        OwnInitState.applyRestore(from: snapshot, to: &current)
+        #expect(current == snapshot)
+
+        let observer = OwnInitState.makeObserver(from: snapshot)
+        #expect(OwnInitState(observer: observer) == snapshot)
+    }
+
+    @Test("The memberwise initializer survives the generated initializers")
+    func memberwiseInitIsAvailable() {
+        let state = ObservedPropertyState(plain: 1, clamped: 2, watched: "w")
+
+        #expect(state.plain == 1)
+        #expect(state.clamped == 2)
+        #expect(state.watched == "w")
     }
 }

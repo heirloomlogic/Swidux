@@ -333,6 +333,75 @@ final class UnsupportedShapeTests: XCTestCase {
         )
     }
 
+    // `init(observer:)` has nothing to give a `let` without a default, so it is
+    // diagnosed. The restoring initializer still initializes it, from `current`,
+    // and never assigns a `let` that has a default.
+    func testSwiduxUndefaultedLetIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct KeyedState: Equatable, Sendable {
+                let id: UUID
+                let kind: String = "doc"
+                var count: Int = 0
+            }
+            """,
+            expandedSource: """
+                struct KeyedState: Equatable, Sendable {
+                    let id: UUID
+                    let kind: String = "doc"
+                    var count: Int = 0
+                }
+
+                @Observable
+                @MainActor
+                final class KeyedStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension KeyedState: SwiduxObservable {
+                    typealias Observer = KeyedStateObserver
+
+                    @MainActor
+                    init(observer: KeyedStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: KeyedState) -> KeyedStateObserver {
+                        KeyedStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: KeyedState, to observer: KeyedStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: KeyedState, to current: inout KeyedState) {
+                        current = KeyedState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: KeyedState, from snapshot: KeyedState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
+                        self.id = current.id
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(message: Message.letDefault, line: 3, column: 9)
+            ],
+            macros: swidux
+        )
+    }
+
     func testSliceOnUnnamedTypeIsDiagnosed() throws {
         assertMacroExpansion(
             """
@@ -1152,6 +1221,8 @@ private enum Message {
         "@Relation properties must be declared as [T] (to-many) or T? (to-one), where T names a @Persisted struct directly"
     static let inverse =
         "@Relation(inverse:) is not supported: a @Relation is an owned value composition, and a domain value can't hold a back-reference to its parent without containing itself. Remove inverse:, and keep the parent's id in a @ForeignKey property if the child needs it"
+    static let letDefault =
+        "A let without a default can't be rebuilt by the generated init(observer:), which reads only the var properties the observer mirrors; give it a default, or make it a var"
     static let inlineCollision =
         "@Inline property 'payload' stores its blob in a generated 'payloadData' column, which collides with the property 'payloadData'; rename one of them"
     static let mirrorDefault =
