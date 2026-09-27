@@ -408,8 +408,13 @@ struct FeatureFlagsPluginTests {
     /// of `threshold` from `id`'s.
     private func idOnOtherSide(of id: String, key: String, threshold: Int = 50) -> String {
         let side = Bucketing.bucket(id: id, flagKey: key) < threshold
-        return (0..<1_000).map { "other-\($0)" }
-            .first { (Bucketing.bucket(id: $0, flagKey: key) < threshold) != side }!
+        let other = (0..<1_000).map { "other-\($0)" }
+            .first { (Bucketing.bucket(id: $0, flagKey: key) < threshold) != side }
+        guard let other else {
+            Issue.record("no candidate ID buckets on the other side of \(threshold) for \(key)")
+            return id
+        }
+        return other
     }
 
     @Test("a remote variant the app can't parse renders the default and records no exposure")

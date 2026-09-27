@@ -241,7 +241,11 @@ struct SwiduxMacroCompiledTests {
 
     @Test("Narrower members, private included, round-trip through the observer")
     func narrowMembersRoundTrip() {
-        var state = AccessMixState(shown: 1, hidden: 2)
+        // Built field by field: before Swift 6.4, a private stored property
+        // makes the memberwise initializer private.
+        var state = AccessMixState()
+        state.shown = 1
+        state.hidden = 2
         state.setSecret(3)
 
         #expect(AccessMixState(observer: AccessMixState.makeObserver(from: state)) == state)
