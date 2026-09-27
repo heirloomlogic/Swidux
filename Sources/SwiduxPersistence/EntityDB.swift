@@ -41,6 +41,15 @@ public actor EntityDB {
     /// An error the next read should throw instead of touching the store.
     private var injectedFetchFailure: (any Error)?
 
+    /// The author this actor stamps on every transaction it saves.
+    ///
+    /// Unique per instance, so a history scan can tell this database's own
+    /// writes from every other writer's — CloudKit's import, another process,
+    /// or a second `EntityDB` on the same container. What this actor wrote came
+    /// from the state it serves, so the scan has nothing to learn from it that
+    /// it can only learn the expensive way. See `changes(since:readers:)`.
+    let transactionAuthor = "swidux.\(UUID().uuidString)"
+
     /// Test seam: makes the next read throw `error` rather than run, so the
     /// read-failure branch of hydration and of every merge can be exercised.
     ///
@@ -301,6 +310,7 @@ public actor EntityDB {
                     modelContext.delete(row)
                 }
             }
+            modelContext.author = transactionAuthor
             try modelContext.save()
             return []
         } catch {
@@ -416,6 +426,7 @@ public actor EntityDB {
                 }
             }
 
+            modelContext.author = transactionAuthor
             try modelContext.save()
             let outcome = CollapseOutcome(
                 survivors: survivors,
