@@ -230,9 +230,14 @@ public final class PersistenceCoordinator<State, Action> {
     /// > samples don't prune mirrored stores either. Unpruned history is the
     /// > status quo; a broken export is not.
     ///
-    /// Pruning is best-effort housekeeping: nothing here is load-bearing for
-    /// correctness, because the watermark lasts one session and any expiry falls
-    /// back to a full read. A failure is therefore not reported as one.
+    /// The transaction the current watermark names, and everything after it,
+    /// is kept whatever its age. On a store nobody has written to for longer
+    /// than the retention window, the launch anchor *is* one of the doomed
+    /// transactions, and pruning it would expire the watermark hydration just
+    /// installed.
+    ///
+    /// Otherwise pruning is best-effort housekeeping, and a failure is not
+    /// reported as one.
     ///
     /// - Returns: How many transactions were deleted.
     @discardableResult
@@ -241,7 +246,12 @@ public final class PersistenceCoordinator<State, Action> {
         // predicate, so it is only paid for when someone is listening — the same
         // bargain `onLoopSuspected` strikes in the initialiser.
         let counting = observers.isReportingDiagnostics
-        guard let removed = try? await handle.db.pruneHistory(before: cutoff, counting: counting),
+        // Read together: both belong to the database active now.
+        let db = handle.db
+        let anchor = handle.anchor.token
+        guard
+            let removed = try? await db.pruneHistory(
+                before: cutoff, keepingFrom: anchor, counting: counting),
             removed > 0
         else { return 0 }
         observers.report(.historyPruned(count: removed))

@@ -277,16 +277,27 @@ extension EntityDB {
     ///
     /// - Parameters:
     ///   - cutoff: Transactions recorded before this instant are deleted.
+    ///   - anchor: The watermark a merge will scan from next, if there is one.
+    ///     It and every later transaction are kept whatever their age: pruning
+    ///     the transaction a watermark names expires it, and the tick that finds
+    ///     it expired falls back to a full read — the one read that can't tell a
+    ///     deleted last row from an unreadable table.
     ///   - counting: Whether to count what it deletes. Counting costs a second
     ///     full evaluation of the predicate, so it is skipped when no diagnostic
     ///     handler is listening.
     /// - Returns: How many transactions were removed, or 0 when not counting.
     /// - Throws: Whatever the underlying fetch or delete throws.
     @discardableResult
-    func pruneHistory(before cutoff: Date, counting: Bool = true) throws -> Int {
+    func pruneHistory(
+        before cutoff: Date, keepingFrom anchor: DefaultHistoryToken? = nil, counting: Bool = true
+    ) throws -> Int {
         guard !isCloudKitBacked else { return 0 }
-        let descriptor = HistoryDescriptor<DefaultHistoryTransaction>(
-            predicate: #Predicate { $0.timestamp < cutoff })
+        let descriptor: HistoryDescriptor<DefaultHistoryTransaction>
+        if let anchor {
+            descriptor = HistoryDescriptor(predicate: #Predicate { $0.timestamp < cutoff && $0.token < anchor })
+        } else {
+            descriptor = HistoryDescriptor(predicate: #Predicate { $0.timestamp < cutoff })
+        }
         let doomed = counting ? try modelContext.fetchHistory(descriptor).count : 0
         if counting, doomed == 0 { return 0 }
         try modelContext.deleteHistory(descriptor)

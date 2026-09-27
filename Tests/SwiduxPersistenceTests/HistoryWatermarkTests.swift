@@ -789,9 +789,12 @@ struct HistoryWatermarkTests {
             onDiagnostic: onDiagnostic)
         let store = makeNotesStore(coordinator)
 
+        // Two transactions: the older one is prunable, the newer one is what
+        // hydration anchors on, and is kept whatever its age.
         try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+        try seedNotes(container, [Note(id: UUID(), title: "newer news", pinned: false)])
         #expect(
-            try await coordinator.database.historyTransactionCount() > 0,
+            try await coordinator.database.historyTransactionCount() == 2,
             "there must be something to prune, or the test proves nothing")
 
         await coordinator.hydrate(into: store)
@@ -799,7 +802,7 @@ struct HistoryWatermarkTests {
         // for it rather than assuming it already ran.
         try await poll(until: { log.contains(.historyPruned) })
 
-        #expect(try await coordinator.database.historyTransactionCount() == 0)
+        #expect(try await coordinator.database.historyTransactionCount() == 1)
         #expect(log.contains(.historyPruned))
     }
 
@@ -811,6 +814,7 @@ struct HistoryWatermarkTests {
             container: container, debounce: .seconds(30), historyRetention: .seconds(-60),
             onDiagnostic: onDiagnostic)
         try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+        try seedNotes(container, [Note(id: UUID(), title: "newer news", pinned: false)])
 
         // Hydrating a plain value before the store exists is what both guides
         // show, so it is the launch path nearly every app takes.
@@ -819,7 +823,31 @@ struct HistoryWatermarkTests {
         try await poll(until: { log.contains(.historyPruned) })
 
         #expect(log.contains(.historyPruned), "retention was inert for every app following the guides")
-        #expect(try await coordinator.database.historyTransactionCount() == 0)
+        #expect(try await coordinator.database.historyTransactionCount() == 1, "all but the anchor")
+    }
+
+    @Test("pruning a quiet store keeps the anchor, so the first tick still narrows")
+    func pruningKeepsTheAnchorsTransaction() async throws {
+        let container = try makeNotesContainer()
+        let (log, onDiagnostic) = diagnosticLog()
+        // Every transaction is older than the retention window: a store nobody
+        // has written to for longer than that.
+        let coordinator = try makeNotesCoordinator(
+            container: container, debounce: .seconds(30), historyRetention: .seconds(-60),
+            onDiagnostic: onDiagnostic)
+        let id = UUID()
+        try seedNotes(container, [Note(id: id, title: "the only one", pinned: false)])
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        try await poll(until: { log.contains(.historyPruned) })
+        let store = makeNotesStore(coordinator, initialState: initial)
+        log.clear()
+
+        try await EntityDB(modelContainer: container).delete(id: id, as: NoteModel.self)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(!log.contains(.historyUnavailable), "\(log.fallbackReasons)")
+        #expect(store.notes[id] == nil, "the prune expired the anchor, and the fallback kept the last row")
     }
 
     @Test("history is pruned once per session, not on every hydration")
@@ -832,8 +860,10 @@ struct HistoryWatermarkTests {
         let store = makeNotesStore(coordinator)
 
         try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+        try seedNotes(container, [Note(id: UUID(), title: "the anchor", pinned: false)])
         await coordinator.hydrate(into: store)
         try await poll(until: { log.contains(.historyPruned) })
+        #expect(log.contains(.historyPruned), "the premise: the first hydration pruned")
         log.clear()
 
         try seedNotes(container, [Note(id: UUID(), title: "newer", pinned: false)])
