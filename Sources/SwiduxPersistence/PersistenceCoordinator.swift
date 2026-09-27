@@ -489,7 +489,7 @@ public final class PersistenceCoordinator<State, Action> {
     private func mergePhase(_ scope: MergeScope, flushes: [FlushRecord]) async -> MergePhase {
         var folds: [MergeFold] = []
         folds.reserveCapacity(entities.count)
-        var allReadsSucceeded = true
+        var unread: [String] = []
         var collapsedAway: [PersistedEntity<State>.Apply] = []
         for (index, entity) in entities.enumerated() {
             let deleted = scope.declaredDeletions(for: entity.entityName)
@@ -502,12 +502,12 @@ public final class PersistenceCoordinator<State, Action> {
                 guard !reading.isEmpty else { continue }
                 read = await entity.readForPartialMerge(handle, observers, reading)
             }
-            allReadsSucceeded = allReadsSucceeded && read.succeeded
+            if !read.succeeded { unread.append(entity.entityName) }
             if let removal = read.collapsedAway { collapsedAway.append(removal) }
             folds.append(fold(read.apply, entity, writers[index], flushes[index], deleted: deleted))
         }
         await duringReadPhase?()
-        return MergePhase(folds: folds, collapsedAway: collapsedAway, allReadsSucceeded: allReadsSucceeded)
+        return MergePhase(folds: folds, collapsedAway: collapsedAway, unread: unread)
     }
 
     /// One entity's bound merge. Returns what it declined to act on, already
@@ -545,10 +545,13 @@ public final class PersistenceCoordinator<State, Action> {
         /// disk — see ``PersistedEntity/MergeRead/collapsedAway``.
         let collapsedAway: [PersistedEntity<State>.Apply]
 
-        /// Whether every registered entity's read completed. A read that threw
-        /// contributes a no-op fold, which is indistinguishable from "nothing
-        /// changed" unless the phase says so.
-        let allReadsSucceeded: Bool
+        /// The entities whose read threw, by entity name. Each contributes a
+        /// no-op fold, which is indistinguishable from "nothing changed" unless
+        /// the phase says so.
+        let unread: [String]
+
+        /// Whether every registered entity's read completed.
+        var allReadsSucceeded: Bool { unread.isEmpty }
     }
 
     /// Binds one entity's already-fetched merge to the dirty sets and the
@@ -983,6 +986,20 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             }
             handle.installAnchor(
                 watermark: advancingToken, carryOver: carryOver, ifGeneration: attempt.generation)
+        } else if recordAnchor, watermark == nil {
+            // A caller-fed merge consumes no window, so if an entity's read
+            // threw, nothing will re-offer what that entity was handed — the
+            // caller's signal is usually spent. The existing debt stands, since
+            // it can't be recomputed without the read; this call's deferrals and
+            // the unread entities' share of the scope are added to it.
+            var owed = handle.anchor.carryOver
+            owed.formUnion(carryOver)
+            for entityName in phase.unread {
+                let deleted = scope.declaredDeletions(for: entityName)
+                owed.insert(changed: scope.reading(for: entityName).subtracting(deleted), for: entityName)
+                owed.insert(deleted: deleted, for: entityName)
+            }
+            handle.installAnchor(watermark: nil, carryOver: owed, ifGeneration: attempt.generation)
         }
         return phase.allReadsSucceeded
     }
@@ -1021,7 +1038,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// so a caller does not have to re-queue them against its own signal. That
     /// matters here because a sync signal is generally not resent and releasing a
     /// hold writes no transaction of its own, so without it a hold would quietly
-    /// become a veto. ``mergeChanges(into:policy:)`` shares the same debt, so
+    /// become a veto. A call whose read throws is remembered the same way: the
+    /// identities it was handed are owed, not dropped with the read.
+    /// ``mergeChanges(into:policy:)`` shares the same debt, so
     /// either path settles what the other deferred. Both discard it when the
     /// container is swapped.
     ///

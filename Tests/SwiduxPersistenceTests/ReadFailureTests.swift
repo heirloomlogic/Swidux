@@ -311,6 +311,28 @@ struct ReadFailureTests {
         #expect(coordinator.handle.anchor.carryOver.reading(for: "NoteModel").isEmpty)
     }
 
+    @Test("a caller-fed merge whose read threw keeps the identities it was handed")
+    func aFailedReadKeepsTheCallersSignal() async throws {
+        let (coordinator, store, id, _) = try await makeAnchoredNote()
+        let gone = UUID()
+        store.send(.add(Note(id: gone, title: "doomed", pinned: false)))
+        await coordinator.corePlugin.flush()
+        try await remoteWrite(
+            coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)], deletions: [gone])
+
+        // A sync signal names what changed. It is usually spent once read, and
+        // this read throws.
+        await coordinator.database.failNextFetch(with: unreadable)
+        await coordinator.mergeRemote(into: store, ids: [id], deleted: [gone])
+        #expect(store.notes[id]?.title == "mine", "the premise: the read threw and applied nothing")
+
+        // A later call that names nothing still delivers the signal.
+        await coordinator.mergeRemote(into: store, ids: [])
+
+        #expect(store.notes[id]?.title == "edited elsewhere", "the caller's signal was dropped with the read")
+        #expect(store.notes[gone] == nil, "so was the deletion it declared")
+    }
+
     @Test("a partial read that threw is not mistaken for a row that vanished")
     func aFailedPartialReadRemovesNothing() async throws {
         let (coordinator, store, id, failures) = try await makeAnchoredNote()
