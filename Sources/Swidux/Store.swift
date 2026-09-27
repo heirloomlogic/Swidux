@@ -238,6 +238,7 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.
     private func dispatch(_ action: Action) {
         var state = State(observer: observer)
+        let snapshotsBefore = undoPlugin?.snapshotCount
 
         plugins.willReduce(state: state, action: action)
         let effect = reduce(&state, action)
@@ -247,7 +248,10 @@ public final class Store<State: SwiduxObservable, Action> {
         State.apply(state, to: observer)
         syncUndoState()
 
-        if let isUndoableAction, isUndoableAction(action) {
+        // One platform step per snapshot. A coalesced action shares the step
+        // its run opened, and registering it anyway left the Edit menu and
+        // shake-to-undo offering steps that undid nothing.
+        if let isUndoableAction, isUndoableAction(action), undoPlugin?.snapshotCount != snapshotsBefore {
             undoManager?.registerUndo(withTarget: self) { $0.undo() }
         }
 
@@ -318,25 +322,61 @@ public final class Store<State: SwiduxObservable, Action> {
     // MARK: - Undo / Redo
 
     /// Restores the previous state from the undo stack.
+    ///
+    /// With an ``undoManager`` attached, a direct call — an in-app Undo
+    /// button, or a menu command that calls this — is routed through the
+    /// platform manager, so the Edit menu, shake-to-undo, and the button all
+    /// walk one history.
     public func undo() {
+        if let undoManager, routesThroughUndoManager(undoManager, canStep: canUndo && undoManager.canUndo) {
+            return undoManager.undo()
+        }
         perform {
             guard let undoPlugin = self.undoPlugin else { return }
             let current = State(observer: self.observer)
             guard let restored = undoPlugin.undo(current: current) else { return }
             self.applySnapshot(restored)
-            self.undoManager?.registerUndo(withTarget: self) { $0.redo() }
+            // Only an undo the manager is running files the inverse on its redo
+            // stack. Registered from anywhere else it becomes a new *undo*, and
+            // the next system Undo would redo what the user just undid.
+            if let undoManager = self.undoManager, undoManager.isUndoing {
+                undoManager.registerUndo(withTarget: self) { $0.redo() }
+            }
         }
     }
 
     /// Re-applies a previously undone state from the redo stack.
+    ///
+    /// Routed through an attached ``undoManager`` exactly as ``undo()`` is.
     public func redo() {
+        if let undoManager, routesThroughUndoManager(undoManager, canStep: canRedo && undoManager.canRedo) {
+            return undoManager.redo()
+        }
         perform {
             guard let undoPlugin = self.undoPlugin else { return }
             let current = State(observer: self.observer)
             guard let restored = undoPlugin.redo(current: current) else { return }
             self.applySnapshot(restored)
-            self.undoManager?.registerUndo(withTarget: self) { $0.undo() }
+            if let undoManager = self.undoManager, undoManager.isRedoing {
+                undoManager.registerUndo(withTarget: self) { $0.undo() }
+            }
         }
+    }
+
+    /// Whether a direct ``undo()`` / ``redo()`` should drive the platform
+    /// manager instead of the plugin: the manager then calls back into the
+    /// store with `isUndoing` / `isRedoing` set, which is the only way the
+    /// inverse lands on the right stack.
+    ///
+    /// Falls back to stepping the plugin alone, registering nothing, when the
+    /// store or the manager has no step to take (the manager was attached
+    /// after the edits, say), when
+    /// the call is the manager's own callback or arrives mid-dispatch, and when
+    /// a group other than the current event's is open — `UndoManager` raises
+    /// if asked to undo inside one.
+    private func routesThroughUndoManager(_ undoManager: UndoManager, canStep: Bool) -> Bool {
+        guard canStep, !isDispatching, !undoManager.isUndoing, !undoManager.isRedoing else { return false }
+        return undoManager.groupingLevel == 0 || (undoManager.groupsByEvent && undoManager.groupingLevel == 1)
     }
 
     private func applySnapshot(_ restored: State) {

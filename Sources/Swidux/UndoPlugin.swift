@@ -70,6 +70,11 @@ public final class UndoPlugin<State: Equatable & Sendable, Action>: SwiduxPlugin
     /// Whether there is a state to redo to.
     public var canRedo: Bool { !redoStack.isEmpty }
 
+    /// Snapshots pushed so far. The store compares it across a dispatch to
+    /// learn whether that dispatch opened a new undo step — `canUndo` can't
+    /// tell, and neither can the stack's depth once it's capped at `maxDepth`.
+    private(set) var snapshotCount = 0
+
     // MARK: - SwiduxPlugin
 
     /// Snapshots state when `isUndoable(action)` returns `true`.
@@ -89,6 +94,7 @@ public final class UndoPlugin<State: Equatable & Sendable, Action>: SwiduxPlugin
             // Skip — keep the original pre-coalesce snapshot
         } else {
             undoStack.append(state)
+            snapshotCount += 1
             if undoStack.count > maxDepth {
                 undoStack.removeFirst()
             }

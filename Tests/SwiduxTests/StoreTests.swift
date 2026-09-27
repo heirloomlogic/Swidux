@@ -571,6 +571,132 @@ struct StoreTests {
     }
 }
 
+// MARK: - Platform UndoManager
+
+/// The three ways a user reaches undo: the Edit menu and shake-to-undo drive
+/// the platform `UndoManager` (`undoManager.undo()`), while an in-app button —
+/// or the macOS `CommandGroup` the tutorial installs — calls `store.undo()`.
+/// Whichever one they use, the other must stay in step.
+@Suite("Store and the platform UndoManager")
+@MainActor
+struct StoreUndoManagerTests {
+    private static let isRename: @Sendable (TestAction) -> Bool = { if case .rename = $0 { true } else { false } }
+
+    private static func makeStore(
+        _ entity: TestEntity,
+        coalescing: Bool = false,
+        isUndoable: (@Sendable (TestAction) -> Bool)? = isRename
+    ) -> Store<TestState, TestAction> {
+        let never: @Sendable (TestAction) -> Bool = { _ in false }
+        let undoPlugin = UndoPlugin<TestState, TestAction>(
+            isUndoable: isRename, coalescing: coalescing ? isRename : never)
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(undoPlugin)
+        var initial = TestState()
+        initial.items = EntityStore([entity])
+        return Store(
+            initialState: initial, reducer: testReducer, plugins: plugins, undoPlugin: undoPlugin,
+            isUndoable: isUndoable)
+    }
+
+    /// Runs `body` as one UI event. With `groupsByEvent` (the default) the
+    /// manager opens a group on the first registration and closes it at the end
+    /// of the run loop pass, so one pass ends the event.
+    private func event(_ undoManager: UndoManager, _ body: () -> Void) {
+        body()
+        // A run loop with nothing scheduled returns without making a pass.
+        RunLoop.current.add(Timer(timeInterval: 0, repeats: false) { _ in }, forMode: .default)
+        RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        #expect(undoManager.groupingLevel == 0)
+    }
+
+    @Test("coalesced actions register one platform undo step")
+    func coalescedActionsRegisterOnce() {
+        let a = TestEntity(name: "a")
+        let store = Self.makeStore(a, coalescing: true)
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        for name in ["h", "he", "hel"] {
+            event(undoManager) { store.send(.rename(a.id, name)) }
+        }
+        undoManager.undo()  // Edit ▸ Undo
+
+        #expect(store.items[a.id]?.name == "a")
+        #expect(!store.canUndo)
+        #expect(!undoManager.canUndo, "the UndoManager still offers Undo with nothing left to undo")
+    }
+
+    @Test("an action the undo plugin doesn't snapshot registers nothing")
+    func unsnapshottedActionRegistersNothing() {
+        let a = TestEntity(name: "a")
+        let store = Self.makeStore(a, isUndoable: { _ in true })
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        event(undoManager) { store.send(.noOp) }
+
+        #expect(!store.canUndo)
+        #expect(!undoManager.canUndo, "an Undo that would revert an older, unrelated step")
+    }
+
+    @Test("system Undo after an in-app undo does not redo")
+    func systemUndoAfterInAppUndo() {
+        let a = TestEntity(name: "a")
+        let store = Self.makeStore(a)
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        event(undoManager) { store.send(.rename(a.id, "b")) }
+        event(undoManager) { store.undo() }  // the app's Undo button
+        #expect(store.items[a.id]?.name == "a")
+
+        undoManager.undo()  // shake to undo
+        #expect(store.items[a.id]?.name == "a", "system Undo re-applied the change the user just undid")
+        #expect(!undoManager.canUndo)
+
+        undoManager.redo()  // and system Redo redoes the in-app undo
+        #expect(store.items[a.id]?.name == "b")
+        #expect(!store.canRedo)
+    }
+
+    @Test("in-app redo after a system undo stays in step with the UndoManager")
+    func inAppRedoAfterSystemUndo() {
+        let a = TestEntity(name: "a")
+        let store = Self.makeStore(a)
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        event(undoManager) { store.send(.rename(a.id, "b")) }
+        undoManager.undo()
+        #expect(store.items[a.id]?.name == "a")
+
+        event(undoManager) { store.redo() }  // the app's Redo button
+        #expect(store.items[a.id]?.name == "b")
+        #expect(!undoManager.canRedo)
+
+        undoManager.undo()
+        #expect(store.items[a.id]?.name == "a", "system Undo reverts the in-app redo")
+    }
+
+    @Test("in-app undo and redo work when the UndoManager holds none of the store's steps")
+    func inAppUndoWithoutPlatformSteps() {
+        let a = TestEntity(name: "a")
+        let store = Self.makeStore(a)
+        store.send(.rename(a.id, "b"))  // before any UndoManager was attached
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        event(undoManager) { store.undo() }
+        #expect(store.items[a.id]?.name == "a")
+        #expect(!undoManager.canUndo, "an inverse registered outside an undo is filed as a new undo")
+
+        event(undoManager) { store.redo() }
+        #expect(store.items[a.id]?.name == "b")
+        #expect(!undoManager.canUndo)
+    }
+}
+
 // MARK: - Store Holder
 
 /// Lets a plugin closure reference the store that owns it (set after init).

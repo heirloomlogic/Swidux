@@ -80,7 +80,9 @@ WindowGroup { ... }
 .onChange(of: undoManager) { _, new in store.undoManager = new }
 ```
 
-`Store` automatically registers undo/redo actions with the `UndoManager` after each undoable dispatch.
+`Store` registers one step with the `UndoManager` for each undo snapshot, so a coalesced run of keystrokes is one step in the Edit menu too.
+
+Once an `UndoManager` is attached, calling ``Store/undo()`` or ``Store/redo()`` directly — from an in-app button, or from the macOS `CommandGroup` above — routes through it. The Edit menu, shake-to-undo, and your own buttons then walk one history, and each can undo or redo what another did. If the manager holds none of the store's steps (it was attached after the edits were made), the store steps its own history instead and leaves the manager alone.
 
 ## Coalescing
 
