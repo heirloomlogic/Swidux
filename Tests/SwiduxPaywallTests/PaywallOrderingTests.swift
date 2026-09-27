@@ -403,6 +403,32 @@ struct PaywallOrderingTests {
         #expect(store.value(.lastKnownEntitlement) == nil)
     }
 
+    @Test("a stream event delivered after clearCache cannot write the previous account back")
+    func clearCacheFencesStreamUntilANewRead() async throws {
+        let store = InMemoryKeyValueStore()
+        let base = SuspendedPaywallService()
+        let service = ResilientPaywallService(base: base, store: store, seedsFromCache: false)
+        var iterator = service.customerInfoStream().makeAsyncIterator()
+
+        // Account A's lifetime license, produced before the sign-out, reaches
+        // the decorator only after the clear. Nothing marks it as A's.
+        #expect(service.clearCache())
+        base.updates.yield(.init(isPro: true, hasPermanentLicense: true))
+        #expect(await iterator.next()?.hasPermanentLicense == true, "stream events are still forwarded")
+        #expect(store.value(.lastKnownEntitlement) == nil)
+
+        // A read begun after the clear speaks for the new account and
+        // reopens the cache to the stream.
+        let read = Task { try await service.customerInfo() }
+        await base.waitForRead()
+        await base.finishRead(snapshot: .init())
+        _ = try await read.value
+        base.updates.yield(.init(isPro: true))
+        _ = await iterator.next()
+        #expect(store.value(.lastKnownEntitlement)?.isPro == true)
+        base.updates.finish()
+    }
+
     @Test("cancellation preserves the cache when a provider ignores cancellation")
     func cancelledReadDoesNotPersist() async throws {
         let store = InMemoryKeyValueStore()

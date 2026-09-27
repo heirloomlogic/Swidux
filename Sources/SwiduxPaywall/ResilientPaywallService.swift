@@ -187,7 +187,7 @@ public struct ResilientPaywallService: PaywallService {
                 let snapshot = try await base.customerInfo()
                 // A newer successful read or stream event owns the cache now. Serve
                 // its value below instead of publishing this older response.
-                guard persist(snapshot, for: generation) else { break attempts }
+                guard persist(snapshot, by: .read(generation)) else { break attempts }
                 return snapshot
             } catch let error as CancellationError {
                 lastError = error
@@ -225,7 +225,7 @@ public struct ResilientPaywallService: PaywallService {
             }
             let task = Task {
                 for await snapshot in base.customerInfoStream() {
-                    guard service.persist(snapshot) else { break }
+                    guard service.persist(snapshot, by: .stream) else { break }
                     continuation.yield(snapshot)
                 }
                 continuation.finish()
@@ -249,7 +249,7 @@ public struct ResilientPaywallService: PaywallService {
         try Task.checkCancellation()
         // Only ``clearCache()`` rejects a restore: it began for an account
         // the app has since signed out of.
-        guard persist(snapshot, since: epoch) else { throw EntitlementReadError.superseded }
+        guard persist(snapshot, by: .restore(epoch: epoch)) else { throw EntitlementReadError.superseded }
         return snapshot
     }
 
@@ -267,8 +267,12 @@ public struct ResilientPaywallService: PaywallService {
     /// previous user's entitlement (for up to `maxCacheAge`, or indefinitely
     /// for a permanent license). Reads and restores still in flight are
     /// superseded, so one begun for the previous account cannot write its
-    /// result back. ``PaywallState`` is not touched: dispatch
-    /// `.refreshCustomerInfo` afterwards to re-read the new account.
+    /// result back. Base-stream events carry no account, and one produced
+    /// before the sign-out can arrive after it, so the stream keeps
+    /// forwarding but stops writing the cache until a read or restore begun
+    /// after the clear succeeds. ``PaywallState`` is not touched: dispatch
+    /// `.refreshCustomerInfo` afterwards to re-read the new account (which
+    /// also reopens the cache to the stream).
     ///
     /// - Returns: `true` if the cache is now empty. A Keychain-backed store
     ///   returns `false` when the keychain is unreachable.
@@ -278,6 +282,7 @@ public struct ResilientPaywallService: PaywallService {
             state.sequence += 1
             state.accepted = state.sequence
             state.epoch += 1
+            state.streamFenced = true
             return store.removeValue(for: .lastKnownEntitlement)
         }
     }
@@ -295,34 +300,49 @@ public struct ResilientPaywallService: PaywallService {
         ordering.state.withLock { generation >= $0.accepted }
     }
 
-    /// Requests carry their start sequence; only accepted live results advance
+    /// Who is asking to write the cache, which decides how it is ordered.
+    private enum CacheWriter {
+        /// A read, ordered by its start sequence.
+        case read(UInt64)
+        /// A restore, ordered by completion. Carries the cache epoch it began in.
+        case restore(epoch: UInt64)
+        /// A base-stream event, ordered by arrival.
+        case stream
+    }
+
+    /// Reads carry their start sequence; only accepted live results advance
     /// the supersession boundary. A failed independent read must not discard
     /// another caller's successful in-flight read.
     /// Validation and persistence share one lock so superseded writes cannot
     /// race a newer event's cache commit.
-    /// A restore passes the cache epoch it began in instead of a generation.
-    private func persist(
-        _ snapshot: EntitlementSnapshot,
-        for generation: UInt64? = nil,
-        since epoch: UInt64? = nil
-    ) -> Bool {
+    private func persist(_ snapshot: EntitlementSnapshot, by writer: CacheWriter) -> Bool {
         ordering.state.withLock { state in
             guard !Task.isCancelled else { return false }
-            if let generation {
+            switch writer {
+            case .read(let generation):
                 guard generation >= state.accepted else { return false }
-            }
-            if let epoch {
+            case .restore(let epoch):
                 guard epoch == state.epoch else { return false }
+            case .stream:
+                break
             }
             // Forward cached values without granting them new authority or
             // renewing their original freshness window in nested decorators.
             guard snapshot.source == .live else { return true }
-            if let generation {
+            switch writer {
+            case .read(let generation):
                 state.accepted = generation
-            } else {
+            case .restore:
+                state.sequence += 1
+                state.accepted = state.sequence
+            case .stream:
+                // Forward, but don't write or supersede: after a clear this
+                // event may still be the previous account's.
+                guard !state.streamFenced else { return true }
                 state.sequence += 1
                 state.accepted = state.sequence
             }
+            state.streamFenced = false
             store.setValue(CachedEntitlement(snapshot, cachedAt: now()), for: .lastKnownEntitlement)
             return true
         }
@@ -374,6 +394,9 @@ private final class EntitlementCacheOrdering: Sendable {
         /// Advanced by `clearCache()`, so a restore begun before a clear
         /// cannot write back the previous account's entitlement.
         var epoch: UInt64 = 0
+        /// Set by `clearCache()`; stream events don't write until a read or
+        /// restore begun after the clear has.
+        var streamFenced = false
     }
 
     let state = Mutex(State())
