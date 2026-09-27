@@ -272,12 +272,13 @@ extension Store where State == AppState, Action == AppAction {
             },
             plugins: plugins,
             undoPlugin: undoPlugin,
-            persistencePlugin: persistencePlugin,
             isUndoable: isUndoable
         )
     }
 }
 ```
+
+Registering `persistencePlugin` on `plugins` is enough — `Store` finds it there for `store.mutate { … }` and undo/redo, so it doesn't need to be named again as `persistencePlugin:`. `undoPlugin`/`isUndoable` still need their own parameters: only persistence auto-discovers.
 
 ## Step 8: Build the views
 
