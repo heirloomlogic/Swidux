@@ -21,9 +21,14 @@ concurrency:
 jobs:
   test-macos:
     runs-on: macos-26
-    # Observed 3m32s-3m46s. Without a cap the job inherits GitHub's six-hour
-    # default, so one hung test holds a runner and blocks the merge all day.
-    timeout-minutes: 10
+    # Observed 3m32s-3m46s while swift-syntax resolved to a release with a
+    # prebuilt for the runner's toolchain (603.0.2). When the newest
+    # swift-syntax has no prebuilt yet (604.0.0 on Swift 6.3.3), it builds
+    # from source and the Release step alone takes about 7 minutes; the whole
+    # job observed at just over 10. Without a cap the job inherits GitHub's
+    # six-hour default, so one hung test holds a runner and blocks the merge
+    # all day.
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
