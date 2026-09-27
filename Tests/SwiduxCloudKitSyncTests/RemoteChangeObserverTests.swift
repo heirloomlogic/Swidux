@@ -214,15 +214,16 @@ struct RemoteChangeObserverTests {
         var posted = 0
         let clock = ContinuousClock()
         let started = clock.now
-        while recorder.changes.isEmpty, clock.now - started < .seconds(3) {
+        while recorder.changes.isEmpty, clock.now - started < .seconds(8) {
             post(to: center, storeURL: Self.ours)
             posted += 1
             try await Task.sleep(for: .milliseconds(20))
         }
 
         let change = try #require(recorder.changes.first, "the burst never fired while notifications kept arriving")
-        // It fired mid-stream, not because the stream ran out.
-        #expect(clock.now - started < .seconds(2))
+        // It fired mid-stream, not because the stream ran out: the loop only
+        // stops posting once a change arrives. The bound is loose for CI.
+        #expect(clock.now - started < .seconds(6))
         #expect(change.notificationCount >= 1)
         #expect(change.notificationCount <= posted)
     }

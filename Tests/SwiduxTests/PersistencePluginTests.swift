@@ -639,20 +639,21 @@ struct PersistencePluginTests {
             if writes.contains(where: { $0.id == failed.id }) { persistedFailed.value = true }
         }
         let plugin = PersistencePlugin<TestState, TestAction>(
-            writers: [writer], debounce: .milliseconds(200), retry: Self.fastRetry)
+            writers: [writer], debounce: .milliseconds(200), maxWait: .seconds(30), retry: Self.fastRetry)
         var state = TestState()
         state.items[failed.id] = failed
         plugin.afterReduce(state: &state, action: .noOp)
         try await poll(until: { attempts.value == 1 }, timeout: .seconds(5))
 
         // Keep editing another entity faster than the debounce. The retry is
-        // due within tens of milliseconds; the max wait not for a second.
+        // due within tens of milliseconds; the max wait is pushed out of reach
+        // so it can't be what flushes the failed row.
         let other = TestEntity(name: "0")
         state.items[other.id] = other
         let clock = ContinuousClock()
         let start = clock.now
         var index = 0
-        while !persistedFailed.value, clock.now - start < .milliseconds(600) {
+        while !persistedFailed.value, clock.now - start < .seconds(5) {
             index += 1
             state.items.modify(other.id) { $0.name = "\(index)" }
             plugin.afterReduce(state: &state, action: .noOp)

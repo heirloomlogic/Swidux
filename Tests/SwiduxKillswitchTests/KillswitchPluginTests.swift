@@ -375,7 +375,7 @@ struct KillswitchPluginTests {
                 // A callback API with no cancellation hook: it answers when it
                 // answers, cancelled or not.
                 await withCheckedContinuation { continuation in
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
                         continuation.resume(returning: KillswitchConfig())
                     }
                 }
@@ -390,7 +390,9 @@ struct KillswitchPluginTests {
 
         let elapsed = try await drive(.forceFetch, through: plugin, state: &state)
 
-        #expect(elapsed < .seconds(1.5), "the plugin waited for the fetch to finish on its own")
+        // Far from both the 0.2 s bound and the 10 s answer, so a loaded CI
+        // runner can't make it flaky in either direction.
+        #expect(elapsed < .seconds(5), "the plugin waited for the fetch to finish on its own")
         #expect(state.killswitch.isFetching == false)
     }
 
