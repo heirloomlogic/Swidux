@@ -244,10 +244,7 @@ public struct PersistedEntity<State> {
                         // before this was "we'll try again", and an app that
                         // wants to warn the user has been waiting for the
                         // difference.
-                        observers.onFailure(
-                            PersistenceFailure(
-                                operation: .save, entityType: entityTypeName, underlying: error,
-                                isFinal: true))
+                        observers.onFailure(.save(error, entityType: entityTypeName, isFinal: true))
                     }
                 ) { writes, deletions in
                     let touched = Set(writes.map(\.id)).union(deletions)
@@ -270,16 +267,22 @@ public struct PersistedEntity<State> {
                         try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
                         await record { $0.markPersisted(touched) }
                     } catch {
+                        // A batch that failed only in part saved everything
+                        // else, and names the rows it could not.
+                        let failed = (error as? any PartialPersistFailure)?.failedIDs ?? touched
                         // Belt and braces alongside the writer putting the batch
                         // back: this records memory ≠ storage, and it is the
                         // only record a hand-written non-throwing persist
                         // closure could leave.
-                        await record { $0.markFailed(touched) }
-                        observers.onFailure(
-                            PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
-                        // Rethrow so the writer puts the batch back and the
-                        // plugin retries it. Swallowing here is what made a
-                        // failed save silent data loss.
+                        await record { ledger in
+                            // Both run: each moves a different part of the set.
+                            let cleared = ledger.markPersisted(touched.subtracting(failed))
+                            return ledger.markFailed(failed) || cleared
+                        }
+                        observers.onFailure(.save(error, entityType: entityTypeName))
+                        // Rethrow so the writer puts the failed rows back and
+                        // the plugin retries them. Swallowing here is what made
+                        // a failed save silent data loss.
                         throw error
                     }
                 }

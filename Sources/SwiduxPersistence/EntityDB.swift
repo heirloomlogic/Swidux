@@ -212,28 +212,73 @@ public actor EntityDB {
     /// row sharing an ID, so a batch applied against a store holding duplicates
     /// leaves no stale or resurrectable copies.
     ///
-    /// On failure the context is rolled back before rethrowing, leaving no
-    /// half-applied changes behind for a later save to pick up.
+    /// A row whose value cannot be converted to its stored form fails on its
+    /// own: every other row is saved, and ``UnencodableRows`` names the ones
+    /// that were not. Conversion failures are deterministic, so failing the
+    /// whole batch would fail it identically on every retry — and every later
+    /// edit of this type joins that batch. Any other failure rolls the context
+    /// back before rethrowing, leaving no half-applied changes behind for a
+    /// later save to pick up.
+    ///
+    /// - Throws: ``UnencodableRows`` after saving the rest of the batch, or
+    ///   whatever the fetch or save throws, with nothing saved.
     public func apply<M: PersistableModel>(
         writes: [M.Domain],
         deletions: Set<UUID>,
         as type: M.Type
     ) throws {
+        var unencodable: Set<UUID> = []
+        var firstError: (any Error)?
+        // Each pass that meets a conversion failure excludes at least one more
+        // row than the last, so this ends — in two passes for any batch whose
+        // failures are deterministic.
+        while true {
+            let remaining = unencodable.isEmpty ? writes : writes.filter { !unencodable.contains($0.id) }
+            let failures = try applyOnce(writes: remaining, deletions: deletions, as: M.self)
+            guard let first = failures.first else { break }
+            firstError = firstError ?? first.error
+            unencodable.formUnion(failures.lazy.map(\.id))
+        }
+        if let firstError {
+            throw UnencodableRows(failedIDs: unencodable, underlying: firstError)
+        }
+    }
+
+    /// One attempt at a batch. Saves it when every row converts; otherwise rolls
+    /// back and reports the rows that did not, in batch order.
+    ///
+    /// Nothing from a pass that met a conversion failure is saved: a throw can
+    /// come part-way through `update(from:)`, leaving that row half-written in
+    /// the context, and only a rollback is sure to undo it.
+    private func applyOnce<M: PersistableModel>(
+        writes: [M.Domain],
+        deletions: Set<UUID>,
+        as type: M.Type
+    ) throws -> [(id: UUID, error: any Error)] {
         do {
             let touchedIDs = Set(writes.map(\.id)).union(deletions)
             var existingByID = try rowsByID(touchedIDs, as: M.self)
+            var unencodable: [(id: UUID, error: any Error)] = []
             for domain in writes {
-                let existing = existingByID[domain.id] ?? []
-                if existing.isEmpty {
-                    let inserted = try M(from: domain)
-                    modelContext.insert(inserted)
-                    // Keep the map faithful to context state: a later
-                    // deletion of the same ID must see the pending row,
-                    // exactly as a per-ID fetch would.
-                    existingByID[domain.id] = [inserted]
-                } else {
-                    for row in existing { try row.update(from: domain) }
+                do {
+                    let existing = existingByID[domain.id] ?? []
+                    if existing.isEmpty {
+                        let inserted = try M(from: domain)
+                        modelContext.insert(inserted)
+                        // Keep the map faithful to context state: a later
+                        // deletion of the same ID must see the pending row,
+                        // exactly as a per-ID fetch would.
+                        existingByID[domain.id] = [inserted]
+                    } else {
+                        for row in existing { try row.update(from: domain) }
+                    }
+                } catch {
+                    unencodable.append((domain.id, error))
                 }
+            }
+            guard unencodable.isEmpty else {
+                modelContext.rollback()
+                return unencodable
             }
             for id in deletions {
                 for row in existingByID[id] ?? [] {
@@ -241,6 +286,7 @@ public actor EntityDB {
                 }
             }
             try modelContext.save()
+            return []
         } catch {
             modelContext.rollback()
             throw error

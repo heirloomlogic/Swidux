@@ -23,7 +23,8 @@ import Foundation
 ///    ``FlushOutcome/failed`` so ``PersistencePlugin`` can retry it. Restoring
 ///    never overwrites newer intent: a write drained while the save was in
 ///    flight supersedes the restored value, and a write and a deletion for one
-///    ID never travel together.
+///    ID never travel together. A save that failed only in part says so by
+///    throwing a ``PartialPersistFailure``, and only the rows it names go back.
 @MainActor
 public final class StateWriter<State> {
     private let drainBody: (inout State) -> Bool
@@ -43,7 +44,9 @@ public final class StateWriter<State> {
     ///   - persist: An async closure that receives the batched writes and deletions.
     ///             Called off the MainActor when the debounce timer fires. If it
     ///             throws, the batch is put back into the pending buffers rather
-    ///             than lost, and the plugin retries it.
+    ///             than lost, and the plugin retries it. Throw a
+    ///             ``PartialPersistFailure`` when everything but some rows was
+    ///             saved, and only those rows are put back.
     public init<Entity: Identifiable & Equatable & Sendable>(
         keyPath: WritableKeyPath<State, EntityStore<Entity>>,
         onExhausted: (@MainActor (any Error) -> Void)? = nil,
@@ -100,6 +103,12 @@ public final class StateWriter<State> {
                     return .persisted
                 } catch {
                     lastError = error
+                    // Only what failed goes back. A closure that saved most of
+                    // the batch says which rows it could not; re-buffering the
+                    // rest would retry writes that already landed, and chain
+                    // every later edit of this type to a row that may never
+                    // save.
+                    let failed = (error as? any PartialPersistFailure)?.failedIDs
                     // Put the batch back so it is retried rather than lost —
                     // but never over anything newer. A drain that landed while
                     // the save was suspended is the more recent intent, and the
@@ -108,10 +117,12 @@ public final class StateWriter<State> {
                     // one ID must never travel together or the delete wins at
                     // the database.
                     for entity in writes
-                    where pendingWrites[entity.id] == nil && !pendingDeletions.contains(entity.id) {
+                    where failed?.contains(entity.id) ?? true
+                        && pendingWrites[entity.id] == nil && !pendingDeletions.contains(entity.id)
+                    {
                         pendingWrites[entity.id] = entity
                     }
-                    for id in deletions where pendingWrites[id] == nil {
+                    for id in deletions where failed?.contains(id) ?? true && pendingWrites[id] == nil {
                         pendingDeletions.insert(id)
                     }
                     return .failed
@@ -211,4 +222,17 @@ public final class FlushRecord {
 @MainActor
 private struct WeakFlushRecord {
     weak var record: FlushRecord?
+}
+
+/// A `persist` failure confined to some of the batch.
+///
+/// Throw one from a ``StateWriter`` `persist` closure when everything else in
+/// the batch reached storage. The writer then puts back only ``failedIDs`` for
+/// the retry instead of the whole batch — which matters when the failure is
+/// deterministic, because one row that can never save would otherwise hold
+/// every later write of its type back with it.
+public protocol PartialPersistFailure: Error {
+    /// The IDs whose write or deletion did not reach storage. Everything else
+    /// in the batch did.
+    var failedIDs: Set<UUID> { get }
 }
