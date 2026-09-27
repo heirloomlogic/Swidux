@@ -50,6 +50,11 @@ public struct KillswitchService: Sendable {
     /// and non-2xx statuses are treated as fetch failures (the plugin then
     /// falls back to its cache).
     ///
+    /// `fetchTimeout` bounds the whole fetch, headers and body together — not
+    /// just the gap between packets. A response trickled in a byte at a time
+    /// still fails at `fetchTimeout`, so the plugin reaches its cached verdict
+    /// on schedule instead of waiting on a transfer that never ends.
+    ///
     /// ## The cache is the other input path
     ///
     /// A cached config produces a verdict with exactly the authority a fetched
@@ -88,7 +93,8 @@ public struct KillswitchService: Sendable {
                 request.timeoutInterval = fetchTimeout
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 let data = try await BoundedResponse.data(
-                    for: request, session: session, limit: Self.maxResponseBytes
+                    for: request, session: session, limit: Self.maxResponseBytes,
+                    deadline: .seconds(fetchTimeout)
                 )
                 return try JSONDecoder().decode(KillswitchConfig.self, from: data)
             },

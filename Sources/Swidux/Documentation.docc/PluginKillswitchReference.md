@@ -111,7 +111,7 @@ public struct KillswitchService: Sendable {
 
 `live(endpoint:)` decodes JSON from `endpoint` with a `reloadIgnoringLocalCacheData` policy and persists the result to `swidux-killswitch.json` in a **bundle-scoped subdirectory** of the user's caches directory. The stored payload records the endpoint it came from, and a cache written for a different endpoint reads as absent — the cached config produces a verdict with the same authority a fetched one does, so it is scoped and checked rather than trusted. See <doc:SecurityPosture> §6a. `mock(result:cached:)` keeps an in-memory cache and lets a test inject a closure that returns or throws.
 
-The endpoint must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure) — the killswitch is a remote control channel and must not be tamperable in transit. Non-2xx responses and payloads over 1 MB are treated as fetch failures, which fall back to the cache (and ultimately fail open).
+The endpoint must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure) — the killswitch is a remote control channel and must not be tamperable in transit. Non-2xx responses, payloads over 1 MB, and fetches that run past `fetchTimeout` are treated as fetch failures, which fall back to the cache (and ultimately fail open). `fetchTimeout` bounds the whole fetch, headers and body together; it is not just an idle timeout, so a response trickled in a byte at a time still fails on schedule.
 
 ### KillswitchConfig
 
