@@ -120,7 +120,9 @@ That has to be the rule, because the alternative is worse than a missing undo st
 
 The same holds in the other direction. If another device creates an entity and the merge surfaces it after an undo snapshot was taken, undoing past that snapshot keeps the row instead of deleting it — a deletion would sync out and remove the other device's creation everywhere. Redo follows the same rule. The row is still the local user's to edit and delete, and undo and redo of *those* changes work as usual.
 
-Apps that don't sync never hit either case: nothing is recorded, and undo behaves exactly as it always has.
+Hydration counts as arriving from storage too. If an action is dispatched before `PersistenceCoordinator.hydrate(into:)` finishes loading a live store — an `.onAppear`, a restored search field — its snapshot holds the still-empty store, and undoing it keeps every hydrated row rather than deleting them all from disk. A hand-written hydration that replaces a live ``EntityStore`` should build it with `EntityStore(hydrating:)` for the same reason.
+
+Apps that don't sync still get the hydration rule; beyond that nothing is recorded, and undo behaves exactly as it always has.
 
 ## Memory
 

@@ -1106,6 +1106,41 @@ struct EntityStoreTests {
         #expect(!store.changes.deletions.contains(remote.id))
     }
 
+    @Test("restore keeps rows a hydration installed after the snapshot")
+    func restoreKeepsHydratedRows() {
+        let snapshot = EntityStore<TestEntity>()  // taken before the hydration landed
+        let rows = [TestEntity(name: "one"), TestEntity(name: "two")]
+        var store = EntityStore(hydrating: rows)
+
+        store.restore(from: snapshot)
+
+        #expect(store.values == rows, "hydrated rows came from storage; undo didn't create them")
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("a hydrated row the local user deletes is theirs to undo and redo")
+    func hydratedRowDeleteUndoRedo() {
+        let row = TestEntity(name: "stored")
+        var store = EntityStore(hydrating: [row])
+        let beforeDelete = store
+        store[row.id] = nil
+        let afterDelete = store
+
+        store.restore(from: beforeDelete)
+        #expect(store[row.id] == row)
+        store.resetChanges()
+        store.restore(from: afterDelete)
+
+        #expect(store[row.id] == nil)
+        #expect(store.changes.deletions.contains(row.id))
+    }
+
+    @Test("a hydrating init records nothing to persist")
+    func hydratingInitRecordsNoChanges() {
+        let store = EntityStore(hydrating: [TestEntity(name: "stored")])
+        #expect(store.changes.isEmpty)
+    }
+
     @Test("remote arrivals are excluded from equality")
     func remoteArrivalsExcludedFromEquality() {
         let remote = TestEntity(name: "remote")

@@ -125,6 +125,24 @@ public nonisolated struct EntityStore<
         }
     }
 
+    /// Creates a store from rows read out of storage, recording each one as an
+    /// arrival from storage — hydration into a *live* store.
+    ///
+    /// Like ``init(_:)`` it records no changes, and it collapses duplicate IDs
+    /// the same way. The difference is undo: a hydration that lands after an
+    /// undo snapshot was taken replaces the store wholesale, so a plain
+    /// ``init(_:)`` would leave ``restore(from:)`` treating every row as one
+    /// the local user created since — and an undo would record, flush, and sync
+    /// a deletion of all of them. Rows created here are ones storage handed
+    /// over, which no undo deletes. `PersistenceCoordinator` hydrates through
+    /// this; use it for any hand-written hydration that replaces a store.
+    public init(hydrating rows: [Entity]) {
+        self.init(rows)
+        // One token serves the whole read: each ID arrives in it once.
+        let arrival = UUID()
+        remoteArrivals = Dictionary(uniqueKeysWithValues: entities.lazy.map { ($0.id, arrival) })
+    }
+
     // MARK: - Access
 
     /// O(1) keyed access.
