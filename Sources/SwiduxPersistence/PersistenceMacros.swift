@@ -47,6 +47,13 @@ public macro Persisted() = #externalMacro(module: "SwiduxMacros", type: "Persist
 /// bidirectional relationships are not supported. Give the child a
 /// ``ForeignKey()`` `UUID` if it needs to name its parent.
 ///
+/// That also makes the relationship **local-only**. CloudKit mirroring requires
+/// an inverse on every relationship, so a model that declares a `@Relation`
+/// can't be synced: ``ContainerFactory`` refuses to build a mirrored container
+/// over it and throws ``CloudKitIncompatibleSchema``. In a synced app, store an
+/// owned value with ``Inline()``, or register the child as an entity of its own
+/// with a ``ForeignKey()`` to its parent.
+///
 /// A to-many relation is **unordered**: SwiftData stores it as a set, so the
 /// array comes back from storage in no particular order, and a change that only
 /// reorders it is not saved. Sort in the domain (or store an explicit position)

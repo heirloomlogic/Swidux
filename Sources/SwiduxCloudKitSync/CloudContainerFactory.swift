@@ -23,7 +23,11 @@ public enum CloudContainerFactory {
     ///   - cloudKitContainerID: Optional explicit CloudKit container id; `nil`
     ///     uses `.automatic`.
     /// - Returns: A `ModelContainer` in the requested `SyncMode`.
-    /// - Throws: Any error thrown by `ContainerFactory.makeContainer`.
+    /// - Throws: `CloudKitIncompatibleSchema` for `.iCloud` over models that
+    ///   declare a `@Relation` — CloudKit mirroring requires an inverse on every
+    ///   relationship, and a `@Relation` has none. The same models build
+    ///   `.localOnly`. Otherwise, any error thrown by
+    ///   `ContainerFactory.makeContainer`.
     public static func makeContainer(
         models: [any PersistentModel.Type],
         mode: SyncMode,

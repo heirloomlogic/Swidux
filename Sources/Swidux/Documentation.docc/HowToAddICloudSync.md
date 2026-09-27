@@ -66,11 +66,19 @@ import SwiduxCloudKitSync
 let containerID = "iCloud.com.yourcompany.yourapp"
 let mode = resolveDesiredSyncMode(from: env.keyValue)   // default .iCloud (opt-out)
 
-let container = try CloudContainerFactory.makeContainer(
-    models: [CardModel.self],
-    mode: mode,
-    cloudKitContainerID: containerID
-)
+let container: ModelContainer
+do {
+    container = try CloudContainerFactory.makeContainer(
+        models: [CardModel.self],
+        mode: mode,
+        cloudKitContainerID: containerID
+    )
+} catch let error as CloudKitIncompatibleSchema {
+    // A model CloudKit can't mirror — a build bug, not a user one. Its message
+    // names the relationships. Run local-only rather than not at all.
+    assertionFailure(error.localizedDescription)
+    container = try CloudContainerFactory.makeContainer(models: [CardModel.self], mode: .localOnly)
+}
 
 let persistence = PersistenceCoordinator<AppState, AppAction>(
     entities: [.entity(\.cards)],
@@ -79,6 +87,8 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
 plugins.register(persistence.corePlugin)
 await persistence.hydrate(into: &initial)
 ```
+
+`CloudContainerFactory` throws `CloudKitIncompatibleSchema` when asked to mirror a model that declares a `@Relation`: CloudKit requires an inverse on every relationship, and a `@Relation` has none. Without the check SwiftData fails to load the store (Core Data error 134060) and some hosts abort. The same models build local-only, which is the fallback above; to sync them, see <doc:HowToAddPersistence>.
 
 `resolveDesiredSyncMode(from:)` reads the persisted `KVKey.syncMode`. The default is **sync-on with opt-out** (`.iCloud`) for any app that links this product; pass `default: .localOnly` to make sync strictly opt-in instead.
 
@@ -122,6 +132,7 @@ The entitlement check is not the iCloud Drive identity (`FileManager.ubiquityIde
 | `.syncing` | Entitled, signed in, active | Healthy. |
 | `.unavailableNotSignedIn` | Entitled, no iCloud account | Show a gentle "Sign in to iCloud" banner; never assert. |
 | `.unavailableRestricted` | MDM/parental restriction | Inform; run local-only. |
+| `.unavailableRebuildFailed` | A toggle's container rebuild threw — for example `CloudKitIncompatibleSchema` over a `@Relation` model | Nothing changed: the previous database stays active and the choice isn't saved. The log names the cause; a schema error is a build bug. |
 | `.misconfiguredNoEntitlement` | Sync requested but **not entitled**, or CloudKit rejected the build's container — a build/signing bug | Degrade to local-only; turning sync on hits an `assertionFailure` in **DEBUG only**, never crashes release. |
 
 Run the probe at launch and on `scenePhase → .active`, and disable the Settings toggle when the status isn't actionable by the user. Record the result with a dispatch, as in Step 5 — never by writing into a state snapshot taken before the `await`:
