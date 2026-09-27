@@ -198,28 +198,39 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     public func value<Value>(_ key: KVKey<Value>) -> Value? {
         switch lookup(key) {
         case .found(let value): return value
-        case .missing, .failed: return nil
+        case .missing, .unreadable, .undecodable: return nil
         }
     }
 
-    /// The outcome of a Keychain lookup, distinguishing "no item" from
-    /// "an item may exist but couldn't be read" — the distinction
-    /// ``KeyValueStore/deviceIdentity(key:)`` needs so a transient read failure never mints
-    /// over an identity that's still there. ``value(_:)`` collapses `.missing`
-    /// and `.failed` to `nil`; use `lookup(_:)` where that distinction matters.
+    /// The outcome of a Keychain lookup, distinguishing "no item" from the two
+    /// different ways an item can fail to read — the distinction
+    /// ``KeyValueStore/deviceIdentity(key:)`` needs so a read failure never
+    /// mints over an identity that's still there, and so a permanently
+    /// undecodable item doesn't masquerade as a transient one forever.
+    /// ``value(_:)`` collapses `.missing`, `.unreadable`, and `.undecodable`
+    /// to `nil`; use `lookup(_:)` where the distinction matters.
     enum LookupResult<Value> {
         /// Found and decoded successfully.
         case found(Value)
         /// No item exists for this key (`errSecItemNotFound`).
         case missing
-        /// An item may exist but couldn't be read: an environment failure
-        /// (locked keychain, missing entitlement) or a decode failure.
-        /// Callers must not treat this like `.missing` and write over it.
-        case failed
+        /// The item itself couldn't be read: an environment condition
+        /// (locked keychain, missing entitlement) that a later read, once
+        /// the environment changes, can resolve. Callers must not treat this
+        /// like `.missing` and write over it.
+        case unreadable(OSStatus)
+        /// The item was read successfully but its bytes don't decode as
+        /// `Value`. Unlike `.unreadable`, re-reading returns the same bytes
+        /// every time — this doesn't self-resolve. Most commonly a payload
+        /// written by something other than this type (an earlier hand-rolled
+        /// wrapper, a different app version). Callers must not treat this
+        /// like `.missing` either: the item is still there, just not in the
+        /// shape expected.
+        case undecodable(Data)
     }
 
-    /// Reads `key`, distinguishing `.missing` from `.failed`. See
-    /// ``LookupResult``.
+    /// Reads `key`, distinguishing `.missing` from the two read-failure
+    /// cases. See ``LookupResult``.
     func lookup<Value>(_ key: KVKey<Value>) -> LookupResult<Value> {
         var query = baseQuery(account: key.name)
         query[kSecReturnData as String] = true
@@ -229,14 +240,14 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
         case errSecSuccess:
-            guard let data = result as? Data else { return .failed }
+            guard let data = result as? Data else { return .unreadable(status) }
             do {
                 return .found(try decoder.decode(Value.self, from: data))
             } catch {
                 logger.error(
                     "Decode failed for key '\(key.name, privacy: .public)': \(error.localizedDescription, privacy: .public)"
                 )
-                return .failed
+                return .undecodable(data)
             }
         case errSecItemNotFound:
             return .missing
@@ -244,9 +255,19 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
             logger.error(
                 "Keychain read failed for key '\(key.name, privacy: .public)': OSStatus \(status)"
             )
-            return .failed
+            return .unreadable(status)
         }
     }
+
+    /// Identifies this store's backing Keychain location — `(service,
+    /// accessGroup)` — independent of any particular struct instance.
+    ///
+    /// `KeychainKeyValueStore` is a value type, so a caller may construct a
+    /// fresh instance per call while still meaning "the same store." Process-
+    /// wide state that must agree across such instances (see the session
+    /// identity cache in `keychainDeviceIdentity`) keys on this instead of
+    /// `self`.
+    var storeIdentity: String { "\(service)|\(accessGroup ?? "")" }
 
     /// Stores `value`. Passing `nil` removes the key.
     ///

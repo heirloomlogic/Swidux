@@ -33,9 +33,12 @@ const DEFAULTS = {
 };
 const FALLBACK = "{}";
 
-// Per-resource edge cache. Killswitch is the incident lever — keep it short so
-// a flip reaches edge caches fast. (The client's `cacheLifetime` still
-// dominates effective propagation; see README "Freshness".)
+// Per-resource Cache-Control header, honored by the *requesting client*
+// (URLSession, a browser) — Cloudflare's CDN does not cache Worker responses,
+// so this is not an edge cache. Killswitch is the incident lever — keep its
+// hint short so a client that respects it re-fetches sooner. (The client's
+// own `cacheLifetime` still dominates effective propagation either way; see
+// README "Freshness".)
 const CACHE_CONTROL = {
   __proto__: null,
   killswitch: "public, max-age=60",
