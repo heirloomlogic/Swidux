@@ -40,6 +40,9 @@ struct PersistedProperty {
     /// Whether a `@Relation`'s declared type has a shape the generator can
     /// map: `[T]`, `T?` or `T`, with `T` naming a type directly.
     let hasSupportedRelationShape: Bool
+    /// The access level the property spells, if any; the generated model never
+    /// republishes it wider. See `memberAccessPrefix`.
+    let accessLevel: AccessLevel?
 
     /// `defaultValue` as source text, the form the generator emits.
     var defaultExpr: String? { defaultValue?.trimmedDescription }
@@ -93,7 +96,8 @@ func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedP
                 defaultValue: defaultValue,
                 binding: binding,
                 relationInverse: inverse,
-                hasSupportedRelationShape: supportedShape
+                hasSupportedRelationShape: supportedShape,
+                accessLevel: AccessLevel(varDecl.modifiers)
             )
         }
 

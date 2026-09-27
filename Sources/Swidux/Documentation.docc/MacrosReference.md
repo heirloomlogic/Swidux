@@ -99,6 +99,8 @@ path, and ``Store``'s `@dynamicMemberLookup` exposes read-only key paths, so
 `store.someSlice.field = …` doesn't compile. That leaves `store.observer` as the only
 way in. A write through it is overwritten by the next dispatch's `apply`.
 
+**A member's own access level is preserved.** Each observer property takes the narrower of the struct's access and the property's, so an internal field of a `public` struct stays internal on the observer instead of becoming a public, settable property reachable through `store.observer` from other modules. A `private` property becomes `fileprivate` on the observer, because the generated extension that reads it is a separate declaration in the same file. `@Persisted` applies the same rule to its model's columns. The observer's initializer still takes every property at the struct's access level, so in a `public` struct each stored property's *type* must be public.
+
 ### Example expansion
 
 Given:

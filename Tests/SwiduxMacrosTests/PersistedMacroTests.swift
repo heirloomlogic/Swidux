@@ -219,6 +219,74 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 
+    // The model never republishes a member wider than the domain declares it.
+    func testModelMemberAccessIsNeverWidened() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            public struct Account: Identifiable, Equatable, Sendable {
+                public var id: UUID
+                var internalNote: String = ""
+                fileprivate var localFlag: Bool = false
+            }
+            """,
+            expandedSource: """
+                public struct Account: Identifiable, Equatable, Sendable {
+                    public var id: UUID
+                    var internalNote: String = ""
+                    fileprivate var localFlag: Bool = false
+                }
+
+                @Model
+                public final class AccountModel: PersistableModel {
+                    public typealias Domain = Account
+
+                    @Attribute(.preserveValueOnDeletion) public var id: UUID = UUID()
+                    var internalNote: String = ""
+                    fileprivate var localFlag: Bool = false
+
+                    public init(from domain: Account) throws {
+                        self.id = domain.id
+                        self.internalNote = domain.internalNote
+                        self.localFlag = domain.localFlag
+                    }
+
+                    public func toDomain() throws -> Account {
+                        Account(
+                            id: id,
+                            internalNote: internalNote,
+                            localFlag: localFlag
+                        )
+                    }
+
+                    public func update(from domain: Account) throws {
+                        self.internalNote = domain.internalNote
+                        self.localFlag = domain.localFlag
+                    }
+
+                    public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<AccountModel> {
+                        FetchDescriptor<AccountModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+
+                    public static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<AccountModel> {
+                        FetchDescriptor<AccountModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
+                }
+
+                extension Account: PersistableEntity {
+                    public typealias Model = AccountModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
     func testInlineForeignKeyAndIgnored() throws {
         assertMacroExpansion(
             """

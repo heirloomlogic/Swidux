@@ -77,6 +77,18 @@ enum NestingFeature {
     }
 }
 
+/// Members narrower than the struct stay narrow on the observer; a private one
+/// must still compile, as `fileprivate`, and still round-trip.
+@Swidux
+public nonisolated struct AccessMixState: Equatable, Sendable {
+    /// Public, so the observer mirrors it as public.
+    public var shown: Int = 0
+    var hidden: Int = 0
+    private var secret: Int = 0
+
+    mutating func setSecret(_ value: Int) { secret = value }
+}
+
 // MARK: - Tests
 
 @Suite("@Swidux compiled expansion")
@@ -165,5 +177,13 @@ struct SwiduxMacroCompiledTests {
         let observer: NestingFeature.StateObserver = NestingFeature.State.makeObserver(from: state)
 
         #expect(NestingFeature.State(observer: observer) == state)
+    }
+
+    @Test("Narrower members, private included, round-trip through the observer")
+    func narrowMembersRoundTrip() {
+        var state = AccessMixState(shown: 1, hidden: 2)
+        state.setSecret(3)
+
+        #expect(AccessMixState(observer: AccessMixState.makeObserver(from: state)) == state)
     }
 }

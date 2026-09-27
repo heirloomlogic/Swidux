@@ -540,7 +540,7 @@ final class UnsupportedShapeTests: XCTestCase {
                     typealias Domain = Secret
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-                    var token: String = ""
+                    fileprivate var token: String = ""
                     var visible: String = ""
 
                     init(from domain: Secret) throws {

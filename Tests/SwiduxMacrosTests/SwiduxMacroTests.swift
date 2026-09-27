@@ -880,6 +880,96 @@ final class SwiduxMacroTests: XCTestCase {
         )
     }
 
+    // Each observer member takes the narrower of the struct's and the member's
+    // own access, so an internal or private field of a public struct is never
+    // republished as a public, settable property of the observer. `private` becomes
+    // `fileprivate`: the extension that reads it is another declaration in the file.
+    // A setter-only modifier (`internal(set)`) doesn't narrow the member.
+    func testMemberAccessIsNeverWidened() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            public struct MixedAccess: Equatable, Sendable {
+                public var shown: Int = 0
+                public internal(set) var readOnly: Int = 0
+                package var shared: Int = 0
+                var hidden: Int = 0
+                private var secret: Int = 0
+            }
+            """,
+            expandedSource: """
+                public struct MixedAccess: Equatable, Sendable {
+                    public var shown: Int = 0
+                    public internal(set) var readOnly: Int = 0
+                    package var shared: Int = 0
+                    var hidden: Int = 0
+                    private var secret: Int = 0
+                }
+
+                @Observable
+                @MainActor
+                public final class MixedAccessObserver: @unchecked Sendable {
+                    public var shown: Int
+                    public var readOnly: Int
+                    package var shared: Int
+                    var hidden: Int
+                    fileprivate var secret: Int
+
+                    public init(shown: Int = 0, readOnly: Int = 0, shared: Int = 0, hidden: Int = 0, secret: Int = 0) {
+                        self.shown = shown
+                        self.readOnly = readOnly
+                        self.shared = shared
+                        self.hidden = hidden
+                        self.secret = secret
+                    }
+                }
+
+                extension MixedAccess: SwiduxObservable {
+                    public typealias Observer = MixedAccessObserver
+
+                    @MainActor
+                    public init(observer: MixedAccessObserver) {
+                        self.shown = observer.shown
+                        self.readOnly = observer.readOnly
+                        self.shared = observer.shared
+                        self.hidden = observer.hidden
+                        self.secret = observer.secret
+                    }
+
+                    @MainActor
+                    public static func makeObserver(from state: MixedAccess) -> MixedAccessObserver {
+                        MixedAccessObserver(
+                            shown: state.shown,
+                            readOnly: state.readOnly,
+                            shared: state.shared,
+                            hidden: state.hidden,
+                            secret: state.secret
+                        )
+                    }
+
+                    @MainActor
+                    public static func apply(_ snapshot: MixedAccess, to observer: MixedAccessObserver) {
+                        observer.shown = snapshot.shown
+                        observer.readOnly = snapshot.readOnly
+                        observer.shared = snapshot.shared
+                        observer.hidden = snapshot.hidden
+                        observer.secret = snapshot.secret
+                    }
+
+                    @MainActor
+                    public static func applyRestore(from snapshot: MixedAccess, to current: inout MixedAccess) {
+                        SwiduxRestore.restore(&current.shown, from: snapshot.shown)
+                        SwiduxRestore.restore(&current.readOnly, from: snapshot.readOnly)
+                        SwiduxRestore.restore(&current.shared, from: snapshot.shared)
+                        SwiduxRestore.restore(&current.hidden, from: snapshot.hidden)
+                        SwiduxRestore.restore(&current.secret, from: snapshot.secret)
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
     func testPublicAccessControl() throws {
         assertMacroExpansion(
             """
@@ -896,7 +986,7 @@ final class SwiduxMacroTests: XCTestCase {
                 @Observable
                 @MainActor
                 public final class PublicStateObserver: @unchecked Sendable {
-                    public var count: Int
+                    var count: Int
 
                     public init(count: Int = 0) {
                         self.count = count

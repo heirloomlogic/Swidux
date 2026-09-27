@@ -11,7 +11,8 @@ func generateObserverClass(
 
     let memberLines = properties.map { prop -> String in
         let binding = prop.kind == .nested ? "let" : "var"
-        return "    \(accessPrefix)\(binding) \(prop.name): \(prop.observerTypeName)"
+        let access = memberAccessPrefix(structAccess: accessLevel, member: prop.accessLevel)
+        return "    \(access)\(binding) \(prop.name): \(prop.observerTypeName)"
     }.joined(separator: "\n")
 
     let initParams = properties.map { prop -> String in

@@ -13,7 +13,11 @@ func generatePersistedModelClass(
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
 
     let memberLines = properties.compactMap {
-        modelMemberLines(for: $0, accessPrefix: accessPrefix, modelName: modelName)
+        modelMemberLines(
+            for: $0,
+            accessPrefix: memberAccessPrefix(structAccess: accessLevel, member: $0.accessLevel),
+            modelName: modelName
+        )
     }
     .joined(separator: "\n")
     // Shared codec for @Inline blob columns, allocated once per model type

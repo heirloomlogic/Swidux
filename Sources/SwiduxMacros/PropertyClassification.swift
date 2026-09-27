@@ -134,6 +134,9 @@ struct ClassifiedProperty {
     /// Whether the property carries `@Slice`. Differs from `kind == .nested`
     /// only for a type `@Slice` can't nest, which is diagnosed and kept a leaf.
     let isMarkedSlice: Bool
+    /// The access level the property spells, if any; the generated observer
+    /// never republishes it wider. See `memberAccessPrefix`.
+    let accessLevel: AccessLevel?
 
     var observerTypeName: String {
         switch kind {
@@ -180,7 +183,8 @@ func classifyProperties(of structDecl: StructDeclSyntax) -> [ClassifiedProperty]
             typeSyntax: typeSyntax,
             kind: hasNested && isDirectlyNamedType(typeSyntax) ? .nested : .leaf,
             defaultValue: defaultValue,
-            isMarkedSlice: hasNested
+            isMarkedSlice: hasNested,
+            accessLevel: AccessLevel(varDecl.modifiers)
         )
     }
 }
