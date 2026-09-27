@@ -74,6 +74,12 @@ public final class PersistenceCoordinator<State, Action> {
     /// usually closes, releases its hold, and commits in the same moment, so
     /// that is the order a naive commit runs in.
     ///
+    /// It knows only what a merge has read while the hold was in force. If no
+    /// merge ran between the peer's deletion and the commit — or the only one
+    /// fell back to a full read without reading history, which leaves the
+    /// watermark in place so the next tick can — it answers `false`, and the
+    /// commit wins.
+    ///
     /// Answers from what ``mergeChanges(into:policy:)`` and
     /// ``mergeRemote(into:ids:deleted:policy:)`` carry forward. A whole-table
     /// ``rehydrate(into:policy:)`` on an anchored session re-infers deletions
@@ -862,11 +868,11 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // empty-snapshot guard kept from being inferred would otherwise vanish.
         //
         // If the read still left an absence undecided, the existing watermark
-        // is worth keeping when a rescan could succeed — the window behind it
-        // may hold the tombstone that settles it. A scan that failed for a
-        // reason that will recur gains nothing from a rescan but another
-        // fallback, so that case anchors anyway.
-        let rescanCouldSucceed = anchor.token != nil && Self.isTransient(reason)
+        // is worth keeping whenever a rescan could read the window behind it —
+        // that window may hold the tombstone that settles it. A scan that read
+        // its window hands its tombstones over as `declaring` and anchors at
+        // the window's end, so there is nothing further to rescan for.
+        let rescanCouldSucceed = anchor.token != nil && window == nil && !Self.isExpiry(reason)
         try await merge(
             .wholeTable(declaring: declaring ?? anchor.carryOver), into: store, policy: policy,
             attempt: attempt,
@@ -874,18 +880,16 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             ifAbsenceUndecided: rescanCouldSucceed ? .keepWatermark : .anchor)
     }
 
-    /// Whether a scan that failed with `reason` might succeed if retried over
-    /// the same window.
+    /// Whether `reason` says the watermark itself is gone — the one thrown
+    /// failure that a rescan of the same window can never get past.
     ///
-    /// Every ``HistoryScanFailure`` but a failed fetch describes the window or
-    /// the store, and rescanning meets it again. An error the scan did not
-    /// classify is treated as transient.
-    private static func isTransient(_ reason: any Error) -> Bool {
+    /// A scan that *read* its window reports what it couldn't attribute through
+    /// ``HistoryScan/escalation`` instead of throwing, so a thrown failure means
+    /// the window went unread and is worth reading again.
+    private static func isExpiry(_ reason: any Error) -> Bool {
         switch reason {
-        case HistoryScanFailure.fetchFailed: true
-        case is HistoryScanFailure: false
-        case SwiftDataError.historyTokenExpired: false
-        default: true
+        case HistoryScanFailure.tokenExpired, SwiftDataError.historyTokenExpired: true
+        default: false
         }
     }
 

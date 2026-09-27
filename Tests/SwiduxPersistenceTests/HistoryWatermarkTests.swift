@@ -605,6 +605,54 @@ struct HistoryWatermarkTests {
         #expect(!coordinator.isRemotelyDeleted(id), "a settled deletion is no longer owed")
     }
 
+    @Test(
+        "a held last row a peer deleted, first seen by a fallback, stays owed",
+        arguments: [
+            HistoryScanFailure.fetchFailed("transient") as any Error,
+            HistoryScanFailure.unidentifiedDeletion(entityName: "NoteModel"),
+        ])
+    func aHeldLastRowsDeletionSurvivesAFallback(reason: any Error) async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        // The first tick to see the deletion falls back, reads an empty table,
+        // and the guard refuses to infer anything from it. The hold is not an
+        // answer to that question, so it must not let the watermark step past
+        // the tombstone that is.
+        coordinator.failNextHistoryScan = reason
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "the premise: the hold defers it")
+        await coordinator.mergeChanges(into: store)
+        #expect(coordinator.isRemotelyDeleted(id), "the deferred deletion was neither applied nor owed")
+
+        // The documented editor close.
+        coordinator.editing.release(id)
+        if !coordinator.isRemotelyDeleted(id) {
+            store.send(.add(Note(id: id, title: "draft", pinned: false)))
+        }
+        await coordinator.mergeChanges(into: store)
+        await coordinator.corePlugin.flush()
+
+        #expect(store.notes[id] == nil, "the hold vetoed the deletion")
+        #expect(try await coordinator.fetchAll(of: Note.self, flushPending: false).isEmpty)
+    }
+
+    @Test("a held last row's deletion lands once the hold lifts, though a fallback saw it first")
+    func aHeldLastRowsDeletionLandsAfterAFallback() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        coordinator.failNextHistoryScan = HistoryScanFailure.fetchFailed("transient")
+        await coordinator.mergeChanges(into: store)
+        coordinator.editing.release(id)
+        await coordinator.mergeChanges(into: store)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil)
+    }
+
     // MARK: - Unanchored windows and the empty-snapshot guard
 
     @Test("an owed deletion survives a fallback tick that finds the table empty")
