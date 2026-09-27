@@ -45,10 +45,10 @@ The plugin rejects unknown `version` values and falls back to the last-known-goo
 `bucket = FNV1a(bucketingID + ":" + flagKey) % 100`
 
 - **Stable per `(bucketingID, flagKey)` pair forever.** Same input always produces the same bucket.
-- **Per-flag.** A user isn't always in the "early" group across different flags.
+- **Per-flag.** A user isn't always in the "early" group across different flags. At 10–50% rollouts, membership in two flags' cohorts is effectively independent; at very small rollouts it is not — two flags canaried at 1% reach essentially disjoint sets of users, so no device runs both canaries at once.
 - **Identity resolution.** When a `userIDKeyPath` is configured *and* the current user ID is non-nil, that is used. Otherwise the **device ID** is used (the plugin's required `deviceIDKeyPath`). Anonymous users get a stable per-install identity; logged-in users get stable cross-device assignment. A user's variant *can* shift once at login — acceptable for nearly all real use cases.
 
-FNV-1a was chosen because it's simple, dependency-free, and matches GrowthBook's algorithm so apps migrating from GrowthBook get compatible buckets.
+FNV-1a was chosen because it's simple and dependency-free. It is not GrowthBook-compatible: GrowthBook hashes the ID and a seed with no separator, over UTF-16, into 1,000 (v1) or 10,000 (v2) buckets, so an app migrating from GrowthBook re-buckets about half of every 50/50 experiment.
 
 ### The device ID must be stable across reinstall
 
