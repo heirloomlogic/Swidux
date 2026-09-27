@@ -98,7 +98,7 @@ nonisolated struct StampedState: Equatable, Sendable {
         didSet { revision += 1 }
     }
     var log: [String] = [] {
-        willSet { if log.count > 100 { log.removeAll() } }
+        willSet { revision += 10 }
     }
 }
 
