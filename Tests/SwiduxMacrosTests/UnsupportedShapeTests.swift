@@ -457,6 +457,81 @@ final class UnsupportedShapeTests: XCTestCase {
         )
     }
 
+    // An optional `@Ignored` has no column and loads as `nil` either way, so a
+    // surrounding `#if` changes nothing; computed and static members under `#if`
+    // are never generated from. Only a non-optional `@Ignored` is still an error,
+    // the same one it gets unconditionally.
+    func testPersistedIfConfigAllowsSkippedMembers() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Memo: Identifiable, Equatable, Sendable {
+                var id: UUID
+                #if DEBUG
+                @Ignored var debugTrace: String? = nil
+                @Ignored var badge: String
+                var shouted: String { "" }
+                static var count: Int = 0
+                #endif
+            }
+            """,
+            expandedSource: """
+                struct Memo: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    #if DEBUG
+                    var debugTrace: String? = nil
+                    var badge: String
+                    var shouted: String { "" }
+                    static var count: Int = 0
+                    #endif
+                }
+
+                @Model
+                final class MemoModel: PersistableModel {
+                    typealias Domain = Memo
+
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+
+                    init(from domain: Memo) throws {
+                        self.id = domain.id
+                    }
+
+                    func toDomain() throws -> Memo {
+                        Memo(
+                            id: id
+                        )
+                    }
+
+                    func update(from domain: Memo) throws {
+
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<MemoModel> {
+                        FetchDescriptor<MemoModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<MemoModel> {
+                        FetchDescriptor<MemoModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
+                }
+
+                extension Memo: PersistableEntity {
+                    typealias Model = MemoModel
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(message: Message.ignoredOptional, line: 6, column: 18)
+            ],
+            macros: persisted
+        )
+    }
+
     func testPersistedInitializedLetIsDiagnosed() throws {
         assertMacroExpansion(
             """
