@@ -120,7 +120,7 @@ The `appVersion` closure runs every time `.fetch` evaluates, so it reflects the 
 
 ## Step 4: Trigger fetch on launch
 
-Dispatch `.killswitch(.fetch)` from your root view's `.task` so the verdict is available before the user can interact:
+Dispatch `.killswitch(.fetch)` from your root view's `.task`, so the verdict is decided as early in the launch as possible:
 
 ```swift
 struct RootView: View {
@@ -133,9 +133,13 @@ struct RootView: View {
 }
 ```
 
-`.fetch` is cache-aware: if the last fetch is within `cacheLifetime` and a cached config is on disk, the plugin evaluates the cached config and skips the network. That makes a launch fetch cheap to issue on every cold start. For a manual refresh — pull-to-refresh, a "Check for updates" button, or a post-purchase health check — dispatch `.killswitch(.forceFetch)` instead, which bypasses the freshness gate.
+`.fetch` is cache-aware: if a network fetch succeeded within `cacheLifetime` this session and a cached config is on disk, the plugin evaluates the cached config and skips the network. For a manual refresh — pull-to-refresh, a "Check for updates" button, or a post-purchase health check — dispatch `.killswitch(.forceFetch)` instead, which bypasses the freshness gate.
+
+The freshness window is session state, so a cold launch always goes to the network. It doesn't wait on it, though: while the verdict is still `.unknown`, the plugin first evaluates the config cached by a previous launch and dispatches that verdict (`fromNetwork: false`), then asks the network. A build that the device already knows is blocked is blocked as soon as that file is read, not after the request returns. On a first-ever launch there is no cache, so the verdict stays `.unknown` — which renders nothing — until the network answers, for at most `fetchTimeout`.
 
 If the network call fails and a cached config is available, the plugin dispatches `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)`. Your UI keeps a usable verdict and can still surface the error.
+
+Only one network fetch runs at a time. A `.fetch` or `.forceFetch` dispatched while one is in flight (`isFetching`) is dropped, so dispatching both at launch — `.fetch` from `.task` and `.forceFetch` on foreground — costs one request, and a slow response can never land after, and overwrite, a newer one.
 
 ## Step 5: Render the verdict
 

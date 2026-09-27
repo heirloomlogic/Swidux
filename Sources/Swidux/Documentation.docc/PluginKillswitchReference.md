@@ -46,6 +46,7 @@ public struct KillswitchState: Sendable, Equatable {
     public var verdict: KillswitchVerdict   // defaults to .unknown
     public var lastFetch: Date?             // nil until first successful fetch
     public var fetchError: String?          // localized description of last failure
+    public var isFetching: Bool             // true while a network fetch is in flight
 
     public var isBlocked: Bool              // delegates to verdict.isBlocked
     public var canOpenUpdateURL: Bool       // .blocked AND updateURL is non-nil
@@ -53,7 +54,8 @@ public struct KillswitchState: Sendable, Equatable {
     public init(
         verdict: KillswitchVerdict = .unknown,
         lastFetch: Date? = nil,
-        fetchError: String? = nil
+        fetchError: String? = nil,
+        isFetching: Bool = false
     )
 }
 ```
@@ -74,7 +76,7 @@ public enum KillswitchAction: Sendable {
 }
 ```
 
-`.fetch` is the launch-time entry point — it consults the cache and skips the network when the cached config is fresh. `.forceFetch` always hits the network, suitable for pull-to-refresh or post-update health checks.
+`.fetch` is the launch-time entry point — it consults the cache and skips the network when the cached config is fresh. `.forceFetch` always hits the network, suitable for pull-to-refresh or post-update health checks. Neither starts a second request while one is in flight.
 
 ### KillswitchService
 
@@ -211,10 +213,10 @@ Both initializers fail and return `nil` if the lower bound is not strictly less 
 
 | Action | Effect on state | Returned effect |
 |---|---|---|
-| `.fetch` | none | if the cache is fresh (`Date() - lastFetch < cacheLifetime` AND `loadCached()` is non-nil), evaluates the cached config and dispatches `.verdictReceived(...)` without hitting the network; otherwise behaves like `.forceFetch` |
-| `.forceFetch` | none | calls `service.fetch()`, persists the result via `service.saveCached(_:)`, dispatches `.verdictReceived(...)`. On thrown error, falls back to `service.loadCached()` if available — dispatching `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)` so the UI can surface the error while keeping a usable verdict |
-| `.verdictReceived(verdict, fromNetwork:)` | sets `verdict`, clears `fetchError`; sets `lastFetch = Date()` **only when `fromNetwork` is true** — a cache-served verdict must not slide the freshness window, or a session polling `.fetch` inside `cacheLifetime` would never consult the network again | none |
-| `.fetchFailed(message)` | sets `fetchError = message` (does not clear `verdict` or `lastFetch`) | none |
+| `.fetch` | ignored while `isFetching`. Otherwise none, or sets `isFetching` when it goes to the network | if the window is fresh (`0 <= Date() - lastFetch < cacheLifetime`), evaluates the cached config and dispatches `.verdictReceived(..., fromNetwork: false)` without hitting the network (or dispatches `.forceFetch` if no cache is on disk); otherwise behaves like `.forceFetch`. `lastFetch` is session state, so every cold launch goes to the network |
+| `.forceFetch` | ignored while `isFetching`; otherwise sets `isFetching` | if `verdict` is still `.unknown` (a cold launch) and a cached config exists, first dispatches its verdict with `fromNetwork: false`, so a build the device already knows is blocked is blocked before the network answers. Then calls `service.fetch()`, persists the result via `service.saveCached(_:)`, and dispatches `.verdictReceived(..., fromNetwork: true)`. On thrown error, falls back to `service.loadCached()` if it wasn't already shown — dispatching `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)` so the UI can surface the error while keeping a usable verdict |
+| `.verdictReceived(verdict, fromNetwork:)` | sets `verdict`, clears `fetchError`; sets `lastFetch = Date()` and clears `isFetching` **only when `fromNetwork` is true** — a cache-served verdict must not slide the freshness window, or a session polling `.fetch` inside `cacheLifetime` would never consult the network again, and the cold-launch preview arrives while the request is still in flight | none |
+| `.fetchFailed(message)` | sets `fetchError = message`, clears `isFetching` (does not clear `verdict` or `lastFetch`) | none |
 | `.openUpdateURL` | none | if `verdict` is `.blocked` with a non-nil `updateURL` whose scheme is `https`, `itms-apps`, or `macappstore`, calls the plugin's `openURL` closure; otherwise no effect (the URL comes from remote config, so arbitrary schemes are never opened) |
 
 The plugin only handles its own actions. Any action that `extractAction` returns `nil` for is ignored — the plugin's `reduce(...)` returns `nil` immediately.
