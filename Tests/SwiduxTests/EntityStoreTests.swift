@@ -1106,6 +1106,70 @@ struct EntityStoreTests {
         #expect(!store.changes.deletions.contains(remote.id))
     }
 
+    @Test("restore keeps rows a hydration installed after the snapshot")
+    func restoreKeepsHydratedRows() {
+        let snapshot = EntityStore<TestEntity>()  // taken before the hydration landed
+        let rows = [TestEntity(name: "one"), TestEntity(name: "two")]
+        var store = EntityStore(hydrating: rows)
+
+        store.restore(from: snapshot)
+
+        #expect(store.values == rows, "hydrated rows came from storage; undo didn't create them")
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("a hydrated row the local user deletes is theirs to undo and redo")
+    func hydratedRowDeleteUndoRedo() {
+        let row = TestEntity(name: "stored")
+        var store = EntityStore(hydrating: [row])
+        let beforeDelete = store
+        store[row.id] = nil
+        let afterDelete = store
+
+        store.restore(from: beforeDelete)
+        #expect(store[row.id] == row)
+        store.resetChanges()
+        store.restore(from: afterDelete)
+
+        #expect(store[row.id] == nil)
+        #expect(store.changes.deletions.contains(row.id))
+    }
+
+    @Test("a hydrating init records nothing to persist")
+    func hydratingInitRecordsNoChanges() {
+        let store = EntityStore(hydrating: [TestEntity(name: "stored")])
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("a remote removal forgets the row's arrival")
+    func remoteRemovalPrunesArrival() {
+        let kept = TestEntity(name: "kept")
+        let gone = TestEntity(name: "gone")
+        var store = EntityStore<TestEntity>()
+        store.reconcile(with: EntityStore([kept, gone]), preserving: [], removingMissing: true)
+        let beforeRemoval = store
+
+        store.reconcile(with: EntityStore([kept]), preserving: [], removingMissing: true)
+
+        #expect(Set(store.remoteArrivals.keys) == [kept.id], "a churny synced table would keep every dead row's entry")
+        // The removal record, not the arrival, is what keeps undo from
+        // bringing the row back.
+        store.restore(from: beforeRemoval)
+        #expect(store[gone.id] == nil)
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("a local delete keeps the arrival, so redo of it still deletes")
+    func localDeleteKeepsArrival() {
+        let row = TestEntity(name: "remote")
+        var store = EntityStore<TestEntity>()
+        store.reconcile(with: EntityStore([row]), preserving: [], removingMissing: true)
+
+        store[row.id] = nil
+
+        #expect(store.remoteArrivals[row.id] != nil)
+    }
+
     @Test("remote arrivals are excluded from equality")
     func remoteArrivalsExcludedFromEquality() {
         let remote = TestEntity(name: "remote")

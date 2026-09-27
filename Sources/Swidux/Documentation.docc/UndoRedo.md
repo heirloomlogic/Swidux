@@ -49,7 +49,9 @@ return Store(
 )
 ```
 
-`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, updating `canUndo`/`canRedo`, and registering each undo step with the platform `UndoManager`. The `undoPlugin:`, `persistencePlugin:`, and `isUndoable:` initializer parameters still exist, for driving a plugin that isn't registered or narrowing what reaches the Edit menu, but the defaults follow the registered plugins.
+`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, updating `canUndo`/`canRedo`, and registering each undo step with the platform `UndoManager`. The `undoPlugin:` and `persistencePlugin:` initializer parameters still exist, for driving a plugin that isn't registered, but the defaults follow the registered plugins.
+
+The Edit menu offers exactly the steps the plugin snapshotted, in the same order, so the two can't disagree about which step is next. `Store`'s old `isUndoable:` parameter, which filtered platform registration separately, is deprecated and ignored: a filter narrower than the plugin's predicate made an Edit ▸ Undo step revert whichever snapshot was newest rather than the one it offered. Put the predicate on `UndoPlugin(isUndoable:)`.
 
 ### 3. Wire platform UI
 
@@ -80,6 +82,10 @@ WindowGroup { ... }
 `Store` registers one step with the `UndoManager` for each undo snapshot, so a coalesced run of keystrokes is one step in the Edit menu too.
 
 Once an `UndoManager` is attached, calling ``Store/undo()`` or ``Store/redo()`` directly — from an in-app button, or from the macOS `CommandGroup` above — routes through it. The Edit menu, shake-to-undo, and your own buttons then walk one history, and each can undo or redo what another did. If the manager holds none of the store's steps (it was attached after the edits were made), the store steps its own history instead and leaves the manager alone.
+
+That history is the manager's, not the store's alone. A window's manager is shared — text fields register their typing on it, and so can a SwiftData `ModelContext` — so when another client's step is the most recent one, the in-app button undoes *that*, exactly as Edit ▸ Undo would, and the store is left as it is until the next press. `store.canUndo` describes only the store's own steps; to enable a button that matches the Edit menu, read the manager's `canUndo`. For a store-only history, give the store an `UndoManager` of its own rather than the window's — at the cost of the Edit menu and shake-to-undo, which use the window's.
+
+A store may be shorter-lived than the window's manager — a per-sheet or per-document store, or one rebuilt on account switch. When it is deallocated it takes its steps off the manager, and any step left behind (the manager was swapped out first) does nothing when invoked.
 
 ## Coalescing
 
@@ -120,7 +126,9 @@ That has to be the rule, because the alternative is worse than a missing undo st
 
 The same holds in the other direction. If another device creates an entity and the merge surfaces it after an undo snapshot was taken, undoing past that snapshot keeps the row instead of deleting it — a deletion would sync out and remove the other device's creation everywhere. Redo follows the same rule. The row is still the local user's to edit and delete, and undo and redo of *those* changes work as usual.
 
-Apps that don't sync never hit either case: nothing is recorded, and undo behaves exactly as it always has.
+Hydration counts as arriving from storage too. If an action is dispatched before `PersistenceCoordinator.hydrate(into:)` finishes loading a live store — an `.onAppear`, a restored search field — its snapshot holds the still-empty store, and undoing it keeps every hydrated row rather than deleting them all from disk. A hand-written hydration that replaces a live ``EntityStore`` should build it with `EntityStore(hydrating:)` for the same reason.
+
+Apps that don't sync still get the hydration rule; beyond that nothing is recorded, and undo behaves exactly as it always has.
 
 ## Memory
 

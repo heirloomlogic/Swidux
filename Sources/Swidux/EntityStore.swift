@@ -82,9 +82,11 @@ public nonisolated struct EntityStore<
     /// often the user deletes and restores it in between. A row storage hands
     /// back again is a new arrival with a new token.
     ///
-    /// Bounded by remote insertions per session. Survives ``resetChanges()``
-    /// for the same reason the removal record does, and a first-load hydration
-    /// replaces the store outright.
+    /// An entry is dropped when storage removes the row again. One for a row
+    /// the local user deleted stays — redoing that delete depends on it — so
+    /// the map holds the rows present plus remote rows deleted locally this
+    /// session. Survives ``resetChanges()`` for the same reason the removal
+    /// record does, and a hydration replaces it outright.
     private(set) var remoteArrivals: [UUID: UUID] = [:]
 
     // MARK: - Init
@@ -123,6 +125,24 @@ public nonisolated struct EntityStore<
             positions[entity.id] = entities.count
             entities.append(entity)
         }
+    }
+
+    /// Creates a store from rows read out of storage, recording each one as an
+    /// arrival from storage — hydration into a *live* store.
+    ///
+    /// Like ``init(_:)`` it records no changes, and it collapses duplicate IDs
+    /// the same way. The difference is undo: a hydration that lands after an
+    /// undo snapshot was taken replaces the store wholesale, so a plain
+    /// ``init(_:)`` would leave ``restore(from:)`` treating every row as one
+    /// the local user created since — and an undo would record, flush, and sync
+    /// a deletion of all of them. Rows created here are ones storage handed
+    /// over, which no undo deletes. `PersistenceCoordinator` hydrates through
+    /// this; use it for any hand-written hydration that replaces a store.
+    public init(hydrating rows: [Entity]) {
+        self.init(rows)
+        // One token serves the whole read: each ID arrives in it once.
+        let arrival = UUID()
+        remoteArrivals = Dictionary(uniqueKeysWithValues: entities.lazy.map { ($0.id, arrival) })
     }
 
     // MARK: - Access
@@ -285,6 +305,13 @@ public nonisolated struct EntityStore<
             }
         case .remote:
             remotelyRemovedIDs.formUnion(removedIDs)
+            // The removal record now keeps undo from bringing the row back,
+            // and a later re-arrival gets a new token anyway, so the arrival
+            // entry has nothing left to decide. Checked first so a tick that
+            // removes nothing ever inserted remotely doesn't copy the map.
+            for id in removedIDs where remoteArrivals[id] != nil {
+                remoteArrivals[id] = nil
+            }
         }
     }
 

@@ -38,12 +38,17 @@ public struct Effect<Action>: Sendable {
     }
 
     /// The registry entry for this effect's scope, reporting through `send`.
-    func activeScope(id: AnyHashableSendable, send: @escaping Send<Action>) -> ActiveScope {
+    func activeScope(
+        id: AnyHashableSendable,
+        send: @escaping Send<Action>,
+        enclosedBy enclosingScopes: Set<UUID> = []
+    ) -> ActiveScope {
         var report: (@MainActor @Sendable () -> Void)?
         if let onCancel {
             report = { send(onCancel()) }
         }
-        return ActiveScope(id: id, cancellation: ScopeCancellation(), onCancel: report)
+        return ActiveScope(
+            id: id, cancellation: ScopeCancellation(), onCancel: report, enclosingScopes: enclosingScopes)
     }
 
     /// Runs the operation. `declaredScope` is the scope the store registered
@@ -58,7 +63,8 @@ public struct Effect<Action>: Sendable {
         case .cancel(let id):
             await context.registrar?.cancelCancellable(id: id)
         case .scope(let id, let cancelInFlight):
-            let (token, scope) = declaredScope ?? (UUID(), activeScope(id: id, send: send))
+            let (token, scope) =
+                declaredScope ?? (UUID(), activeScope(id: id, send: send, enclosedBy: context.enclosingScopes))
             // This actor hop also prevents a declared scope from running before
             // the synchronous dispatch cycle has finished registering its tasks.
             await context.registrar?.register(
@@ -70,6 +76,7 @@ public struct Effect<Action>: Sendable {
                 try Task.checkCancellation()
                 if declaredScope != nil {
                     // The store's task for this effect is the scope's unit of work.
+                    defer { scope.cancellation.finish() }
                     try await operation(scope.cancellation.guarding(send))
                 } else {
                     try await runInChildTask(scope, token: token, context: context, send: send)
@@ -97,8 +104,12 @@ public struct Effect<Action>: Sendable {
         let guardedSend = scope.cancellation.guarding(send)
         // An unstructured task inherits task-locals, so scopes nested in this
         // one see `nested` and spare this scope from `cancelInFlight`.
+        let cancellation = scope.cancellation
         let child = EffectContext.$current.withValue(nested) {
-            Task { try await operation(guardedSend) }
+            Task {
+                defer { cancellation.finish() }
+                try await operation(guardedSend)
+            }
         }
         scope.cancellation.attach(child)
         try await withTaskCancellationHandler {

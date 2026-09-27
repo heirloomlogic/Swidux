@@ -276,7 +276,7 @@ extension Store where State == AppState, Action == AppAction {
 }
 ```
 
-Registering the plugins on `plugins` is all the wiring they need. `Store` finds the `PersistencePlugin` there for `store.mutate { … }` and undo/redo, and the `UndoPlugin` for `store.undo()`/`redo()` and the platform `UndoManager`, whose undo steps follow the plugin's own `isUndoable`. The `undoPlugin:`, `persistencePlugin:`, and `isUndoable:` parameters still exist for a plugin you deliberately didn't register, or to narrow what reaches the Edit menu.
+Registering the plugins on `plugins` is all the wiring they need. `Store` finds the `PersistencePlugin` there for `store.mutate { … }` and undo/redo, and the `UndoPlugin` for `store.undo()`/`redo()` and the platform `UndoManager`, whose undo steps follow the plugin's own `isUndoable`. The `undoPlugin:` and `persistencePlugin:` parameters still exist for a plugin you deliberately didn't register.
 
 ## Step 8: Build the views
 

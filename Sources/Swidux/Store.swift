@@ -67,9 +67,6 @@ public final class Store<State: SwiduxObservable, Action> {
         var persistence: PersistencePlugin<State, Action>?
     }
 
-    @ObservationIgnored
-    private let isUndoableAction: (@Sendable (Action) -> Bool)?
-
     /// The plugin ``undo()`` / ``redo()`` drive.
     private var undoPlugin: UndoPlugin<State, Action>? {
         explicitUndoPlugin ?? discoveredCorePlugins().undo
@@ -111,6 +108,17 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Platform undo manager for menu/gesture integration.
     public weak var undoManager: UndoManager?
 
+    /// What the store's steps are registered against, instead of the store.
+    ///
+    /// `UndoManager` doesn't keep a step's target alive, and invoking a step
+    /// whose target was freed traps. A store scoped shorter than its window —
+    /// a per-sheet or per-document store, one rebuilt on account switch —
+    /// would leave exactly that behind for the next Edit ▸ Undo. Each step
+    /// holds this token strongly and the store weakly, so a step that outlives
+    /// its store is a no-op, and `deinit` removes the steps by it.
+    @ObservationIgnored
+    private let undoTarget = UndoTarget()
+
     /// Guards against re-entrant dispatch; see `send(_:)`.
     @ObservationIgnored
     private var isDispatching = false
@@ -136,6 +144,10 @@ public final class Store<State: SwiduxObservable, Action> {
 
     /// Creates a store with the given initial state, reducer, and optional plugins.
     ///
+    /// Every snapshot the undo plugin takes is registered with the platform
+    /// `UndoManager` as one step, so the plugin's own `isUndoable` predicate
+    /// decides what the Edit menu and shake-to-undo offer.
+    ///
     /// - Parameters:
     ///   - initialState: The state the observer tree is built from.
     ///   - reducer: The app reducer.
@@ -149,24 +161,51 @@ public final class Store<State: SwiduxObservable, Action> {
     ///     on `plugins` is found automatically, so registering it once is
     ///     enough. Pass it only to drain through a plugin that is deliberately
     ///     *not* registered on the host.
-    ///   - isUndoable: Narrows which undo steps register with the platform
-    ///     `UndoManager` (menu items, gestures). **Usually leave this nil**:
-    ///     every step the undo plugin snapshots is registered, one per
-    ///     snapshot, so the plugin's own `isUndoable` predicate already decides.
     public init(
         initialState: State,
         reducer: @escaping (inout State, Action) -> Effect<Action>?,
         plugins: PluginHost<State, Action> = PluginHost(),
         undoPlugin: UndoPlugin<State, Action>? = nil,
-        persistencePlugin: PersistencePlugin<State, Action>? = nil,
-        isUndoable: (@Sendable (Action) -> Bool)? = nil
+        persistencePlugin: PersistencePlugin<State, Action>? = nil
     ) {
         self.observer = State.makeObserver(from: initialState)
         self.reduce = reducer
         self.plugins = plugins
         self.explicitUndoPlugin = undoPlugin
         self.explicitPersistencePlugin = persistencePlugin
-        self.isUndoableAction = isUndoable
+    }
+
+    /// Creates a store, ignoring a separate platform-undo predicate.
+    ///
+    /// `isUndoable` once chose which actions registered with the platform
+    /// `UndoManager`, apart from which the undo plugin snapshotted. The two
+    /// stacks could then disagree: a step the Edit menu offered undid
+    /// whichever snapshot was newest, not the one it named. Registration now
+    /// follows the plugin's snapshots exactly, so `isUndoable` is ignored —
+    /// pass that predicate to `UndoPlugin(isUndoable:)` instead.
+    ///
+    /// - Parameters:
+    ///   - initialState: The state the observer tree is built from.
+    ///   - reducer: The app reducer.
+    ///   - plugins: The registered plugins, in execution order.
+    ///   - undoPlugin: The plugin ``undo()`` / ``redo()`` drive.
+    ///   - persistencePlugin: The plugin ``mutate(_:)`` and undo/redo drain through.
+    ///   - isUndoable: Ignored.
+    @available(
+        *, deprecated,
+        message: "Platform undo registration follows the UndoPlugin; pass the predicate to UndoPlugin(isUndoable:)."
+    )
+    public convenience init(
+        initialState: State,
+        reducer: @escaping (inout State, Action) -> Effect<Action>?,
+        plugins: PluginHost<State, Action> = PluginHost(),
+        undoPlugin: UndoPlugin<State, Action>? = nil,
+        persistencePlugin: PersistencePlugin<State, Action>? = nil,
+        isUndoable: @escaping @Sendable (Action) -> Bool
+    ) {
+        self.init(
+            initialState: initialState, reducer: reducer, plugins: plugins, undoPlugin: undoPlugin,
+            persistencePlugin: persistencePlugin)
     }
 
     // MARK: - @dynamicMemberLookup
@@ -285,11 +324,10 @@ public final class Store<State: SwiduxObservable, Action> {
 
         // One platform step per snapshot. A coalesced action shares the step
         // its run opened, and registering it anyway left the Edit menu and
-        // shake-to-undo offering steps that undid nothing. Without a narrowing
-        // `isUndoable`, the plugin's own predicate — which decided whether to
-        // snapshot — is the whole rule.
-        if let undoPlugin, undoPlugin.snapshotCount != snapshotsBefore, isUndoableAction?(action) ?? true {
-            undoManager?.registerUndo(withTarget: self) { $0.undo() }
+        // shake-to-undo offering steps that undid nothing. Only a snapshot
+        // registers, so the two stacks can't disagree about which step is next.
+        if let undoPlugin, undoPlugin.snapshotCount != snapshotsBefore {
+            registerPlatformStep { $0.undo() }
         }
 
         let send: Send<Action> = { [weak self] action in
@@ -368,16 +406,30 @@ public final class Store<State: SwiduxObservable, Action> {
 
     deinit {
         for handle in effectTasks.values { handle.task.cancel() }
+        // Take the store's steps out of the Edit menu. `UndoManager` belongs
+        // to the main thread, where a UI-owned store is released; released
+        // anywhere else, the steps stay behind as no-ops instead.
+        if Thread.isMainThread {
+            let target = undoTarget
+            MainActor.assumeIsolated {
+                undoManager?.removeAllActions(withTarget: target)
+            }
+        }
     }
 
     // MARK: - Undo / Redo
 
-    /// Restores the previous state from the undo stack.
+    /// Restores the previous state from the undo stack — or, with an
+    /// ``undoManager`` attached, performs the window's Undo.
     ///
-    /// With an ``undoManager`` attached, a direct call — an in-app Undo
-    /// button, or a menu command that calls this — is routed through the
-    /// platform manager, so the Edit menu, shake-to-undo, and the button all
-    /// walk one history.
+    /// A direct call — an in-app Undo button, or a menu command that calls
+    /// this — is routed through an attached platform manager, so the Edit
+    /// menu, shake-to-undo, and the button all walk one history. That history
+    /// is the manager's, not just the store's: if a text field or a SwiftData
+    /// context sharing the manager registered the most recent step, that step
+    /// is what this undoes, and the store is left as it is. `canUndo` still
+    /// describes only the store's own history; enable a button that should
+    /// match the Edit menu from the manager's `canUndo` instead.
     public func undo() {
         if let undoManager, routesThroughUndoManager(undoManager, canStep: canUndo && undoManager.canUndo) {
             return undoManager.undo()
@@ -390,15 +442,17 @@ public final class Store<State: SwiduxObservable, Action> {
             // Only an undo the manager is running files the inverse on its redo
             // stack. Registered from anywhere else it becomes a new *undo*, and
             // the next system Undo would redo what the user just undid.
-            if let undoManager = self.undoManager, undoManager.isUndoing {
-                undoManager.registerUndo(withTarget: self) { $0.redo() }
+            if self.undoManager?.isUndoing == true {
+                self.registerPlatformStep { $0.redo() }
             }
         }
     }
 
-    /// Re-applies a previously undone state from the redo stack.
+    /// Re-applies a previously undone state from the redo stack — or, with an
+    /// ``undoManager`` attached, performs the window's Redo.
     ///
-    /// Routed through an attached ``undoManager`` exactly as ``undo()`` is.
+    /// Routed through an attached ``undoManager`` exactly as ``undo()`` is,
+    /// with the same one-history contract.
     public func redo() {
         if let undoManager, routesThroughUndoManager(undoManager, canStep: canRedo && undoManager.canRedo) {
             return undoManager.redo()
@@ -408,8 +462,8 @@ public final class Store<State: SwiduxObservable, Action> {
             let current = State(observer: self.observer)
             guard let restored = undoPlugin.redo(current: current) else { return }
             self.applySnapshot(restored)
-            if let undoManager = self.undoManager, undoManager.isRedoing {
-                undoManager.registerUndo(withTarget: self) { $0.undo() }
+            if self.undoManager?.isRedoing == true {
+                self.registerPlatformStep { $0.undo() }
             }
         }
     }
@@ -425,6 +479,17 @@ public final class Store<State: SwiduxObservable, Action> {
     /// the call is the manager's own callback or arrives mid-dispatch, and when
     /// a group other than the current event's is open — `UndoManager` raises
     /// if asked to undo inside one.
+    /// Registers `step` on the platform manager against ``undoTarget``, which
+    /// the handler keeps alive, calling into the store only while it lives.
+    private func registerPlatformStep(_ step: @escaping @MainActor (Store) -> Void) {
+        let target = undoTarget
+        undoManager?.registerUndo(withTarget: target) { [weak self] _ in
+            withExtendedLifetime(target) {
+                if let self { step(self) }
+            }
+        }
+    }
+
     private func routesThroughUndoManager(_ undoManager: UndoManager, canStep: Bool) -> Bool {
         guard canStep, !isDispatching, !undoManager.isUndoing, !undoManager.isRedoing else { return false }
         return undoManager.groupingLevel == 0 || (undoManager.groupsByEvent && undoManager.groupingLevel == 1)
@@ -453,6 +518,9 @@ public final class Store<State: SwiduxObservable, Action> {
 
 extension Store: @MainActor SwiduxDispatcher {}
 
+/// The target the store's platform undo steps are registered against.
+private final class UndoTarget: Sendable {}
+
 // MARK: - Effect Cancellation Registry
 
 /// Only active scopes are retained. UUID tokens distinguish nested same-key scopes.
@@ -480,8 +548,13 @@ extension Store: EffectCancellationRegistrar {
         dispatchReports(cancelScopes(reporting: true) { scope, _ in scope.id == id })
     }
 
-    /// Cancels every registered scope matching `predicate`, and returns the
-    /// `onCancel` reports of those it newly cancelled when `reporting`.
+    /// Cancels every registered scope matching `predicate`, and every scope
+    /// nested in one, and returns the `onCancel` reports of those it newly
+    /// cancelled when `reporting` — outermost first.
+    ///
+    /// Nested scopes are cancelled here explicitly, not left to their host
+    /// task's cancellation reaching them: that way each reports its own
+    /// `onCancel`, whether or not an enclosing scope has one.
     ///
     /// A `cancelInFlight` replacement passes `false`: the action that started
     /// the replacement is already handling the state the report would reset.
@@ -492,7 +565,13 @@ extension Store: EffectCancellationRegistrar {
     ) -> [@MainActor @Sendable () -> Void] {
         var reports: [@MainActor @Sendable () -> Void] = []
         for handle in effectTasks.values {
-            for (token, scope) in handle.scopes where predicate(scope, token) {
+            let matched = Set(handle.scopes.filter { predicate($0.value, $0.key) }.keys)
+            guard !matched.isEmpty else { continue }
+            let cancelled = handle.scopes
+                .filter { matched.contains($0.key) || !$0.value.enclosingScopes.isDisjoint(with: matched) }
+                .map(\.value)
+                .sorted { $0.enclosingScopes.count < $1.enclosingScopes.count }
+            for scope in cancelled {
                 if scope.cancellation.cancel(), reporting, let report = scope.onCancel {
                     reports.append(report)
                 }
@@ -506,7 +585,11 @@ extension Store: EffectCancellationRegistrar {
     private func dispatchReports(_ reports: [@MainActor @Sendable () -> Void]) {
         guard !reports.isEmpty else { return }
         perform {
-            for report in reports { report() }
+            // A nested scope reports through its enclosing scopes' guards,
+            // which were just flagged along with it.
+            ScopeCancellation.$isDeliveringReport.withValue(true) {
+                for report in reports { report() }
+            }
         }
     }
 }
