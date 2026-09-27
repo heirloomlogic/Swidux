@@ -51,6 +51,9 @@ struct ActiveScope: Sendable {
     let cancellation: ScopeCancellation
     /// Dispatches the scope's `onCancel:` action through the send it was given.
     let onCancel: (@MainActor @Sendable () -> Void)?
+    /// Tokens of the scopes this one is nested in. Cancelling any of them
+    /// cancels this one too, so it reports as well.
+    var enclosingScopes: Set<UUID> = []
 }
 
 /// Cancels the unit of work a scope runs in, and remembers that it did.
@@ -93,13 +96,18 @@ final class ScopeCancellation: Sendable {
         return true
     }
 
-    /// Wraps `send` so nothing is dispatched once the scope is cancelled.
+    /// Wraps `send` so nothing is dispatched once the scope is cancelled —
+    /// except an `onCancel:` report, which a nested scope sends through its
+    /// enclosing scopes' guards just when they are cancelled too.
     func guarding<Action>(_ send: @escaping Send<Action>) -> Send<Action> {
         { [self] action in
-            guard !isCancelled else { return }
+            guard !isCancelled || Self.isDeliveringReport else { return }
             send(action)
         }
     }
+
+    /// Set while the store dispatches `onCancel:` reports.
+    @TaskLocal static var isDeliveringReport = false
 }
 
 /// Ambient context a wrapped effect uses to register and cancel itself.
@@ -174,10 +182,10 @@ public func cancellable<Action>(
 /// The store dispatches `onCancel` when ``cancel(id:)``, `Store.cancel(id:)`,
 /// or `Store.cancelEffects()` cancels the effect while it is running — right
 /// away, or right after the action being dispatched when the cancellation
-/// comes from a reducer. It is not dispatched when a `cancelInFlight` effect
-/// replaces this one: the action that started the replacement is already
-/// handling that state. Nor is it dispatched for a scope nested inside another
-/// that is cancelled at the same time; the outer scope's `onCancel` covers it.
+/// comes from a reducer. A scope nested in a cancelled scope is cancelled with
+/// it and dispatches its own `onCancel` too, after the outer one's. It is not
+/// dispatched when a `cancelInFlight` effect replaces this one: the action that
+/// started the replacement is already handling that state.
 ///
 /// - Parameters:
 ///   - id: Any `Hashable & Sendable` value identifying the effect.

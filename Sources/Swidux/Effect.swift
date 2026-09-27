@@ -38,12 +38,17 @@ public struct Effect<Action>: Sendable {
     }
 
     /// The registry entry for this effect's scope, reporting through `send`.
-    func activeScope(id: AnyHashableSendable, send: @escaping Send<Action>) -> ActiveScope {
+    func activeScope(
+        id: AnyHashableSendable,
+        send: @escaping Send<Action>,
+        enclosedBy enclosingScopes: Set<UUID> = []
+    ) -> ActiveScope {
         var report: (@MainActor @Sendable () -> Void)?
         if let onCancel {
             report = { send(onCancel()) }
         }
-        return ActiveScope(id: id, cancellation: ScopeCancellation(), onCancel: report)
+        return ActiveScope(
+            id: id, cancellation: ScopeCancellation(), onCancel: report, enclosingScopes: enclosingScopes)
     }
 
     /// Runs the operation. `declaredScope` is the scope the store registered
@@ -58,7 +63,8 @@ public struct Effect<Action>: Sendable {
         case .cancel(let id):
             await context.registrar?.cancelCancellable(id: id)
         case .scope(let id, let cancelInFlight):
-            let (token, scope) = declaredScope ?? (UUID(), activeScope(id: id, send: send))
+            let (token, scope) =
+                declaredScope ?? (UUID(), activeScope(id: id, send: send, enclosedBy: context.enclosingScopes))
             // This actor hop also prevents a declared scope from running before
             // the synchronous dispatch cycle has finished registering its tasks.
             await context.registrar?.register(

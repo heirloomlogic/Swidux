@@ -514,8 +514,13 @@ extension Store: EffectCancellationRegistrar {
         dispatchReports(cancelScopes(reporting: true) { scope, _ in scope.id == id })
     }
 
-    /// Cancels every registered scope matching `predicate`, and returns the
-    /// `onCancel` reports of those it newly cancelled when `reporting`.
+    /// Cancels every registered scope matching `predicate`, and every scope
+    /// nested in one, and returns the `onCancel` reports of those it newly
+    /// cancelled when `reporting` — outermost first.
+    ///
+    /// Nested scopes are cancelled here explicitly, not left to their host
+    /// task's cancellation reaching them: that way each reports its own
+    /// `onCancel`, whether or not an enclosing scope has one.
     ///
     /// A `cancelInFlight` replacement passes `false`: the action that started
     /// the replacement is already handling the state the report would reset.
@@ -526,7 +531,13 @@ extension Store: EffectCancellationRegistrar {
     ) -> [@MainActor @Sendable () -> Void] {
         var reports: [@MainActor @Sendable () -> Void] = []
         for handle in effectTasks.values {
-            for (token, scope) in handle.scopes where predicate(scope, token) {
+            let matched = Set(handle.scopes.filter { predicate($0.value, $0.key) }.keys)
+            guard !matched.isEmpty else { continue }
+            let cancelled = handle.scopes
+                .filter { matched.contains($0.key) || !$0.value.enclosingScopes.isDisjoint(with: matched) }
+                .map(\.value)
+                .sorted { $0.enclosingScopes.count < $1.enclosingScopes.count }
+            for scope in cancelled {
                 if scope.cancellation.cancel(), reporting, let report = scope.onCancel {
                     reports.append(report)
                 }
@@ -540,7 +551,11 @@ extension Store: EffectCancellationRegistrar {
     private func dispatchReports(_ reports: [@MainActor @Sendable () -> Void]) {
         guard !reports.isEmpty else { return }
         perform {
-            for report in reports { report() }
+            // A nested scope reports through its enclosing scopes' guards,
+            // which were just flagged along with it.
+            ScopeCancellation.$isDeliveringReport.withValue(true) {
+                for report in reports { report() }
+            }
         }
     }
 }

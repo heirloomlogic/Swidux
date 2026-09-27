@@ -55,10 +55,11 @@ case .searchCancelled:
     state.isSearching = false
 ```
 
-The store dispatches `onCancel` when ``cancel(id:)``, ``Store/cancel(id:)``, or ``Store/cancelEffects()`` cancels the effect while it is still running — at once from view code, or right after the current action when a reducer returns ``cancel(id:)``. It is dispatched once, and never for an effect that already finished. Two cases don't dispatch it:
+The store dispatches `onCancel` when ``cancel(id:)``, ``Store/cancel(id:)``, or ``Store/cancelEffects()`` cancels the effect while it is still running — at once from view code, or right after the current action when a reducer returns ``cancel(id:)``. It is dispatched once, and never for an effect that already finished.
 
-- A `cancelInFlight` effect replacing this one. The action that started the replacement is already setting that state, and a late `.searchCancelled` would clear `isSearching` while the new search runs.
-- A scope nested inside another scope that is cancelled at the same time. The outer scope's `onCancel` covers both.
+Cancelling a scope cancels every scope nested in it, and each of those dispatches its own `onCancel` as well — outermost first — whether or not the enclosing scope has one. A nested scope often comes from another feature, and only its own `onCancel` knows what that feature set.
+
+One case doesn't dispatch it: a `cancelInFlight` effect replacing this one. The action that started the replacement is already setting that state, and a late `.searchCancelled` would clear `isSearching` while the new search runs.
 
 ## Debounce with `cancelInFlight`
 

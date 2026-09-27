@@ -453,3 +453,73 @@ extension EffectCancellationRaceTests {
         #expect(log.value == ["outer survived"])
     }
 }
+
+// MARK: - Reporting from nested scopes
+
+/// Every cancelled scope reports its own `onCancel:`, however the cancellation
+/// reached it — including through an enclosing scope that has none.
+extension EffectCancellationRaceTests {
+    /// A keyed host scope running a nested keyed search that parks until
+    /// cancelled. The host carries an `onCancel:` only when `hostReports`.
+    private func makeNestedReportStore(
+        log: SendableBox<[String]>,
+        started: AsyncStream<Void>.Continuation,
+        hostReports: Bool
+    ) -> Store<TestState, TestAction> {
+        makeHostStore(log: log) {
+            let host: @Sendable (@escaping Send<TestAction>) async throws -> Void = { send in
+                let search: Effect<TestAction> = cancellable(
+                    id: "search", onCancel: .effectAction("search cancelled")
+                ) { _ in
+                    started.yield()
+                    try await Task.sleep(for: .seconds(60))
+                }
+                try await search(send)
+            }
+            return hostReports
+                ? cancellable(id: "screen", onCancel: .effectAction("screen cancelled"), host)
+                : cancellable(id: "screen", host)
+        }
+    }
+
+    @Test("cancelEffects() reports a nested scope under a keyed host without onCancel")
+    func nestedReportUnderSilentHostCancelEffects() async throws {
+        let log = SendableBox<[String]>([])
+        let started = AsyncStream<Void>.makeStream()
+        let store = makeNestedReportStore(log: log, started: started.continuation, hostReports: false)
+        store.send(.noOp)
+        for await _ in started.stream { break }
+
+        store.cancelEffects()
+
+        #expect(log.value == ["search cancelled"], "isSearching would stay true forever")
+    }
+
+    @Test("cancel(id:) of a host without onCancel reports the scope nested in it")
+    func nestedReportUnderSilentHostCancelID() async throws {
+        let log = SendableBox<[String]>([])
+        let started = AsyncStream<Void>.makeStream()
+        let store = makeNestedReportStore(log: log, started: started.continuation, hostReports: false)
+        store.send(.noOp)
+        for await _ in started.stream { break }
+
+        store.cancel(id: "screen")
+
+        #expect(log.value == ["search cancelled"], "isSearching would stay true forever")
+        try await poll(until: { !store.hasInFlightEffects })
+        #expect(log.value == ["search cancelled"])
+    }
+
+    @Test("cancelling a host with onCancel reports it and the scope nested in it, outermost first")
+    func nestedAndHostBothReport() async throws {
+        let log = SendableBox<[String]>([])
+        let started = AsyncStream<Void>.makeStream()
+        let store = makeNestedReportStore(log: log, started: started.continuation, hostReports: true)
+        store.send(.noOp)
+        for await _ in started.stream { break }
+
+        store.cancel(id: "screen")
+
+        #expect(log.value == ["screen cancelled", "search cancelled"])
+    }
+}
