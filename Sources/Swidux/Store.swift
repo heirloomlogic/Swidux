@@ -48,14 +48,59 @@ public final class Store<State: SwiduxObservable, Action> {
 
     // MARK: - Undo
 
+    /// The plugins passed to `init` explicitly, which win over the host's.
     @ObservationIgnored
-    private let undoPlugin: UndoPlugin<State, Action>?
+    private let explicitUndoPlugin: UndoPlugin<State, Action>?
 
     @ObservationIgnored
-    private let persistencePlugin: PersistencePlugin<State, Action>?
+    private let explicitPersistencePlugin: PersistencePlugin<State, Action>?
+
+    /// The core plugins found on the host, and how many plugins it held when
+    /// they were looked up. The host only ever appends, so a changed count is
+    /// exactly "something was registered since".
+    @ObservationIgnored
+    private var discovered = CorePlugins()
+
+    private struct CorePlugins {
+        var pluginCount = 0
+        var undo: UndoPlugin<State, Action>?
+        var persistence: PersistencePlugin<State, Action>?
+    }
 
     @ObservationIgnored
     private let isUndoableAction: (@Sendable (Action) -> Bool)?
+
+    /// The plugin ``undo()`` / ``redo()`` drive.
+    private var undoPlugin: UndoPlugin<State, Action>? {
+        explicitUndoPlugin ?? discoveredCorePlugins().undo
+    }
+
+    /// The plugin ``mutate(_:)`` and undo/redo drain through.
+    private var persistencePlugin: PersistencePlugin<State, Action>? {
+        explicitPersistencePlugin ?? discoveredCorePlugins().persistence
+    }
+
+    /// Looks the core plugins up on the host — lazily, at use, so one
+    /// registered after the store was built is found too. `mutate` and
+    /// undo/redo are the paths that drain outside the plugin lifecycle, so a
+    /// store that couldn't find the persistence plugin recorded their changes
+    /// and scheduled nothing: the write reached disk only if a later `send`
+    /// happened to drain it first, and an explicit `flush()` — which empties
+    /// the writers' buffers but never drains into them — wrote nothing at all.
+    /// A store that couldn't find the undo plugin let snapshots pile up while
+    /// `undo()` did nothing. Requiring each to be named twice made that the
+    /// default outcome.
+    private func discoveredCorePlugins() -> CorePlugins {
+        let registered = plugins.plugins
+        if registered.count != discovered.pluginCount {
+            discovered = CorePlugins(
+                pluginCount: registered.count,
+                undo: registered.lazy.compactMap { $0 as? UndoPlugin<State, Action> }.first,
+                persistence: registered.lazy.compactMap { $0 as? PersistencePlugin<State, Action> }.first
+            )
+        }
+        return discovered
+    }
 
     /// Whether there is a state to undo to.
     public private(set) var canUndo = false
@@ -95,20 +140,19 @@ public final class Store<State: SwiduxObservable, Action> {
     ///   - initialState: The state the observer tree is built from.
     ///   - reducer: The app reducer.
     ///   - plugins: The registered plugins, in execution order.
-    ///   - undoPlugin: The plugin ``undo()`` / ``redo()`` drive. Register it on
-    ///     `plugins` too — it snapshots from `willReduce`.
+    ///   - undoPlugin: The plugin ``undo()`` / ``redo()`` drive. **Usually leave
+    ///     this nil**: an `UndoPlugin` registered on `plugins` is found
+    ///     automatically, even one registered after the store is built. It
+    ///     must be registered either way — it snapshots from `willReduce`.
     ///   - persistencePlugin: The plugin ``mutate(_:)`` and undo/redo drain
     ///     through. **Usually leave this nil**: a `PersistencePlugin` registered
     ///     on `plugins` is found automatically, so registering it once is
     ///     enough. Pass it only to drain through a plugin that is deliberately
     ///     *not* registered on the host.
-    ///   - isUndoable: Which actions register with the platform `UndoManager`.
-    ///
-    /// - Note: `isUndoable` only controls platform `UndoManager` registration
-    ///   (menu items, gestures); the `UndoPlugin` snapshots according to its
-    ///   *own* `isUndoable` predicate. Pass the same predicate to both —
-    ///   if they disagree, actions can be snapshotted without appearing in
-    ///   the Edit menu, or vice versa.
+    ///   - isUndoable: Narrows which undo steps register with the platform
+    ///     `UndoManager` (menu items, gestures). **Usually leave this nil**:
+    ///     every step the undo plugin snapshots is registered, one per
+    ///     snapshot, so the plugin's own `isUndoable` predicate already decides.
     public init(
         initialState: State,
         reducer: @escaping (inout State, Action) -> Effect<Action>?,
@@ -120,18 +164,8 @@ public final class Store<State: SwiduxObservable, Action> {
         self.observer = State.makeObserver(from: initialState)
         self.reduce = reducer
         self.plugins = plugins
-        self.undoPlugin = undoPlugin
-        // Fall back to whatever is registered. `mutate` and undo/redo are the
-        // two paths that drain outside the plugin lifecycle, so a store that
-        // couldn't find the plugin recorded their changes and scheduled
-        // nothing: the write reached disk only if a later `send` happened to
-        // drain it first, and an explicit `flush()` — which empties the writers'
-        // buffers but never drains into them — wrote nothing at all. Requiring
-        // the same plugin to be named twice made that the default outcome for
-        // anyone following <doc:HowToAddPersistence>.
-        self.persistencePlugin =
-            persistencePlugin
-            ?? plugins.plugins.lazy.compactMap { $0 as? PersistencePlugin<State, Action> }.first
+        self.explicitUndoPlugin = undoPlugin
+        self.explicitPersistencePlugin = persistencePlugin
         self.isUndoableAction = isUndoable
     }
 
@@ -238,6 +272,8 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Runs one complete dispatch cycle. Callers must hold `isDispatching`.
     private func dispatch(_ action: Action) {
         var state = State(observer: observer)
+        let undoPlugin = undoPlugin
+        let snapshotsBefore = undoPlugin?.snapshotCount
 
         plugins.willReduce(state: state, action: action)
         let effect = reduce(&state, action)
@@ -247,7 +283,12 @@ public final class Store<State: SwiduxObservable, Action> {
         State.apply(state, to: observer)
         syncUndoState()
 
-        if let isUndoableAction, isUndoableAction(action) {
+        // One platform step per snapshot. A coalesced action shares the step
+        // its run opened, and registering it anyway left the Edit menu and
+        // shake-to-undo offering steps that undid nothing. Without a narrowing
+        // `isUndoable`, the plugin's own predicate — which decided whether to
+        // snapshot — is the whole rule.
+        if let undoPlugin, undoPlugin.snapshotCount != snapshotsBefore, isUndoableAction?(action) ?? true {
             undoManager?.registerUndo(withTarget: self) { $0.undo() }
         }
 
@@ -263,16 +304,18 @@ public final class Store<State: SwiduxObservable, Action> {
             // `send` is synchronous on the MainActor, so the task is registered
             // before the completion hop below can possibly run.
             let id = UUID()
-            let scope = UUID()
-            if case .scope(let key, true) = eff.cancellation {
-                cancelCancellable(id: key)
+            var declared: (token: UUID, scope: ActiveScope)?
+            if case .scope(let key, let cancelInFlight) = eff.cancellation {
+                if cancelInFlight { cancelScopes(reporting: false) { scope, _ in scope.id == key } }
+                declared = (UUID(), eff.activeScope(id: key, send: send))
             }
             // Weak `registrar`, so binding the context does not retain the store.
-            let context = EffectContext(registrar: self, taskID: id)
-            let task = Task { @concurrent [weak self] in
+            let context = EffectContext(
+                registrar: self, taskID: id, enclosingScopes: declared.map { [$0.token] } ?? [])
+            let task = Task { @concurrent [weak self, declared] in
                 await EffectContext.$current.withValue(context) {
                     do {
-                        try await eff.run(send, registeredScope: scope)
+                        try await eff.run(send, declaredScope: declared)
                     } catch is CancellationError {
                         // Expected on teardown / cancelEffects() / cancel(id:) — not an error.
                     } catch {
@@ -282,7 +325,10 @@ public final class Store<State: SwiduxObservable, Action> {
                 await self?.effectFinished(id)
             }
             var handle = EffectHandle(task: task)
-            if case .scope(let key, _) = eff.cancellation { handle.scopes[scope] = key }
+            if let declared {
+                declared.scope.cancellation.attach(task)
+                handle.scopes[declared.token] = declared.scope
+            }
             effectTasks[id] = handle
         }
     }
@@ -296,9 +342,14 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Streaming effects (`for await …`) end at their next suspension point.
     /// Called automatically when the store deinitializes; call it directly to
     /// tear down long-lived effects earlier (for example on scene teardown).
+    ///
+    /// Each running `cancellable(id:onCancel:_:)` scope's `onCancel` action is
+    /// dispatched afterwards, as for ``cancel(id:)``.
     public func cancelEffects() {
+        let reports = cancelScopes(reporting: true) { _, _ in true }
         for handle in effectTasks.values { handle.task.cancel() }
         effectTasks.removeAll()
+        dispatchReports(reports)
     }
 
     /// Cancels every in-flight effect tagged with `id` via
@@ -307,6 +358,10 @@ public final class Store<State: SwiduxObservable, Action> {
     /// Safe to call from view or scene lifecycle code (e.g. `.onDisappear`);
     /// ids with nothing running are ignored. To cancel from *inside* a reducer,
     /// return the ``cancel(id:)`` effect instead.
+    ///
+    /// A cancelled keyed effect's own sends are dropped, including one from a
+    /// `catch` block, so it can't clear an in-flight flag itself. Give it an
+    /// `onCancel:` action, which this dispatches before returning.
     public func cancel(id: some Hashable & Sendable) {
         cancelCancellable(id: AnyHashableSendable(id))
     }
@@ -318,25 +373,61 @@ public final class Store<State: SwiduxObservable, Action> {
     // MARK: - Undo / Redo
 
     /// Restores the previous state from the undo stack.
+    ///
+    /// With an ``undoManager`` attached, a direct call — an in-app Undo
+    /// button, or a menu command that calls this — is routed through the
+    /// platform manager, so the Edit menu, shake-to-undo, and the button all
+    /// walk one history.
     public func undo() {
+        if let undoManager, routesThroughUndoManager(undoManager, canStep: canUndo && undoManager.canUndo) {
+            return undoManager.undo()
+        }
         perform {
             guard let undoPlugin = self.undoPlugin else { return }
             let current = State(observer: self.observer)
             guard let restored = undoPlugin.undo(current: current) else { return }
             self.applySnapshot(restored)
-            self.undoManager?.registerUndo(withTarget: self) { $0.redo() }
+            // Only an undo the manager is running files the inverse on its redo
+            // stack. Registered from anywhere else it becomes a new *undo*, and
+            // the next system Undo would redo what the user just undid.
+            if let undoManager = self.undoManager, undoManager.isUndoing {
+                undoManager.registerUndo(withTarget: self) { $0.redo() }
+            }
         }
     }
 
     /// Re-applies a previously undone state from the redo stack.
+    ///
+    /// Routed through an attached ``undoManager`` exactly as ``undo()`` is.
     public func redo() {
+        if let undoManager, routesThroughUndoManager(undoManager, canStep: canRedo && undoManager.canRedo) {
+            return undoManager.redo()
+        }
         perform {
             guard let undoPlugin = self.undoPlugin else { return }
             let current = State(observer: self.observer)
             guard let restored = undoPlugin.redo(current: current) else { return }
             self.applySnapshot(restored)
-            self.undoManager?.registerUndo(withTarget: self) { $0.undo() }
+            if let undoManager = self.undoManager, undoManager.isRedoing {
+                undoManager.registerUndo(withTarget: self) { $0.undo() }
+            }
         }
+    }
+
+    /// Whether a direct ``undo()`` / ``redo()`` should drive the platform
+    /// manager instead of the plugin: the manager then calls back into the
+    /// store with `isUndoing` / `isRedoing` set, which is the only way the
+    /// inverse lands on the right stack.
+    ///
+    /// Falls back to stepping the plugin alone, registering nothing, when the
+    /// store or the manager has no step to take (the manager was attached
+    /// after the edits, say), when
+    /// the call is the manager's own callback or arrives mid-dispatch, and when
+    /// a group other than the current event's is open — `UndoManager` raises
+    /// if asked to undo inside one.
+    private func routesThroughUndoManager(_ undoManager: UndoManager, canStep: Bool) -> Bool {
+        guard canStep, !isDispatching, !undoManager.isUndoing, !undoManager.isRedoing else { return false }
+        return undoManager.groupingLevel == 0 || (undoManager.groupsByEvent && undoManager.groupingLevel == 1)
     }
 
     private func applySnapshot(_ restored: State) {
@@ -367,23 +458,55 @@ extension Store: @MainActor SwiduxDispatcher {}
 /// Only active scopes are retained. UUID tokens distinguish nested same-key scopes.
 private struct EffectHandle {
     let task: Task<Void, Never>
-    var scopes: [UUID: AnyHashableSendable] = [:]
+    var scopes: [UUID: ActiveScope] = [:]
 }
 
 extension Store: EffectCancellationRegistrar {
-    func register(_ taskID: UUID, scope: UUID, id: AnyHashableSendable, cancelInFlight: Bool) {
+    func register(_ scope: ActiveScope, token: UUID, in taskID: UUID, cancelInFlight: Bool, sparing: Set<UUID>) {
         guard let handle = effectTasks[taskID], !handle.task.isCancelled else { return }
-        if cancelInFlight { cancelCancellable(id: id, excluding: taskID) }
-        effectTasks[taskID]?.scopes[scope] = id
+        if cancelInFlight {
+            // Concurrent same-id scopes in this effect are replaced like any
+            // other; only the scopes enclosing the new one are spared.
+            cancelScopes(reporting: false) { $0.id == scope.id && !sparing.contains($1) }
+        }
+        effectTasks[taskID]?.scopes[token] = scope
     }
 
     func unregister(_ taskID: UUID, scope: UUID) {
         effectTasks[taskID]?.scopes.removeValue(forKey: scope)
     }
 
-    func cancelCancellable(id: AnyHashableSendable, excluding taskID: UUID? = nil) {
-        for (key, handle) in effectTasks where key != taskID && handle.scopes.values.contains(id) {
-            handle.task.cancel()
+    func cancelCancellable(id: AnyHashableSendable) {
+        dispatchReports(cancelScopes(reporting: true) { scope, _ in scope.id == id })
+    }
+
+    /// Cancels every registered scope matching `predicate`, and returns the
+    /// `onCancel` reports of those it newly cancelled when `reporting`.
+    ///
+    /// A `cancelInFlight` replacement passes `false`: the action that started
+    /// the replacement is already handling the state the report would reset.
+    @discardableResult
+    private func cancelScopes(
+        reporting: Bool,
+        where predicate: (ActiveScope, UUID) -> Bool
+    ) -> [@MainActor @Sendable () -> Void] {
+        var reports: [@MainActor @Sendable () -> Void] = []
+        for handle in effectTasks.values {
+            for (token, scope) in handle.scopes where predicate(scope, token) {
+                if scope.cancellation.cancel(), reporting, let report = scope.onCancel {
+                    reports.append(report)
+                }
+            }
+        }
+        return reports
+    }
+
+    /// Dispatches `onCancel` reports once every cancellation is in place, so an
+    /// action a report triggers can't have its own effects swept up by it.
+    private func dispatchReports(_ reports: [@MainActor @Sendable () -> Void]) {
+        guard !reports.isEmpty else { return }
+        perform {
+            for report in reports { report() }
         }
     }
 }

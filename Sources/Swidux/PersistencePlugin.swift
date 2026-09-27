@@ -12,8 +12,10 @@ import os
 /// Coalescing persistence plugin.
 ///
 /// After each reducer call, drains `ChangeSet`s from registered `EntityStore`s
-/// into `StateWriter` buffers. Restarts a debounce timer on each drain. When the
-/// timer fires, flushes all pending writes in a single `Task`.
+/// into `StateWriter` buffers. Restarts a debounce timer on each drain, but
+/// never pushes it more than `maxWait` past the oldest pending drain, so a
+/// steady stream of edits still reaches storage. When the timer fires, flushes
+/// all pending writes in a single `Task`.
 ///
 /// A flush whose save fails is retried on a doubling backoff, bounded by
 /// ``RetryPolicy``. Without that a failed save is silent data loss: the buffers
@@ -70,10 +72,30 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     private var flushTail: Task<Void, Never>?
     private var flushID: UUID?
 
-    /// Number of `afterReduce` calls since the last debounce flush.
+    /// The longest a drained change waits for its flush, however steadily
+    /// further drains keep restarting the debounce.
+    private let maxWait: Duration
+
+    /// When the oldest drain the next flush will carry happened. The debounce
+    /// is never scheduled past `pendingSince + maxWait`.
+    private var pendingSince: ContinuousClock.Instant?
+
+    /// When the scheduled retry is due, so a drain can tell whether the flush
+    /// it schedules makes the retry redundant.
+    private var retryDeadline: ContinuousClock.Instant?
+
+    /// Number of draining calls in the current loop-detection window.
     ///
     /// Used to detect probable dispatch loops.
     private var drainCount = 0
+
+    /// When the current loop-detection window — one debounce interval long —
+    /// opened.
+    private var loopWindowStart: ContinuousClock.Instant?
+
+    /// When the last draining call happened. A gap longer than the debounce
+    /// ends a burst.
+    private var lastDrainAt: ContinuousClock.Instant?
 
     /// Whether we've already reported a loop warning for this burst.
     private var hasReportedLoopWarning = false
@@ -95,6 +117,11 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// - Parameters:
     ///   - writers: The state writers that drain and flush entity changes.
     ///   - debounce: How long to wait after the last change before flushing.
+    ///   - maxWait: The longest a change waits to be flushed while further
+    ///     changes keep restarting the debounce — a slider drag, continuous
+    ///     typing, or a streaming effect. Without it none of that reaches disk
+    ///     until the edits stop, and a crash loses all of it. Defaults to four
+    ///     debounce intervals, and at least one second.
     ///   - retry: How a failed flush is retried. The buffers are cleared at
     ///     flush time, so without retrying a failed save reaches disk only if
     ///     the user happens to touch the same entity again.
@@ -107,6 +134,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     public init(
         writers: [StateWriter<State>],
         debounce: Duration = .milliseconds(250),
+        maxWait: Duration? = nil,
         retry: RetryPolicy = .default,
         loopThreshold: Int = 100,
         logger: Logger = Logger(subsystem: "persistence", category: "plugin"),
@@ -114,6 +142,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     ) {
         self.writers = writers
         self.debounceInterval = debounce
+        self.maxWait = maxWait ?? max(debounce * 4, .seconds(1))
         self.retryPolicy = retry
         self.retryStates = Array(repeating: RetryState(), count: writers.count)
         self.loopWarningThreshold = loopThreshold
@@ -136,9 +165,12 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         // full budget — see `drainAndScheduleFlush`.
         retryTask?.cancel()
         retryTask = nil
+        retryDeadline = nil
         for index in retryStates.indices { retryStates[index].hasGivenUp = false }
 
+        pendingSince = nil
         drainCount = 0
+        loopWindowStart = nil
         hasReportedLoopWarning = false
 
         // Chains behind any in-flight debounce flush, so returning from
@@ -162,23 +194,23 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
 
         guard hasPending else { return }
 
-        // The debounce flush about to be scheduled carries the re-buffered
-        // batch too, so a separate retry tick would only duplicate it.
-        retryTask?.cancel()
-        retryTask = nil
+        let now = ContinuousClock.now
+        countDrainForLoopDetection(at: now)
 
-        drainCount += 1
-        if drainCount > loopWarningThreshold && !hasReportedLoopWarning {
-            hasReportedLoopWarning = true
-            logger.warning(
-                """
-                [PersistencePlugin] afterReduce called \(self.drainCount) times \
-                in a single debounce interval — possible dispatch loop. \
-                Look for an effect or plugin that dispatches an action on every \
-                state change, feeding the cycle it reacts to.
-                """
-            )
-            onLoopSuspected?(drainCount)
+        // Trailing debounce, capped: a drain restarts the timer, but never
+        // past `maxWait` after the oldest drain still waiting for it.
+        let since = pendingSince ?? now
+        pendingSince = since
+        let deadline = min(now + debounceInterval, since + maxWait)
+
+        // The flush about to be scheduled carries the re-buffered batch too,
+        // so a retry due no sooner would only duplicate it. One due sooner
+        // stays: cancelling it on every drain let steady edits postpone a
+        // failed write indefinitely.
+        if let retryDeadline, deadline <= retryDeadline {
+            retryTask?.cancel()
+            retryTask = nil
+            self.retryDeadline = nil
         }
 
         logger.debug("[PersistencePlugin] Changes drained, scheduling flush")
@@ -186,13 +218,44 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         debounceTask?.cancel()
         debounceTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: self.debounceInterval)
+            try? await Task.sleep(until: deadline, clock: .continuous)
             guard !Task.isCancelled else { return }
 
-            self.drainCount = 0
-            self.hasReportedLoopWarning = false
+            self.pendingSince = nil
             self.runFlushWork()
         }
+    }
+
+    /// Counts a draining call against the current one-debounce-interval
+    /// window, and warns once per burst when a window crosses the threshold.
+    ///
+    /// Counting per window rather than per quiet period matters: a steady
+    /// stream of edits — a slider drag — never goes quiet, so a count that
+    /// only reset when the debounce fired reported it as a loop at any rate.
+    private func countDrainForLoopDetection(at now: ContinuousClock.Instant) {
+        if let lastDrainAt, now - lastDrainAt > debounceInterval {
+            // Quiet for a whole interval: whatever comes next is a new burst.
+            hasReportedLoopWarning = false
+        }
+        lastDrainAt = now
+        if let loopWindowStart, now - loopWindowStart < debounceInterval {
+            drainCount += 1
+        } else {
+            loopWindowStart = now
+            drainCount = 1
+        }
+
+        guard drainCount > loopWarningThreshold && !hasReportedLoopWarning else { return }
+        hasReportedLoopWarning = true
+        logger.warning(
+            """
+            [PersistencePlugin] afterReduce called \(self.drainCount) times \
+            in a single debounce interval — possible dispatch loop. \
+            Look for an effect or plugin that dispatches an action on every \
+            state change, feeding the cycle it reacts to.
+            """
+        )
+        onLoopSuspected?(drainCount)
     }
 
     /// Chains persistence work behind the active flush, taking the next batch
@@ -271,10 +334,13 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     /// if the user never touches the app again.
     private func scheduleRetry(after delay: Duration) {
         retryTask?.cancel()
+        let deadline = ContinuousClock.now + delay
+        retryDeadline = deadline
         retryTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            try? await Task.sleep(until: deadline, clock: .continuous)
             guard !Task.isCancelled, let self else { return }
             self.retryTask = nil
+            self.retryDeadline = nil
             self.runFlushWork()
         }
     }
