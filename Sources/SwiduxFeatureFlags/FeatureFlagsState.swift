@@ -29,11 +29,12 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
     /// Local overrides — beat remote evaluation.
     public var localOverrides: [String: FlagValue] = [:]
 
-    /// Session-scoped record of the value each flag's last exposure reported.
-    /// An exposure is recorded again only when the rendered value differs
-    /// from the one here (a reassignment at sign-in, a config change). Reset
-    /// on every app launch.
-    public var exposedValues: [String: FlagValue] = [:]
+    /// Session-scoped record of every value each flag's exposures have
+    /// reported. An exposure is recorded only for a value not already here,
+    /// so a reassignment (sign-in, a config change) is recorded once and a
+    /// value that comes back is not recorded again. Bounded by the handful of
+    /// values a flag can render. Reset on every app launch.
+    public var exposedValues: [String: Set<FlagValue>] = [:]
 
     /// Stable per-install identity used for bucketing when no `userIDKeyPath`
     /// resolves to a non-nil value.
@@ -59,7 +60,7 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         lastFetchError: String? = nil,
         isFetching: Bool = false,
         localOverrides: [String: FlagValue] = [:],
-        exposedValues: [String: FlagValue] = [:],
+        exposedValues: [String: Set<FlagValue>] = [:],
         resolvedDeviceID: String = "",
         resolvedUserID: String? = nil
     ) {

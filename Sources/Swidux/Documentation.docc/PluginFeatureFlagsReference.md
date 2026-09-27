@@ -136,7 +136,7 @@ Pass the typed flag, not its key. The plugin evaluates the exposure through the 
 - A remote variant your enum can't parse makes the read return the Swift default, and records **no** exposure. The user was assigned an arm they weren't shown — typically an arm added server-side before the app version that knows it — so counting them in either arm would skew the experiment.
 - If the read passed an explicit `bucketingID:`, pass the same one to `recordExposure(of:bucketingID:)` or the modifier.
 
-The plugin records each distinct value once per session and fires the optional `onExposure` callback (passed at plugin init). A flag is recorded again when the value it renders changes — sign-in switching the bucketing identity, or a refresh changing the rollout — so exposure analytics follow the treatment the user actually has. Wire the callback to your analytics plugin to forward exposures as events.
+The plugin records the first exposure of each (flag, value) pair per session and fires the optional `onExposure` callback (passed at plugin init) for it. A reassignment — sign-in switching the bucketing identity, or a refresh changing the rollout — renders a value the flag hasn't reported yet, so it is recorded once and exposure analytics see the treatment the user now has. A value that comes back later in the session (an override toggled off and on, two views bucketing the same flag by different identities) isn't recorded again. Wire the callback to your analytics plugin to forward exposures as events.
 
 The key-only `recordExposure(key:)` is deprecated: without the flag's type it records overrides and remote variants verbatim and always buckets by the default identity.
 
@@ -160,6 +160,8 @@ public protocol FeatureFlagsService: Sendable {
 ```
 
 One method. Caching, hydration, evaluation all live in the plugin.
+
+The plugin bounds every fetch with its `fetchTimeout:` init parameter (default 30 seconds). A fetch still running at the deadline is cancelled and reported as `.refreshFailed`, and its result is dropped if it arrives later. That keeps a custom service that never returns from holding `isFetching`, which would otherwise block every later `.refresh` for the session. Keep the value above your service's own timeout so the service's error is the one reported.
 
 ### Built-in: `HTTPFeatureFlagsService`
 
