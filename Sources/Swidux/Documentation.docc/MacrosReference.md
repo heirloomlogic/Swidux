@@ -36,7 +36,7 @@ For a struct named `MyState`, the macro emits:
 
 - **Must be a struct.** Applying `@Swidux` to a class or enum emits a diagnostic.
 - **Should declare `Equatable` and `Sendable`.** The protocol requires both. The example projects also mark the struct `nonisolated` so it can cross the `@MainActor` boundary inside ``Store``.
-- **Stored `var` properties only.** Computed properties, `let` properties, and properties with explicit accessors are ignored.
+- **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs or unpacks the value.
 
 ### Property handling rules
 
@@ -48,7 +48,7 @@ The macro classifies each stored property into one of two kinds and generates co
 | `var counters: EntityStore<Counter>` | leaf | Mirrored as a `var` on the observer; restored via `restore(from:)` during undo, however the type is spelled. |
 | `@Slice var ui: UIState` | nested | Stored as `let ui: UIStateObserver` on the parent observer; recursive calls to the child's `apply` / `makeObserver` / `applyRestore`. |
 
-Static properties, computed properties, and `let` constants are skipped entirely.
+Static properties, computed properties, and `let` constants are skipped entirely. Properties with `willSet`/`didSet` observers are stored and are not skipped.
 
 ### Requirements the generated code imposes
 

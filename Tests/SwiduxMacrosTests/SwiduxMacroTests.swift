@@ -561,14 +561,22 @@ final class SwiduxMacroTests: XCTestCase {
             struct QuietState: Equatable, Sendable {
                 var count: Int = 0
                 static let shared = QuietState()
+                nonisolated(unsafe) static var instances: Int = 0
                 var doubled: Int { count * 2 }
+                var tripled: Int {
+                    get { count * 3 }
+                }
             }
             """,
             expandedSource: """
                 struct QuietState: Equatable, Sendable {
                     var count: Int = 0
                     static let shared = QuietState()
+                    nonisolated(unsafe) static var instances: Int = 0
                     var doubled: Int { count * 2 }
+                    var tripled: Int {
+                        get { count * 3 }
+                    }
                 }
 
                 @Observable
@@ -607,6 +615,150 @@ final class SwiduxMacroTests: XCTestCase {
                     }
                 }
                 """,
+            macros: macros
+        )
+    }
+
+    // MARK: Property Observers
+
+    // `willSet`/`didSet` don't make a property computed. It still has storage,
+    // so it has to reach the observer, or every pack resets it to its default.
+    func testObservedStoredPropertiesAreMirrored() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct ObservedState: Equatable, Sendable {
+                var clamped: Int = 0 {
+                    didSet { if clamped < 0 { clamped = 0 } }
+                }
+                var watched: String = "" {
+                    willSet {}
+                    didSet {}
+                }
+            }
+            """,
+            expandedSource: """
+                struct ObservedState: Equatable, Sendable {
+                    var clamped: Int = 0 {
+                        didSet { if clamped < 0 { clamped = 0 } }
+                    }
+                    var watched: String = "" {
+                        willSet {}
+                        didSet {}
+                    }
+                }
+
+                @Observable
+                @MainActor
+                final class ObservedStateObserver: @unchecked Sendable {
+                    var clamped: Int
+                    var watched: String
+
+                    init(clamped: Int = 0, watched: String = "") {
+                        self.clamped = clamped
+                        self.watched = watched
+                    }
+                }
+
+                extension ObservedState: SwiduxObservable {
+                    typealias Observer = ObservedStateObserver
+
+                    @MainActor
+                    init(observer: ObservedStateObserver) {
+                        self.clamped = observer.clamped
+                        self.watched = observer.watched
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: ObservedState) -> ObservedStateObserver {
+                        ObservedStateObserver(
+                            clamped: state.clamped,
+                            watched: state.watched
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: ObservedState, to observer: ObservedStateObserver) {
+                        observer.clamped = snapshot.clamped
+                        observer.watched = snapshot.watched
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: ObservedState, to current: inout ObservedState) {
+                        SwiduxRestore.restore(&current.clamped, from: snapshot.clamped)
+                        SwiduxRestore.restore(&current.watched, from: snapshot.watched)
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    // An observed property with an inferred type is as invisible as any other,
+    // so it gets the same diagnostic instead of being mistaken for computed.
+    func testObservedPropertyWithInferredTypeIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct ObservedInferState: Equatable, Sendable {
+                var count: Int = 0
+                var flag = false {
+                    didSet {}
+                }
+            }
+            """,
+            expandedSource: """
+                struct ObservedInferState: Equatable, Sendable {
+                    var count: Int = 0
+                    var flag = false {
+                        didSet {}
+                    }
+                }
+
+                @Observable
+                @MainActor
+                final class ObservedInferStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension ObservedInferState: SwiduxObservable {
+                    typealias Observer = ObservedInferStateObserver
+
+                    @MainActor
+                    init(observer: ObservedInferStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: ObservedInferState) -> ObservedInferStateObserver {
+                        ObservedInferStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: ObservedInferState, to observer: ObservedInferStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: ObservedInferState, to current: inout ObservedInferState) {
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Stored properties need an explicit type annotation (var name: Type = …); a property with an inferred type is invisible to the macro, so its value would silently reset instead of being observed/persisted",
+                    line: 4,
+                    column: 9
+                )
+            ],
             macros: macros
         )
     }

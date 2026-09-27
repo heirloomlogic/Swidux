@@ -49,15 +49,17 @@ struct PersistedProperty {
 func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedProperty] {
     structDecl.memberBlock.members.compactMap { member -> PersistedProperty? in
         guard let varDecl = member.decl.as(VariableDeclSyntax.self) else { return nil }
-        // Accept both `var` and `let` stored properties; skip computed ones.
+        // Accept both `var` and `let` stored properties; skip type-level and
+        // computed ones.
         guard
             varDecl.bindingSpecifier.tokenKind == .keyword(.var)
-                || varDecl.bindingSpecifier.tokenKind == .keyword(.let)
+                || varDecl.bindingSpecifier.tokenKind == .keyword(.let),
+            !isTypeMember(varDecl)
         else { return nil }
         guard let binding = varDecl.bindings.first,
+            isStoredBinding(binding),
             let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
-            let typeAnnotation = binding.typeAnnotation,
-            binding.accessorBlock == nil
+            let typeAnnotation = binding.typeAnnotation
         else { return nil }
 
         let name = pattern.identifier.text

@@ -86,6 +86,77 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 
+    // An observed property is still stored, so it must be mirrored; a static one
+    // is not instance state, so it must not be.
+    func testObservedPropertyIsMirroredAndStaticIsSkipped() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Note: Identifiable, Equatable, Sendable {
+                var id: UUID
+                var rating: Int = 0 {
+                    didSet { rating = min(rating, 5) }
+                }
+                nonisolated(unsafe) static var schemaVersion: Int = 1
+                static let kind: String = "note"
+            }
+            """,
+            expandedSource: """
+                struct Note: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var rating: Int = 0 {
+                        didSet { rating = min(rating, 5) }
+                    }
+                    nonisolated(unsafe) static var schemaVersion: Int = 1
+                    static let kind: String = "note"
+                }
+
+                @Model
+                final class NoteModel: PersistableModel {
+                    typealias Domain = Note
+
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+                    var rating: Int = 0
+
+                    init(from domain: Note) throws {
+                        self.id = domain.id
+                        self.rating = domain.rating
+                    }
+
+                    func toDomain() throws -> Note {
+                        Note(
+                            id: id,
+                            rating: rating
+                        )
+                    }
+
+                    func update(from domain: Note) throws {
+                        self.rating = domain.rating
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<NoteModel> {
+                        FetchDescriptor<NoteModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<NoteModel> {
+                        FetchDescriptor<NoteModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
+                }
+
+                extension Note: PersistableEntity {
+                    typealias Model = NoteModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
     func testInlineForeignKeyAndIgnored() throws {
         assertMacroExpansion(
             """

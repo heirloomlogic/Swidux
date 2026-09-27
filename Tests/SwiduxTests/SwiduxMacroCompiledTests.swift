@@ -26,6 +26,27 @@ nonisolated struct RestoreSpellingState: Equatable, Sendable {
     var qualified: Swidux.EntityStore<TestEntity> = .init()
 }
 
+/// A stored property with an observer is still stored, and must survive a pack.
+@Swidux
+nonisolated struct ObservedPropertyState: Equatable, Sendable {
+    var plain: Int = 0
+    var clamped: Int = 0 {
+        didSet { if clamped < 0 { clamped = 0 } }
+    }
+    var watched: String = "" {
+        willSet {}
+    }
+}
+
+/// Type-level members are not state.
+@Swidux
+nonisolated struct CountedState: Equatable, Sendable {
+    nonisolated(unsafe) static var instances: Int = 0
+    static let limit: Int = 3
+
+    var count: Int = 0
+}
+
 /// Opts out of undo restoration, like every plugin-owned slice.
 @Swidux
 nonisolated struct PinnedState: Equatable, Sendable {
@@ -102,5 +123,31 @@ struct SwiduxMacroCompiledTests {
         #expect(current.pinnedLeaf.value == 2)
         #expect(current.child.value == 1)
         #expect(current.document == 1)
+    }
+
+    @Test("A property with willSet/didSet survives dispatch")
+    func observedPropertySurvivesDispatch() {
+        let store = Store<ObservedPropertyState, Int>(
+            initialState: .init(),
+            reducer: { state, value in
+                state.clamped = value
+                state.watched = "\(value)"
+                return nil
+            }
+        )
+
+        store.send(5)
+        store.send(5)
+
+        let packed = ObservedPropertyState(observer: store.observer)
+        #expect(packed.clamped == 5)
+        #expect(packed.watched == "5")
+    }
+
+    @Test("Static members are not mirrored onto the observer")
+    func staticMembersAreSkipped() {
+        let state = CountedState(count: CountedState.limit)
+
+        #expect(CountedState(observer: CountedState.makeObserver(from: state)) == state)
     }
 }

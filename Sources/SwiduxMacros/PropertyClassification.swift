@@ -20,13 +20,7 @@ func diagnoseSkippedStoredProperties(
         let keyword = varDecl.bindingSpecifier.tokenKind
         guard keyword == .keyword(.var) || (includesLetBindings && keyword == .keyword(.let))
         else { continue }
-        // Type-level members aren't instance state; computed properties
-        // (accessor block on the first binding) aren't stored.
-        let isStatic = varDecl.modifiers.contains { modifier in
-            modifier.name.tokenKind == .keyword(.static)
-                || modifier.name.tokenKind == .keyword(.class)
-        }
-        guard !isStatic, let first = varDecl.bindings.first, first.accessorBlock == nil
+        guard !isTypeMember(varDecl), let first = varDecl.bindings.first, isStoredBinding(first)
         else { continue }
 
         if varDecl.bindings.count > 1 {
@@ -38,6 +32,32 @@ func diagnoseSkippedStoredProperties(
             context.diagnose(
                 Diagnostic(node: first, message: SwiduxDiagnostic.requiresTypeAnnotation))
         }
+    }
+}
+
+/// Whether a declaration is type-level (`static`/`class`) rather than instance
+/// state. Neither macro mirrors it: the generated code reads every property
+/// through an instance, and a static one isn't reachable that way.
+func isTypeMember(_ varDecl: VariableDeclSyntax) -> Bool {
+    varDecl.modifiers.contains { modifier in
+        modifier.name.tokenKind == .keyword(.static) || modifier.name.tokenKind == .keyword(.class)
+    }
+}
+
+/// Whether a binding stores its value: it has no accessor block, or one made up
+/// only of `willSet`/`didSet` observers.
+///
+/// An observer doesn't make a property computed — it still has storage, so it
+/// is state the macros must carry. A getter, explicit or shorthand, does.
+/// Neither generated body needs the observers: the observer class and model
+/// only hold the value, and packing assigns inside an `init`, where observers
+/// don't fire.
+func isStoredBinding(_ binding: PatternBindingSyntax) -> Bool {
+    guard let accessorBlock = binding.accessorBlock else { return true }
+    guard case .accessors(let accessors) = accessorBlock.accessors else { return false }
+    return accessors.allSatisfy { accessor in
+        accessor.accessorSpecifier.tokenKind == .keyword(.willSet)
+            || accessor.accessorSpecifier.tokenKind == .keyword(.didSet)
     }
 }
 
@@ -73,10 +93,11 @@ func classifyProperties(of structDecl: StructDeclSyntax) -> [ClassifiedProperty]
     structDecl.memberBlock.members.compactMap { member -> ClassifiedProperty? in
         guard let varDecl = member.decl.as(VariableDeclSyntax.self),
             varDecl.bindingSpecifier.tokenKind == .keyword(.var),
+            !isTypeMember(varDecl),
             let binding = varDecl.bindings.first,
+            isStoredBinding(binding),
             let pattern = binding.pattern.as(IdentifierPatternSyntax.self),
-            let typeAnnotation = binding.typeAnnotation,
-            binding.accessorBlock == nil
+            let typeAnnotation = binding.typeAnnotation
         else { return nil }
 
         let name = pattern.identifier.text
