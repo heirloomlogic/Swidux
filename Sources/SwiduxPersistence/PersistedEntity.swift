@@ -78,6 +78,19 @@ public struct PersistedEntity<State> {
         let apply: MergeApply
     }
 
+    /// A fetched hydration, plus whether the fetch actually happened.
+    ///
+    /// `succeeded == false` means the read threw and `apply` is a no-op, which
+    /// leaves the store as it was. Hydration anchors the merge watermark, and
+    /// must not anchor past rows it never read.
+    struct HydrateRead {
+        /// Whether every fetch behind `apply` completed.
+        let succeeded: Bool
+
+        /// The fold to apply. A no-op when `succeeded` is `false`.
+        let apply: Apply
+    }
+
     let makeWriter: @MainActor (DatabaseHandle, PersistenceObservers) -> StateWriter<State>
 
     /// A per-entity narrowing of the coordinator's merge policy, if any.
@@ -88,7 +101,7 @@ public struct PersistedEntity<State> {
     let unpersisted: UnpersistedIDs
 
     /// Phase 1 of first-load hydration: reads the database, touches no state.
-    let readForHydrate: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
+    let readForHydrate: @MainActor (DatabaseHandle, PersistenceObservers) async -> HydrateRead
 
     /// Phase 1 of re-hydration: reads the database, touches no state.
     let readForMerge: @MainActor (DatabaseHandle, PersistenceObservers) async -> MergeRead
@@ -339,14 +352,16 @@ public struct PersistedEntity<State> {
                     // reported: hiding it beats hiding the whole entity, and the
                     // stored payload is untouched for a build that can read it.
                     let loaded = try await loadRows(handle, observers)
-                    return { state in state[keyPath: keyPath] = EntityStore(loaded.rows) }
+                    return HydrateRead(succeeded: true) { state in
+                        state[keyPath: keyPath] = EntityStore(loaded.rows)
+                    }
                 } catch {
                     // Leave the store untouched — an unreadable database must
                     // not present as "no data" (a later flush would then write
                     // an empty world view over whatever is recoverable).
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return { _ in }
+                    return HydrateRead(succeeded: false) { _ in }
                 }
             },
             readForMerge: { handle, observers in

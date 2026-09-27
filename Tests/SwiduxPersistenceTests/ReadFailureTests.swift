@@ -141,6 +141,41 @@ struct ReadFailureTests {
         #expect(failures.failures(.fetch).first?.isFinal == false, "a fetch is not retried")
     }
 
+    @Test("a hydration whose read threw does not anchor, so the first tick still reads everything")
+    func aFailedHydrationDoesNotAnchor() async throws {
+        let container = try makeNotesContainer()
+        let existing = Note(id: UUID(), title: "on disk before launch", pinned: false)
+        try seedNotes(container, [existing])
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+        let store = makeNotesStore(coordinator)
+
+        await coordinator.database.failNextFetch(with: unreadable)
+        await coordinator.hydrate(into: store)
+        #expect(store.notes.isEmpty, "the premise: the read threw and applied nothing")
+
+        // Nothing has changed on disk since launch, so a narrow tick would read
+        // nothing — and the rows the failed read missed would stay hidden.
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[existing.id] != nil, "an anchor over a window nobody read hides it for the session")
+    }
+
+    @Test("the launch hydrate does not anchor past a read that threw, either")
+    func aFailedLaunchHydrationDoesNotAnchor() async throws {
+        let container = try makeNotesContainer()
+        let existing = Note(id: UUID(), title: "on disk before launch", pinned: false)
+        try seedNotes(container, [existing])
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+
+        await coordinator.database.failNextFetch(with: unreadable)
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[existing.id] != nil)
+    }
+
     @Test("re-hydration leaves live state untouched rather than empty")
     func rehydrationLeavesLiveStateUntouched() async throws {
         let (coordinator, store, id, failures) = try await makeAnchoredNote()

@@ -353,7 +353,9 @@ public final class PersistenceCoordinator<State, Action> {
     ///
     /// Anchors ``mergeChanges(into:policy:)`` at the history token current when
     /// the read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
-    /// remote-change tick after launch reads only what changed since.
+    /// remote-change tick after launch reads only what changed since. A read
+    /// that failed anchors nothing, so that first tick re-reads everything
+    /// instead and recovers the rows this one missed.
     public func hydrate(into state: inout State) async {
         // Anchored before the read: a write landing while the fetches are in
         // flight gets a later token, so the first tick still sees it. Without
@@ -363,9 +365,9 @@ public final class PersistenceCoordinator<State, Action> {
         // tombstone that proves it.
         let anchor = handle.anchor
         let token = try? await handle.db.currentHistoryToken()
-        let applies = await hydratePhase()
-        for apply in applies { apply(&state) }
-        if let token {
+        let phase = await hydratePhase()
+        for apply in phase.applies { apply(&state) }
+        if let token, phase.allReadsSucceeded {
             handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
         }
     }
@@ -376,14 +378,22 @@ public final class PersistenceCoordinator<State, Action> {
     /// All fetches complete before any fold runs. That makes a multi-entity
     /// read atomic with respect to dispatch, and it is what lets the caller
     /// pack its snapshot after the last `await`.
-    private func hydratePhase() async -> [PersistedEntity<State>.Apply] {
+    ///
+    /// - Returns: The folds, and whether every read behind them succeeded —
+    ///   the condition for anchoring on this read.
+    private func hydratePhase() async -> (
+        applies: [PersistedEntity<State>.Apply], allReadsSucceeded: Bool
+    ) {
         var applies: [PersistedEntity<State>.Apply] = []
         applies.reserveCapacity(entities.count)
+        var allReadsSucceeded = true
         for entity in entities {
-            applies.append(await entity.readForHydrate(handle, observers))
+            let read = await entity.readForHydrate(handle, observers)
+            allReadsSucceeded = allReadsSucceeded && read.succeeded
+            applies.append(read.apply)
         }
         await duringReadPhase?()
-        return applies
+        return (applies, allReadsSucceeded)
     }
 
     /// Whether a re-hydration read the whole table or only named rows — and if
@@ -613,13 +623,16 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // still sees it. Anchoring afterwards would step over it silently.
         let anchor = handle.anchor
         let token = try? await handle.db.currentHistoryToken()
-        let applies = await hydratePhase()
+        let phase = await hydratePhase()
         store.mutate { state in
-            for apply in applies { apply(&state) }
+            for apply in phase.applies { apply(&state) }
         }
         // Replaces rather than merges, so it offers nothing to anything and can
-        // settle no debt — hence `carryOver: nil`, "leave it as it is".
-        if let token {
+        // settle no debt — hence `carryOver: nil`, "leave it as it is". And
+        // only over a read that happened: a failed one left its store as it
+        // was, and anchoring would have the next tick read only what changed
+        // since, never the rows this read missed.
+        if let token, phase.allReadsSucceeded {
             handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
         }
         await pruneHistoryIfNeeded()
