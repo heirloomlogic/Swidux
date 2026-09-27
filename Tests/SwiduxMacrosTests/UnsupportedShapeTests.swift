@@ -232,22 +232,83 @@ final class UnsupportedShapeTests: XCTestCase {
         )
     }
 
-    func testSwiduxPrivateStructIsDiagnosed() throws {
+    // Nested, `private` is narrower than anything the peer can be declared
+    // with. (At file scope it is supported: see `testSwiduxFileScopedPrivateStruct`.)
+    func testSwiduxNestedPrivateStructIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            enum Feature {
+                @Swidux
+                private struct HiddenState: Equatable, Sendable {
+                    var count: Int = 0
+                }
+            }
+            """,
+            expandedSource: """
+                enum Feature {
+                    private struct HiddenState: Equatable, Sendable {
+                        var count: Int = 0
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(message: Message.restrictedAccess("Swidux"), line: 3, column: 5)
+            ],
+            macros: swidux
+        )
+    }
+
+    // At file scope `private` and `fileprivate` both mean "this file", so the
+    // peers are emitted `fileprivate` beside the struct.
+    func testSwiduxFileScopedPrivateStruct() throws {
         assertMacroExpansion(
             """
             @Swidux
-            fileprivate struct HiddenState: Equatable, Sendable {
+            private struct HiddenState: Equatable, Sendable {
                 var count: Int = 0
             }
             """,
             expandedSource: """
-                fileprivate struct HiddenState: Equatable, Sendable {
+                private struct HiddenState: Equatable, Sendable {
                     var count: Int = 0
                 }
+
+                @Observable
+                @MainActor
+                fileprivate final class HiddenStateObserver: @unchecked Sendable {
+                    fileprivate var count: Int
+
+                    fileprivate init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension HiddenState: SwiduxObservable {
+                    fileprivate typealias Observer = HiddenStateObserver
+
+                    @MainActor
+                    fileprivate init(observer: HiddenStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    fileprivate static func makeObserver(from state: HiddenState) -> HiddenStateObserver {
+                        HiddenStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    fileprivate static func apply(_ snapshot: HiddenState, to observer: HiddenStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    fileprivate static func applyRestore(from snapshot: HiddenState, to current: inout HiddenState) {
+                        SwiduxRestore.restore(&current.count, from: snapshot.count)
+                    }
+                }
                 """,
-            diagnostics: [
-                DiagnosticSpec(message: Message.restrictedAccess("Swidux"), line: 2, column: 1)
-            ],
             macros: swidux
         )
     }

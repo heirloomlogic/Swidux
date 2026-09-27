@@ -216,17 +216,29 @@ func classifyProperties(of structDecl: StructDeclSyntax) -> [ClassifiedProperty]
 /// parameters, which a separate peer declaration can't name, and `private`/
 /// `fileprivate` access, where the peers must name the struct from outside it.
 ///
+/// `allowsFileScopedAccess` exempts a `private`/`fileprivate` struct at file
+/// scope, where both mean "this file" and the peers can simply be emitted
+/// `fileprivate` beside it. `@Swidux` passes it for a top-level struct. A nested
+/// `private` type is narrower than anything a peer can be declared with, and
+/// `@Persisted`'s `@Model` class has never compiled at `fileprivate`.
+///
 /// Empty when the struct is supported. Callers emit no expansion otherwise, so
 /// the error stands alone instead of arriving with a wall of failures reported
 /// against generated code.
-func unsupportedStructDiagnostics(of structDecl: StructDeclSyntax, macro: String) -> [Diagnostic] {
+func unsupportedStructDiagnostics(
+    of structDecl: StructDeclSyntax,
+    macro: String,
+    allowsFileScopedAccess: Bool = false
+) -> [Diagnostic] {
     var diagnostics: [Diagnostic] = []
     if let generics = structDecl.genericParameterClause {
         diagnostics.append(Diagnostic(node: generics, message: SwiduxDiagnostic.genericStruct(macro: macro)))
     }
-    if let modifier = structDecl.modifiers.first(where: {
-        $0.name.tokenKind == .keyword(.private) || $0.name.tokenKind == .keyword(.fileprivate)
-    }) {
+    if !allowsFileScopedAccess,
+        let modifier = structDecl.modifiers.first(where: {
+            $0.name.tokenKind == .keyword(.private) || $0.name.tokenKind == .keyword(.fileprivate)
+        })
+    {
         diagnostics.append(
             Diagnostic(node: modifier, message: SwiduxDiagnostic.restrictedAccessStruct(macro: macro)))
     }

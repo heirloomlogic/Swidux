@@ -89,6 +89,13 @@ public nonisolated struct AccessMixState: Equatable, Sendable {
     mutating func setSecret(_ value: Int) { secret = value }
 }
 
+/// Top-level `private` (the same scope as `fileprivate` there), the usual shape
+/// of a state in a test or preview file.
+@Swidux
+private nonisolated struct FileScopedState: Equatable, Sendable {
+    var count: Int = 0
+}
+
 // MARK: - Tests
 
 @Suite("@Swidux compiled expansion")
@@ -185,5 +192,20 @@ struct SwiduxMacroCompiledTests {
         state.setSecret(3)
 
         #expect(AccessMixState(observer: AccessMixState.makeObserver(from: state)) == state)
+    }
+
+    @Test("A top-level fileprivate state works through a store")
+    func fileprivateStateDispatches() {
+        let store = Store<FileScopedState, Int>(
+            initialState: .init(),
+            reducer: { state, value in
+                state.count += value
+                return nil
+            }
+        )
+
+        store.send(2)
+
+        #expect(FileScopedState(observer: store.observer).count == 2)
     }
 }
