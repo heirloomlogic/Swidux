@@ -5,6 +5,7 @@
 
 import Foundation
 import Swidux
+import Synchronization
 
 /// A Swidux plugin that guards actions behind a math challenge.
 ///
@@ -34,7 +35,7 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
     private let attemptLimit: Int
     private let cooldown: Duration
     private let now: @Sendable () -> Date
-    private let keyValueStore: (any KeyValueStore)?
+    private let lockoutWriter: LockoutWriter?
     private let cooldownClock = CooldownClock()
 
     /// Creates a parental-gate plugin wired into the host app.
@@ -69,7 +70,7 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
         self.attemptLimit = max(1, attemptLimit)
         self.cooldown = max(.zero, cooldown)
         self.now = now
-        self.keyValueStore = keyValueStore
+        self.lockoutWriter = keyValueStore.map(LockoutWriter.init)
     }
 
     /// Routes parental-gate actions and returns effects for async work.
@@ -78,12 +79,13 @@ public struct ParentalGatePlugin<RootState, RootAction>: SwiduxPlugin {
         let before = ParentalGateLockout(state[keyPath: stateKeyPath])
         let lifted = reduceLocal(state: &state[keyPath: stateKeyPath], action: local)?.map(toRootAction)
         let after = ParentalGateLockout(state[keyPath: stateKeyPath])
-        guard let keyValueStore, after != before else { return lifted }
+        guard let lockoutWriter, after != before else { return lifted }
+        lockoutWriter.stage(after)
         // Written before anything else the effect does: the limit's effect
         // then sleeps out the cooldown, and a force-quit mid-sleep is exactly
         // what the write has to survive.
         return Effect { send in
-            keyValueStore.setValue(after, for: .parentalGateLockout)
+            lockoutWriter.flush()
             try await lifted?(send)
         }
     }
@@ -219,5 +221,33 @@ private final class CooldownClock {
         let deadline = ContinuousClock.now.advanced(by: remaining)
         pinned = (until, deadline)
         return deadline
+    }
+}
+
+/// Persists the newest lockout, never an older one.
+///
+/// Each change is written by its own effect, and the store runs effects
+/// concurrently, so two writes can land in either order: a slow Keychain
+/// write of "one wrong answer" landing after "cooldown until T" would leave a
+/// relaunch with no cooldown. So the reducer stages the value synchronously,
+/// in dispatch order, and every flush writes whatever is newest *when it
+/// holds the lock*. The last write to land is then always the newest value.
+private final class LockoutWriter: Sendable {
+    private let store: any KeyValueStore
+    private let latest = Mutex<ParentalGateLockout?>(nil)
+    private let writing = Mutex(())
+
+    init(_ store: any KeyValueStore) {
+        self.store = store
+    }
+
+    func stage(_ lockout: ParentalGateLockout) {
+        latest.withLock { $0 = lockout }
+    }
+
+    func flush() {
+        writing.withLock { _ in
+            _ = store.setValue(latest.withLock { $0 }, for: .parentalGateLockout)
+        }
     }
 }
