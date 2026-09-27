@@ -713,6 +713,22 @@ struct HistoryWatermarkTests {
         #expect(store.notes[id] == nil, "an unanchored first tick falls back, and the guard keeps the row")
     }
 
+    @Test("hydrating a scratch value mid-session does not consume the live store's window")
+    func aScratchHydrateLeavesTheWatermarkAlone() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote()
+        let before = coordinator.handle.anchor.token
+
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
+        // An export or a preview: rows read into a value the store never sees.
+        var scratch = NotesState()
+        await coordinator.hydrate(into: &scratch)
+        #expect(scratch.notes[id]?.title == "edited elsewhere")
+        #expect(coordinator.handle.anchor.token == before, "the scratch read moved the live watermark")
+
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id]?.title == "edited elsewhere", "the live store never sees the remote edit")
+    }
+
     @Test("a re-hydration after a container rebuild anchors, so the first tick can remove the last row")
     func anUnanchoredRehydrateAnchors() async throws {
         let container = try makeNotesContainer()

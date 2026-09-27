@@ -401,11 +401,18 @@ public final class PersistenceCoordinator<State, Action> {
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// (it does **not** become empty) and the failure is reported via `onFailure`.
     ///
-    /// Anchors ``mergeChanges(into:policy:)`` at the history token current when
-    /// the read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
-    /// remote-change tick after launch reads only what changed since. A read
-    /// that failed anchors nothing, so that first tick re-reads everything
-    /// instead and recovers the rows this one missed.
+    /// At launch — while nothing has anchored ``mergeChanges(into:policy:)``
+    /// yet — it anchors the watermark at the history token current when the
+    /// read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
+    /// remote-change tick reads only what changed since. A read that failed
+    /// anchors nothing, so that first tick re-reads everything instead and
+    /// recovers the rows this one missed.
+    ///
+    /// Once a watermark exists this leaves it alone: the rows read here go into
+    /// the value you pass, not into a live store, and consuming the window
+    /// behind them would hide it from the store. Hydrating a scratch value
+    /// mid-session is therefore safe, though ``fetchAll(of:flushPending:)``
+    /// says what it means more plainly.
     public func hydrate(into state: inout State) async {
         // Anchored before the read: a write landing while the fetches are in
         // flight gets a later token, so the first tick still sees it. Without
@@ -414,7 +421,7 @@ public final class PersistenceCoordinator<State, Action> {
         // refuses to conclude — and the fallback's own anchor steps past the
         // tombstone that proves it.
         let anchor = handle.anchor
-        let token = try? await handle.db.currentHistoryToken()
+        let token = anchor.token == nil ? try? await handle.db.currentHistoryToken() : nil
         let phase = await hydratePhase()
         for apply in phase.applies { apply(&state) }
         if let token, phase.allReadsSucceeded {
