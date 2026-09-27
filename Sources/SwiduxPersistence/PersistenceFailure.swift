@@ -48,9 +48,10 @@ public struct PersistenceFailure: Sendable {
     /// A save that failed for some rows and not others — a value that can
     /// never be encoded, such as a non-finite `Double` in an `@Inline`
     /// payload — names exactly those rows, and every other row in its batch
-    /// reached storage. Empty when the operation failed as a whole; the
-    /// accumulated set of writes still off disk is
-    /// ``PersistenceDiagnostic/Kind/writesUnpersisted``.
+    /// reached storage. A fetch that found rows it could not decode — typically
+    /// ones a newer app version wrote — names those, and every other row was
+    /// read. Empty when the operation failed as a whole; the accumulated set of
+    /// writes still off disk is ``PersistenceDiagnostic/Kind/writesUnpersisted``.
     public let failedIDs: Set<UUID>
 
     /// Creates a failure record.

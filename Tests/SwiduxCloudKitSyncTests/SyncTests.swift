@@ -239,7 +239,7 @@ struct SyncCoordinatorTests {
         // Both modes over one store, as CloudContainerFactory arranges.
         let sync = SyncCoordinator<ItemsState, ItemsAction>(
             persistence: persistence, models: [ItemModel.self], mode: .localOnly,
-            preflight: .mock(ubiquityToken: true, account: .available),
+            preflight: .mock(entitled: true, account: .available),
             keyValue: InMemoryKeyValueStore(), makeContainer: { _ in container })
         #expect(await sync.setSyncEnabled(true, into: store) == .syncing)
 

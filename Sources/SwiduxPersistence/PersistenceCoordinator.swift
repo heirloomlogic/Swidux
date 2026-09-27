@@ -74,6 +74,12 @@ public final class PersistenceCoordinator<State, Action> {
     /// usually closes, releases its hold, and commits in the same moment, so
     /// that is the order a naive commit runs in.
     ///
+    /// It knows only what a merge has read while the hold was in force. If no
+    /// merge ran between the peer's deletion and the commit — or the only one
+    /// fell back to a full read without reading history, which leaves the
+    /// watermark in place so the next tick can — it answers `false`, and the
+    /// commit wins.
+    ///
     /// Answers from what ``mergeChanges(into:policy:)`` and
     /// ``mergeRemote(into:ids:deleted:policy:)`` carry forward. A whole-table
     /// ``rehydrate(into:policy:)`` on an anchored session re-infers deletions
@@ -230,9 +236,14 @@ public final class PersistenceCoordinator<State, Action> {
     /// > samples don't prune mirrored stores either. Unpruned history is the
     /// > status quo; a broken export is not.
     ///
-    /// Pruning is best-effort housekeeping: nothing here is load-bearing for
-    /// correctness, because the watermark lasts one session and any expiry falls
-    /// back to a full read. A failure is therefore not reported as one.
+    /// The transaction the current watermark names, and everything after it,
+    /// is kept whatever its age. On a store nobody has written to for longer
+    /// than the retention window, the launch anchor *is* one of the doomed
+    /// transactions, and pruning it would expire the watermark hydration just
+    /// installed.
+    ///
+    /// Otherwise pruning is best-effort housekeeping, and a failure is not
+    /// reported as one.
     ///
     /// - Returns: How many transactions were deleted.
     @discardableResult
@@ -241,7 +252,12 @@ public final class PersistenceCoordinator<State, Action> {
         // predicate, so it is only paid for when someone is listening — the same
         // bargain `onLoopSuspected` strikes in the initialiser.
         let counting = observers.isReportingDiagnostics
-        guard let removed = try? await handle.db.pruneHistory(before: cutoff, counting: counting),
+        // Read together: both belong to the database active now.
+        let db = handle.db
+        let anchor = handle.anchor.token
+        guard
+            let removed = try? await db.pruneHistory(
+                before: cutoff, keepingFrom: anchor, counting: counting),
             removed > 0
         else { return 0 }
         observers.report(.historyPruned(count: removed))
@@ -385,11 +401,18 @@ public final class PersistenceCoordinator<State, Action> {
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
     /// (it does **not** become empty) and the failure is reported via `onFailure`.
     ///
-    /// Anchors ``mergeChanges(into:policy:)`` at the history token current when
-    /// the read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
-    /// remote-change tick after launch reads only what changed since. A read
-    /// that failed anchors nothing, so that first tick re-reads everything
-    /// instead and recovers the rows this one missed.
+    /// At launch — while nothing has anchored ``mergeChanges(into:policy:)``
+    /// yet — it anchors the watermark at the history token current when the
+    /// read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
+    /// remote-change tick reads only what changed since. A read that failed
+    /// anchors nothing, so that first tick re-reads everything instead and
+    /// recovers the rows this one missed.
+    ///
+    /// Once a watermark exists this leaves it alone: the rows read here go into
+    /// the value you pass, not into a live store, and consuming the window
+    /// behind them would hide it from the store. Hydrating a scratch value
+    /// mid-session is therefore safe, though ``fetchAll(of:flushPending:)``
+    /// says what it means more plainly.
     public func hydrate(into state: inout State) async {
         // Anchored before the read: a write landing while the fetches are in
         // flight gets a later token, so the first tick still sees it. Without
@@ -398,7 +421,7 @@ public final class PersistenceCoordinator<State, Action> {
         // refuses to conclude — and the fallback's own anchor steps past the
         // tombstone that proves it.
         let anchor = handle.anchor
-        let token = try? await handle.db.currentHistoryToken()
+        let token = anchor.token == nil ? try? await handle.db.currentHistoryToken() : nil
         let phase = await hydratePhase()
         for apply in phase.applies { apply(&state) }
         if let token, phase.allReadsSucceeded {
@@ -710,10 +733,12 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// re-hydration after a container rebuild both leave one), when the watermark has expired or the
     /// history fetch fails, when a deletion's tombstone carries no identity
     /// (every row deleted before `@Attribute(.preserveValueOnDeletion)` shipped),
-    /// when a changed row can't be resolved, when another writer changed a
-    /// `@Relation` child whose model isn't registered — its value lives inside a
-    /// parent, and nothing in the change says which — and when more than one
-    /// store sits behind the container.
+    /// when a changed row can't be resolved, when another writer deleted a
+    /// `@Relation` child without changing any row that embeds it — a deleted
+    /// child can't be traced to its parent — and when more than one store sits
+    /// behind the container. A child that was inserted or edited is traced
+    /// through its relationships to the registered row holding it, and only
+    /// that row is read.
     ///
     /// > Note: A parent's save writes its whole subtree from memory, so it is
     /// > last-writer-wins for its children too. A local edit to the parent that
@@ -762,6 +787,19 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         }
         try check(attempt)
 
+        if let reason = scan.escalation {
+            // Read, but not attributable row by row. The full read picks up
+            // every change; the tombstones the window did name are handed over
+            // as declared deletions, because an empty table can't reproduce
+            // them and the anchor below steps past the window that held them.
+            var declaring = anchor.carryOver
+            declaring.formUnion(scan.rows.deletionsOnly)
+            try await rehydrateAnchoring(
+                into: store, policy: policy, attempt: attempt, anchor: anchor, reason: reason,
+                declaring: declaring, window: scan.newWatermark)
+            return
+        }
+
         // Rows the last tick was offered and deferred ride along with whatever
         // this window found. They have to: releasing a hold writes no
         // transaction, so no future window will ever name them again.
@@ -799,17 +837,30 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     }
 
     /// A full re-hydration that also re-establishes the watermark.
+    ///
+    /// `declaring` is what the read must apply as declared deletions; it
+    /// defaults to what is already owed. `window` is the end of a window the
+    /// tick did read, when it read one, and becomes the anchor: everything up
+    /// to it is accounted for, by the full read or by `declaring`. Without one,
+    /// the anchor is the newest token, taken before the read.
     private func rehydrateAnchoring(
         into store: Store<State, Action>,
         policy: MergePolicy?,
         attempt: MergeAttempt,
         anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int),
-        reason: any Error
+        reason: any Error,
+        declaring: AttributedIDs? = nil,
+        window: DefaultHistoryToken? = nil
     ) async throws(MergeConflict) {
         observers.report(.historyUnavailable(reason: "\(reason)"))
         // Anchored before the read, not after: a write landing while the fetches
         // are in flight gets a token above this one and is picked up next tick.
-        let token = try? await handle.db.currentHistoryToken()
+        let token: DefaultHistoryToken?
+        if let window {
+            token = window
+        } else {
+            token = try? await handle.db.currentHistoryToken()
+        }
         // Anchoring even though the read withheld something is what keeps one
         // held row from costing a full table scan on every tick until it is
         // released — this path has no anchor to stand still on, so refusing here
@@ -826,29 +877,28 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // empty-snapshot guard kept from being inferred would otherwise vanish.
         //
         // If the read still left an absence undecided, the existing watermark
-        // is worth keeping when a rescan could succeed — the window behind it
-        // may hold the tombstone that settles it. A scan that failed for a
-        // reason that will recur gains nothing from a rescan but another
-        // fallback, so that case anchors anyway.
-        let rescanCouldSucceed = anchor.token != nil && Self.isTransient(reason)
+        // is worth keeping whenever a rescan could read the window behind it —
+        // that window may hold the tombstone that settles it. A scan that read
+        // its window hands its tombstones over as `declaring` and anchors at
+        // the window's end, so there is nothing further to rescan for.
+        let rescanCouldSucceed = anchor.token != nil && window == nil && !Self.isExpiry(reason)
         try await merge(
-            .wholeTable(declaring: anchor.carryOver), into: store, policy: policy, attempt: attempt,
+            .wholeTable(declaring: declaring ?? anchor.carryOver), into: store, policy: policy,
+            attempt: attempt,
             recordAnchor: token != nil, watermark: token,
             ifAbsenceUndecided: rescanCouldSucceed ? .keepWatermark : .anchor)
     }
 
-    /// Whether a scan that failed with `reason` might succeed if retried over
-    /// the same window.
+    /// Whether `reason` says the watermark itself is gone — the one thrown
+    /// failure that a rescan of the same window can never get past.
     ///
-    /// Every ``HistoryScanFailure`` but a failed fetch describes the window or
-    /// the store, and rescanning meets it again. An error the scan did not
-    /// classify is treated as transient.
-    private static func isTransient(_ reason: any Error) -> Bool {
+    /// A scan that *read* its window reports what it couldn't attribute through
+    /// ``HistoryScan/escalation`` instead of throwing, so a thrown failure means
+    /// the window went unread and is worth reading again.
+    private static func isExpiry(_ reason: any Error) -> Bool {
         switch reason {
-        case HistoryScanFailure.fetchFailed: true
-        case is HistoryScanFailure: false
-        case SwiftDataError.historyTokenExpired: false
-        default: true
+        case HistoryScanFailure.tokenExpired, SwiftDataError.historyTokenExpired: true
+        default: false
         }
     }
 
@@ -956,14 +1006,21 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         ifAbsenceUndecided: UndecidedAbsence = .anchor
     ) async throws(MergeConflict) -> Bool {
         try check(attempt)
+        // Opened before this merge's own flush, not after it. A debounce flush
+        // can save a value the reads predate from the moment the flush below
+        // suspends — its work chains behind this flush's and may run before
+        // this function resumes — so a record opened on resuming could miss
+        // it. That also records this merge's own flush, whose rows are on disk
+        // before the first fetch, so the read agrees with memory about them.
+        // The one thing it can cost is a remote write that lands on such a
+        // row between that save and the read — milliseconds, on a row the user
+        // just edited — and that write's own transaction re-offers it to the
+        // next history tick. Missing the debounce flush instead would roll
+        // memory back over a newer local edit. Failing the attempt on any
+        // flush would never finish under steady typing.
+        let flushes = writers.map { $0.recordFlushes() }
         await corePlugin.flush()
         try check(attempt)
-        // Opened after the flush has landed and before the first fetch: from
-        // here on, a debounce flush can save a value the reads predate. Failing
-        // the attempt on any such flush would never finish under steady typing;
-        // exempting what it saved costs nothing, because its own transaction
-        // re-offers it.
-        let flushes = writers.map { $0.recordFlushes() }
         let phase = await mergePhase(scope, flushes: flushes)
         do {
             try check(attempt)

@@ -41,13 +41,18 @@ public actor EntityDB {
     /// An error the next read should throw instead of touching the store.
     private var injectedFetchFailure: (any Error)?
 
-    /// The author this actor stamps on every transaction it saves.
+    /// The author this actor stamps on the transactions a store's flush saves
+    /// through it.
     ///
-    /// Unique per instance, so a history scan can tell this database's own
-    /// writes from every other writer's — CloudKit's import, another process,
-    /// or a second `EntityDB` on the same container. What this actor wrote came
-    /// from the state it serves, so the scan has nothing to learn from it that
-    /// it can only learn the expensive way. See `changes(since:readers:)`.
+    /// Unique per instance, so a history scan can tell those writes from every
+    /// other writer's — CloudKit's import, another process, a second
+    /// `EntityDB` on the same container. A flushed batch came from the state
+    /// the store holds, so the scan has nothing to learn from it that it has to
+    /// trace to a parent. See `changes(since:readers:)`.
+    ///
+    /// Only the flush path stamps it. A write through the public API — tooling,
+    /// an App Intent, an import — did not come from state, and is left
+    /// unstamped so the scan treats it as the foreign write it is.
     let transactionAuthor = "swidux.\(UUID().uuidString)"
 
     /// Test seam: makes the next read throw `error` rather than run, so the
@@ -252,6 +257,25 @@ public actor EntityDB {
         deletions: Set<UUID>,
         as type: M.Type
     ) throws {
+        try apply(writes: writes, deletions: deletions, as: M.self, fromState: false)
+    }
+
+    /// ``apply(writes:deletions:as:)`` for a batch a store's flush drained from
+    /// its state, stamped with ``transactionAuthor``.
+    func applyFlush<M: PersistableModel>(
+        writes: [M.Domain],
+        deletions: Set<UUID>,
+        as type: M.Type
+    ) throws {
+        try apply(writes: writes, deletions: deletions, as: M.self, fromState: true)
+    }
+
+    private func apply<M: PersistableModel>(
+        writes: [M.Domain],
+        deletions: Set<UUID>,
+        as type: M.Type,
+        fromState: Bool
+    ) throws {
         var unencodable: Set<UUID> = []
         var firstError: (any Error)?
         // Each pass that meets a conversion failure excludes at least one more
@@ -259,7 +283,8 @@ public actor EntityDB {
         // failures are deterministic.
         while true {
             let remaining = unencodable.isEmpty ? writes : writes.filter { !unencodable.contains($0.id) }
-            let failures = try applyOnce(writes: remaining, deletions: deletions, as: M.self)
+            let failures = try applyOnce(
+                writes: remaining, deletions: deletions, as: M.self, fromState: fromState)
             guard let first = failures.first else { break }
             firstError = firstError ?? first.error
             unencodable.formUnion(failures.lazy.map(\.id))
@@ -278,7 +303,8 @@ public actor EntityDB {
     private func applyOnce<M: PersistableModel>(
         writes: [M.Domain],
         deletions: Set<UUID>,
-        as type: M.Type
+        as type: M.Type,
+        fromState: Bool
     ) throws -> [(id: UUID, error: any Error)] {
         do {
             let touchedIDs = Set(writes.map(\.id)).union(deletions)
@@ -310,7 +336,7 @@ public actor EntityDB {
                     modelContext.delete(row)
                 }
             }
-            modelContext.author = transactionAuthor
+            modelContext.author = fromState ? transactionAuthor : nil
             try modelContext.save()
             return []
         } catch {
@@ -367,7 +393,10 @@ public actor EntityDB {
     /// When any row cannot be decoded the resolver does not run and nothing is
     /// written: it is handed the whole table and asked which rows survive, and a
     /// table with rows missing from it is a world it cannot see. The decodable
-    /// rows come back collapsed exactly as a plain read would collapse them.
+    /// rows come back collapsed exactly as a plain read would collapse them, and
+    /// the undecodable ones are reported — every one, including a duplicate a
+    /// plain read would have skipped past, because it is what kept the resolver
+    /// from running.
     func collapsingDuplicates<M: PersistableModel>(
         as type: M.Type,
         using collapse: @Sendable ([M.Domain]) -> [M.Domain]
@@ -393,7 +422,7 @@ public actor EntityDB {
                 let read = self.collapse(rows)
                 let outcome = CollapseOutcome(
                     survivors: read.domains, removedIDs: [], duplicateRowCount: read.duplicatesCollapsed)
-                return (outcome, read.undecodable)
+                return (outcome, undecodable)
             }
 
             let survivors = collapse(domains)
@@ -426,7 +455,8 @@ public actor EntityDB {
                 }
             }
 
-            modelContext.author = transactionAuthor
+            // Survivors are chosen from disk, not from state: a foreign write.
+            modelContext.author = nil
             try modelContext.save()
             let outcome = CollapseOutcome(
                 survivors: survivors,

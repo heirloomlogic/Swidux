@@ -197,7 +197,10 @@ public struct PersistedEntity<State> {
             }
             reportDuplicates(duplicates, to: observers)
             reportUndecodable(undecodable, to: observers)
-            return (rows, removedIDs, undecodable.ids)
+            // Unreadable means no row of the ID decoded. An ID that did load a
+            // value is merged like any other, even if a duplicate of it didn't.
+            let loadedIDs = Set(rows.lazy.map(\.id))
+            return (rows, removedIDs, undecodable.ids.filter { !loadedIDs.contains($0) })
         }
 
         /// Reports the rows a read found but could not decode, when there were
@@ -325,7 +328,7 @@ public struct PersistedEntity<State> {
                     do {
                         // One transaction per batch: a crash can't persist a
                         // partial flush, and a failure is reported, not eaten.
-                        try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
+                        try await handle.db.applyFlush(writes: writes, deletions: deletions, as: E.Model.self)
                         await record { $0.markPersisted(touched) }
                     } catch {
                         // A batch that failed only in part saved everything
@@ -416,11 +419,22 @@ public struct PersistedEntity<State> {
                         }
                         // Whatever is still here, absent from storage, and owned
                         // by nothing local is a question this read declined.
+                        //
+                        // A held row counts too, where policy would have let a
+                        // deletion through: a hold defers a verdict, it does not
+                        // supply one. Exempting it would let the anchor step past
+                        // the tombstone that is the verdict, and the hold would
+                        // become a veto.
                         let undecided =
                             !infers
-                            && current.values.contains {
-                                !incoming.contains($0.id) && !resolved.preserved.contains($0.id)
-                                    && !current.changes.upserts.contains($0.id)
+                            && current.values.contains { row in
+                                guard !incoming.contains(row.id), !declared.contains(row.id),
+                                    !current.changes.upserts.contains(row.id)
+                                else { return false }
+                                if context.policy.removesMissingEntities, context.heldIDs.contains(row.id) {
+                                    return true
+                                }
+                                return !resolved.preserved.contains(row.id)
                             }
                         state[keyPath: keyPath] = current
                         return MergeOutcome(withheld: resolved.withheld, leftAbsenceUndecided: undecided)
