@@ -319,6 +319,33 @@ struct PaywallOrderingTests {
         _ = try await restoreRun.value
     }
 
+    @Test("a stream update after a restore began outranks its snapshot but not its error", arguments: [false, true])
+    @MainActor
+    func streamUpdateOutranksRestoreSnapshot(restoreFails: Bool) async throws {
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let plugin = makePlugin(service: base)
+        var state = TestState()
+        let restore = plugin.reduce(state: &state, action: .paywall(.restorePurchases))
+        let restoreRun = Task { try await collectActions(from: restore) }
+        await base.waitForRestore()
+
+        // A refund lands through the provider's live feed while the restore runs.
+        let observation = plugin.reduce(state: &state, action: .paywall(.observeCustomerInfo))
+        base.updates.yield(.init(isPro: false))
+        base.updates.finish()
+        for action in try await collectActions(from: observation) {
+            _ = plugin.reduce(state: &state, action: .paywall(action))
+        }
+
+        await base.finishRestore(fails: restoreFails, snapshot: .init(isPro: true))
+        for action in try await restoreRun.value {
+            _ = plugin.reduce(state: &state, action: .paywall(action))
+        }
+        #expect(!state.paywall.isPro, "the stream's newer state stands")
+        #expect((state.paywall.error != nil) == restoreFails, "a failed restore still reports its error")
+        #expect(!state.paywall.isLoading)
+    }
+
     @Test("a cancelled refresh ignores a provider success and finishes its own loading")
     @MainActor
     func cancelledRefreshDoesNotPublishSnapshot() async throws {
@@ -401,6 +428,25 @@ struct PaywallOrderingTests {
         await #expect(throws: (any Error).self) { try await read.value }
         await #expect(throws: (any Error).self) { try await restore.value }
         #expect(store.value(.lastKnownEntitlement) == nil)
+    }
+
+    @Test("a stream event after a restore began keeps the cache over the restore's snapshot")
+    func streamEventOutranksRestoreCache() async throws {
+        let store = InMemoryKeyValueStore()
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let service = ResilientPaywallService(base: base, store: store, seedsFromCache: false)
+        var iterator = service.customerInfoStream().makeAsyncIterator()
+        let restore = Task { try await service.restorePurchases() }
+        await base.waitForRestore()
+        base.updates.yield(.init(isPro: false))
+        _ = await iterator.next()
+
+        await base.finishRestore(snapshot: .init(isPro: true))
+        let restored = try await restore.value
+        #expect(!restored.isPro)
+        #expect(restored.source == .cache)
+        #expect(store.value(.lastKnownEntitlement)?.isPro == false)
+        base.updates.finish()
     }
 
     @Test("a stream event delivered after clearCache cannot write the previous account back")

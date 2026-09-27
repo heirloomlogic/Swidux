@@ -211,7 +211,7 @@ Button("Restore Purchases") {
 .disabled(store.paywall.isLoading)
 ```
 
-On success, the resulting snapshot flows through `.customerInfoUpdated` and updates the gate. On failure, `store.paywall.error` is set. Either outcome lands even if the user closes the sheet while the restore is still running: the refresh that `.dismiss` dispatches cannot supersede a restore. `isLoading` stays `true` until the restore finishes or a newer snapshot lands, so a restore the provider never completes cannot hold the spinner once a refresh succeeds.
+On success, the resulting snapshot flows through `.customerInfoUpdated` and updates the gate. On failure, `store.paywall.error` is set. Either outcome lands even if the user closes the sheet while the restore is still running: the refresh that `.dismiss` dispatches cannot supersede a restore. Only a live stream update that arrives mid-restore outranks the restore's snapshot, because the provider's feed is at least as new. `isLoading` stays `true` until the restore finishes or a newer snapshot lands, so a restore the provider never completes cannot hold the spinner once a refresh succeeds.
 
 ## Step 9: Manage subscriptions
 

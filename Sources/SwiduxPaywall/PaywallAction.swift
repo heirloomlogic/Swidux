@@ -22,7 +22,8 @@ public enum PaywallAction: Sendable {
     case customerInfoUpdated(EntitlementSnapshot)
     /// A refresh or restore failed; sets `error`.
     case refreshFailed(String)
-    /// The current refresh or restore was cancelled. Clears loading without
+    /// The current refresh or restore was cancelled, or a restore's snapshot
+    /// was outranked by a newer stream update. Clears loading without
     /// changing entitlements or reporting an error. Dispatched by the plugin;
     /// the request ID prevents delayed cleanup from ending a newer request.
     case refreshCancelled(requestID: UUID)

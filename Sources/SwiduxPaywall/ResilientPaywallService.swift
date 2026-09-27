@@ -242,14 +242,26 @@ public struct ResilientPaywallService: PaywallService {
     /// completion, newer than any read that resolved while it ran — even one
     /// that started later. So it is persisted like a stream event, superseding
     /// every read still in flight, rather than ordered by when it started.
+    ///
+    /// Two things outrank it: a base-stream event persisted after the restore
+    /// began (the provider's feed is at least as new), and ``clearCache()``
+    /// (the restore began for an account the app has since signed out of).
+    /// Either way it returns what the cache now holds, as a superseded read
+    /// does, or throws if nothing usable is cached.
     public func restorePurchases() async throws -> EntitlementSnapshot {
         try Task.checkCancellation()
-        let epoch = ordering.state.withLock { $0.epoch }
+        let (epoch, started) = ordering.state.withLock { state in
+            state.sequence += 1
+            return (state.epoch, state.sequence)
+        }
         let snapshot = try await base.restorePurchases()
         try Task.checkCancellation()
-        // Only ``clearCache()`` rejects a restore: it began for an account
-        // the app has since signed out of.
-        guard persist(snapshot, by: .restore(epoch: epoch)) else { throw EntitlementReadError.superseded }
+        guard persist(snapshot, by: .restore(epoch: epoch, started: started)) else {
+            if let cached = readCache(), let usable = usableSnapshot(from: cached) {
+                return usable
+            }
+            throw EntitlementReadError.superseded
+        }
         return snapshot
     }
 
@@ -304,8 +316,9 @@ public struct ResilientPaywallService: PaywallService {
     private enum CacheWriter {
         /// A read, ordered by its start sequence.
         case read(UInt64)
-        /// A restore, ordered by completion. Carries the cache epoch it began in.
-        case restore(epoch: UInt64)
+        /// A restore, ordered by completion. Carries the cache epoch and the
+        /// sequence it began at, so a clear or a later stream write outranks it.
+        case restore(epoch: UInt64, started: UInt64)
         /// A base-stream event, ordered by arrival.
         case stream
     }
@@ -321,8 +334,8 @@ public struct ResilientPaywallService: PaywallService {
             switch writer {
             case .read(let generation):
                 guard generation >= state.accepted else { return false }
-            case .restore(let epoch):
-                guard epoch == state.epoch else { return false }
+            case .restore(let epoch, let started):
+                guard epoch == state.epoch, state.lastStreamWrite < started else { return false }
             case .stream:
                 break
             }
@@ -341,6 +354,7 @@ public struct ResilientPaywallService: PaywallService {
                 guard !state.streamFenced else { return true }
                 state.sequence += 1
                 state.accepted = state.sequence
+                state.lastStreamWrite = state.sequence
             }
             state.streamFenced = false
             store.setValue(CachedEntitlement(snapshot, cachedAt: now()), for: .lastKnownEntitlement)
@@ -397,6 +411,9 @@ private final class EntitlementCacheOrdering: Sendable {
         /// Set by `clearCache()`; stream events don't write until a read or
         /// restore begun after the clear has.
         var streamFenced = false
+        /// Sequence of the last stream event written; a restore begun before
+        /// it no longer writes its own snapshot.
+        var lastStreamWrite: UInt64 = 0
     }
 
     let state = Mutex(State())
