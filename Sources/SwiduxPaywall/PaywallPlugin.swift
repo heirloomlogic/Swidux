@@ -205,15 +205,23 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
 /// when it *completes*: its result reflects the account after the restore,
 /// which is newer than anything a read resolved while it ran — even a read
 /// that started later. No read therefore supersedes a restore.
+///
+/// Whether a restore may land and whether it holds the spinner are separate.
+/// A provider can leave a restore suspended forever (a sign-in sheet that
+/// never resolves), and nothing distinguishes that from a slow one. So an
+/// accepted result releases the spinner of every restore in flight, while
+/// each restore's own result or error still lands when it completes.
 @MainActor
 private final class PaywallRequestGeneration {
     /// The newest read, until it resolves or is superseded.
     private var currentRead: UUID?
-    private var restores: Set<UUID> = []
+    /// Restores in flight, each flagged with whether it still holds `isLoading`.
+    private var restores: [UUID: Bool] = [:]
     private(set) var hasResolved = false
 
-    /// Whether a read or restore is still in flight.
-    var isLoading: Bool { currentRead != nil || !restores.isEmpty }
+    /// Whether the spinner should show: a read is in flight, or a restore no
+    /// newer result has landed behind.
+    var isLoading: Bool { currentRead != nil || restores.values.contains(true) }
 
     func beginRead() -> UUID {
         let id = UUID()
@@ -222,18 +230,20 @@ private final class PaywallRequestGeneration {
     }
 
     func beginRestore() -> UUID {
-        restores.insert(UUID()).memberAfterInsert
+        let id = UUID()
+        restores[id] = true
+        return id
     }
 
     func isLive(_ id: UUID) -> Bool {
-        id == currentRead || restores.contains(id)
+        id == currentRead || restores[id] != nil
     }
 
     /// Ends `id`. Returns `false` if it had already ended or been superseded,
     /// so a duplicate or delayed completion changes nothing.
     @discardableResult
     func end(_ id: UUID) -> Bool {
-        if restores.remove(id) != nil { return true }
+        if restores.removeValue(forKey: id) != nil { return true }
         guard id == currentRead else { return false }
         currentRead = nil
         return true
@@ -242,5 +252,6 @@ private final class PaywallRequestGeneration {
     func acceptResult() {
         currentRead = nil
         hasResolved = true
+        for id in restores.keys { restores[id] = false }
     }
 }

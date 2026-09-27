@@ -260,7 +260,7 @@ struct PaywallOrderingTests {
         for action in try await refreshRun.value {
             _ = plugin.reduce(state: &state, action: .paywall(action))
         }
-        #expect(state.paywall.isLoading, "the restore is still in flight")
+        #expect(!state.paywall.isLoading, "a newer result releases the spinner; the restore can still land")
 
         await base.finishRestore(fails: restoreFails, snapshot: .init(isPro: true))
         for action in try await restoreRun.value {
@@ -272,6 +272,51 @@ struct PaywallOrderingTests {
         if resilient {
             #expect(store.value(.lastKnownEntitlement)?.isPro == !restoreFails)
         }
+    }
+
+    @Test("a restore holds loading until it finishes when nothing newer lands")
+    @MainActor
+    func restoreHoldsLoadingUntilItFinishes() async throws {
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let plugin = makePlugin(service: base)
+        var state = TestState()
+        let restore = plugin.reduce(state: &state, action: .paywall(.restorePurchases))
+        let restoreRun = Task { try await collectActions(from: restore) }
+        await base.waitForRestore()
+        #expect(state.paywall.isLoading)
+
+        await base.finishRestore(snapshot: .init(isPro: true))
+        for action in try await restoreRun.value {
+            _ = plugin.reduce(state: &state, action: .paywall(action))
+        }
+        #expect(state.paywall.isPro)
+        #expect(!state.paywall.isLoading)
+    }
+
+    @Test("a restore that never returns cannot pin loading once a newer result lands")
+    @MainActor
+    func hungRestoreDoesNotPinLoading() async throws {
+        let base = SuspendedPaywallService(suspendsRestore: true)
+        let plugin = makePlugin(service: base)
+        var state = TestState()
+        let restore = plugin.reduce(state: &state, action: .paywall(.restorePurchases))
+        let restoreRun = Task { try await collectActions(from: restore) }
+        await base.waitForRestore()
+
+        // The user gives up on the restore and pulls to refresh.
+        let refresh = plugin.reduce(state: &state, action: .paywall(.refreshCustomerInfo))
+        let refreshRun = Task { try await collectActions(from: refresh) }
+        await base.waitForRead()
+        await base.finishRead(snapshot: .init(isPro: true))
+        for action in try await refreshRun.value {
+            _ = plugin.reduce(state: &state, action: .paywall(action))
+        }
+        #expect(state.paywall.isPro)
+        #expect(!state.paywall.isLoading, "the spinner must not wait on a restore nothing will finish")
+
+        restoreRun.cancel()
+        await base.finishRestore(fails: true)
+        _ = try await restoreRun.value
     }
 
     @Test("a cancelled refresh ignores a provider success and finishes its own loading")
