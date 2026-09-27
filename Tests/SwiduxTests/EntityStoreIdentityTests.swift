@@ -10,6 +10,9 @@ private struct MutableIdentityEntity: Identifiable, Equatable, Sendable {
 
 @Suite("EntityStore stable identity")
 struct EntityStoreIdentityTests {
+    // Exit tests exist only where Swift Testing can spawn a child process;
+    // without this guard the whole target fails to build for iOS Simulator.
+    #if os(macOS) || os(Linux) || os(Windows)
     @Test("inserting an entity under another ID rejects the invalid key")
     func insertingUnderDifferentIDFails() async {
         await #expect(processExitsWith: .failure) {
@@ -46,6 +49,8 @@ struct EntityStoreIdentityTests {
             store.modify(first.id) { $0.id = second.id }
         }
     }
+
+    #endif
 
     @Test("replacing an identity explicitly records the deletion and insertion")
     func replacingIdentityThroughDeleteAndInsert() {
