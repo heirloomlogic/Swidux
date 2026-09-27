@@ -314,3 +314,142 @@ extension EffectCancellationRaceTests {
         #expect(log.value == ["cancelled"])
     }
 }
+
+// MARK: - Nested scopes
+
+/// A scope invoked inside another effect is its own cancellable unit: cancelling
+/// its id cancels it, not the effect hosting it or that effect's other scopes.
+extension EffectCancellationRaceTests {
+    /// A store that appends every `.effectAction` to `log` and runs `effect` on `.noOp`.
+    private func makeHostStore(
+        log: SendableBox<[String]>,
+        effect: @escaping @Sendable () -> Effect<TestAction>
+    ) -> Store<TestState, TestAction> {
+        Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                return effect()
+            case .effectAction(let entry):
+                log.value.append(entry)
+                return nil
+            default:
+                return nil
+            }
+        }
+    }
+
+    @Test("Cancelling a nested scope does not end the effect hosting it")
+    func nestedCancelSparesHost() async throws {
+        let (events, feed) = AsyncStream<Int>.makeStream()
+        let fetchStarted = AsyncStream<Void>.makeStream()
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { send in
+                for await value in events {
+                    let fetch: Effect<TestAction> = cancellable(
+                        id: "fetch", cancelInFlight: true, onCancel: .effectAction("fetch \(value) cancelled")
+                    ) { send in
+                        fetchStarted.continuation.yield()
+                        try await Task.sleep(for: .milliseconds(value == 1 ? 60_000 : 1))
+                        await send(.effectAction("fetched \(value)"))
+                    }
+                    try? await fetch(send)
+                }
+            }
+        }
+        store.send(.noOp)
+        feed.yield(1)
+        for await _ in fetchStarted.stream { break }
+
+        store.cancel(id: "fetch")  // abandon only the slow fetch
+        #expect(log.value == ["fetch 1 cancelled"])
+
+        feed.yield(2)  // the listener keeps handling events
+        try await poll(until: { log.value.contains("fetched 2") })
+        #expect(log.value == ["fetch 1 cancelled", "fetched 2"], "the listener died with its nested fetch")
+        store.cancelEffects()
+    }
+
+    @Test("Cancelling a nested scope leaves a sibling scope in the same effect running")
+    func nestedCancelSparesSibling() async throws {
+        let started = AsyncStream<String>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let siblingCancelled = SendableBox<Bool?>(nil)
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { send in
+                let slow: Effect<TestAction> = cancellable(id: "slow") { _ in
+                    started.continuation.yield("slow")
+                    try await Task.sleep(for: .seconds(60))
+                }
+                let sibling: Effect<TestAction> = cancellable(id: "sibling") { send in
+                    started.continuation.yield("sibling")
+                    for await _ in release.stream { break }
+                    siblingCancelled.value = Task.isCancelled
+                    await send(.effectAction("sibling done"))
+                }
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { try? await slow(send) }
+                    group.addTask { try? await sibling(send) }
+                }
+            }
+        }
+        store.send(.noOp)
+        var starts = started.stream.makeAsyncIterator()
+        _ = await starts.next()
+        _ = await starts.next()
+
+        store.cancel(id: "slow")
+        release.continuation.yield()
+        try await poll(until: { siblingCancelled.value != nil })
+
+        #expect(siblingCancelled.value == false, "distinct ids are independent")
+        #expect(log.value == ["sibling done"])
+        store.cancelEffects()
+    }
+
+    @Test("cancelInFlight replaces a concurrent nested scope in the same effect")
+    func nestedCancelInFlightDedupesSiblings() async throws {
+        let firstStarted = AsyncStream<Void>.makeStream()
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { send in
+                let first: Effect<TestAction> = cancellable(id: "latest", cancelInFlight: true) { send in
+                    firstStarted.continuation.yield()
+                    try await Task.sleep(for: .seconds(60))
+                    await send(.effectAction("stale"))
+                }
+                let second: Effect<TestAction> = cancellable(id: "latest", cancelInFlight: true) { send in
+                    await send(.effectAction("latest"))
+                }
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { try? await first(send) }
+                    for await _ in firstStarted.stream { break }
+                    group.addTask { try? await second(send) }
+                }
+                await send(.effectAction("host done"))
+            }
+        }
+        store.send(.noOp)
+
+        try await poll(until: { log.value.contains("host done") })
+        #expect(log.value == ["latest", "host done"], "the first scope was never replaced")
+        store.cancelEffects()
+    }
+
+    @Test("A nested cancelInFlight scope does not cancel the scope enclosing it")
+    func nestedCancelInFlightSparesEnclosingScope() async throws {
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            cancellable(id: "scope") { send in
+                let inner: Effect<TestAction> = cancellable(id: "scope", cancelInFlight: true) { _ in }
+                try await inner(send)
+                await send(.effectAction("outer survived"))
+            }
+        }
+        store.send(.noOp)
+
+        try await poll(until: { !store.hasInFlightEffects })
+        #expect(log.value == ["outer survived"])
+    }
+}

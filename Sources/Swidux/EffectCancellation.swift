@@ -40,7 +40,7 @@ struct AnyHashableSendable: Hashable, Sendable {
 /// Store-owned scopes are registered synchronously at dispatch and removed on completion.
 @MainActor
 protocol EffectCancellationRegistrar: AnyObject, Sendable {
-    func register(_ scope: ActiveScope, token: UUID, in taskID: UUID, cancelInFlight: Bool)
+    func register(_ scope: ActiveScope, token: UUID, in taskID: UUID, cancelInFlight: Bool, sparing: Set<UUID>)
     func unregister(_ taskID: UUID, scope: UUID)
     func cancelCancellable(id: AnyHashableSendable)
 }
@@ -111,6 +111,9 @@ final class ScopeCancellation: Sendable {
 struct EffectContext: Sendable {
     weak var registrar: (any EffectCancellationRegistrar)?
     let taskID: UUID
+    /// Tokens of the scopes the running code is nested in. A `cancelInFlight`
+    /// scope spares them: cancelling one would cancel the scope itself.
+    var enclosingScopes: Set<UUID> = []
 
     @TaskLocal static var current: EffectContext?
 }
@@ -129,8 +132,9 @@ struct EffectContext: Sendable {
 /// Distinct ids are independent; two effects tagged with the same id are
 /// cancelled together. The tag is dropped automatically when the effect
 /// finishes. Top-level scopes register synchronously at dispatch; scopes
-/// invoked inside another effect become active only at invocation. Use
-/// `Effect.map` to preserve metadata when lifting actions.
+/// invoked inside another effect become active only at invocation, and run as
+/// a child task, so cancelling one cancels that scope rather than the effect
+/// hosting it. Use `Effect.map` to preserve metadata when lifting actions.
 /// Outside a store-run effect (for example a direct call in a unit
 /// test) there is no context to register with, and the effect simply runs.
 ///

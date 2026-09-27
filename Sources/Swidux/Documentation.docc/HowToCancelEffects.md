@@ -102,3 +102,21 @@ return featureEffect.map(AppAction.feature)
 ```
 
 `map` preserves cancellation metadata. Wrapping another effect inside a new operation hides that declaration from the store until the inner effect is invoked. Such dynamically invoked scopes become active on invocation; cancelling an ID does not prohibit future scopes with that ID. Scope registrations are removed when their operation finishes, including when it throws. Cancellation keys are not retained as a history of past commands.
+
+## Nested scopes
+
+A scope invoked inside another effect runs as its own child task, so cancelling its id cancels that scope alone. The effect hosting it carries on — the invocation throws `CancellationError`, which the host can catch — and so do the host's other scopes, whatever their ids. That is what keeps a long-lived listener alive when one of the fetches it starts is abandoned:
+
+```swift
+case .startListening:
+    return Effect { send in
+        for await event in events {
+            let fetch: Effect<AppAction> = cancellable(id: FetchID(), cancelInFlight: true) { send in
+                await send(.fetched(try await api.fetch(event)))
+            }
+            try? await fetch(send)  // `store.cancel(id: FetchID())` ends this fetch, not the loop
+        }
+    }
+```
+
+Cancelling the host still cancels every scope inside it. `cancelInFlight` on a nested scope replaces any other scope running under the same id, including a concurrent one in the same host (for example in a task group), but never a scope it is nested in.

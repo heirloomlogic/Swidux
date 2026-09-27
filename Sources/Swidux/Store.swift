@@ -273,7 +273,8 @@ public final class Store<State: SwiduxObservable, Action> {
                 declared = (UUID(), eff.activeScope(id: key, send: send))
             }
             // Weak `registrar`, so binding the context does not retain the store.
-            let context = EffectContext(registrar: self, taskID: id)
+            let context = EffectContext(
+                registrar: self, taskID: id, enclosingScopes: declared.map { [$0.token] } ?? [])
             let task = Task { @concurrent [weak self, declared] in
                 await EffectContext.$current.withValue(context) {
                     do {
@@ -424,13 +425,13 @@ private struct EffectHandle {
 }
 
 extension Store: EffectCancellationRegistrar {
-    func register(_ scope: ActiveScope, token: UUID, in taskID: UUID, cancelInFlight: Bool) {
+    func register(_ scope: ActiveScope, token: UUID, in taskID: UUID, cancelInFlight: Bool, sparing: Set<UUID>) {
         guard let handle = effectTasks[taskID], !handle.task.isCancelled else { return }
         if cancelInFlight {
-            let hosted = Set(handle.scopes.keys)
-            cancelScopes(reporting: false) { $0.id == scope.id && !hosted.contains($1) }
+            // Concurrent same-id scopes in this effect are replaced like any
+            // other; only the scopes enclosing the new one are spared.
+            cancelScopes(reporting: false) { $0.id == scope.id && !sparing.contains($1) }
         }
-        scope.cancellation.attach(handle.task)
         effectTasks[taskID]?.scopes[token] = scope
     }
 

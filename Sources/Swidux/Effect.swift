@@ -63,16 +63,48 @@ public struct Effect<Action>: Sendable {
             // the synchronous dispatch cycle has finished registering its tasks.
             await context.registrar?.register(
                 scope, token: token, in: context.taskID,
-                cancelInFlight: declaredScope == nil && cancelInFlight
+                cancelInFlight: declaredScope == nil && cancelInFlight,
+                sparing: context.enclosingScopes
             )
             do {
                 try Task.checkCancellation()
-                try await operation(scope.cancellation.guarding(send))
+                if declaredScope != nil {
+                    // The store's task for this effect is the scope's unit of work.
+                    try await operation(scope.cancellation.guarding(send))
+                } else {
+                    try await runInChildTask(scope, token: token, context: context, send: send)
+                }
             } catch {
                 await context.registrar?.unregister(context.taskID, scope: token)
                 throw error
             }
             await context.registrar?.unregister(context.taskID, scope: token)
+        }
+    }
+
+    /// Runs a scope invoked inside another effect as its own unit of work, so
+    /// cancelling its id cancels only this scope — not the effect hosting it,
+    /// nor that effect's other scopes. The host's cancellation still reaches it.
+    private func runInChildTask(
+        _ scope: ActiveScope,
+        token: UUID,
+        context: EffectContext,
+        send: @escaping Send<Action>
+    ) async throws {
+        var nested = context
+        nested.enclosingScopes.insert(token)
+        let operation = operation
+        let guardedSend = scope.cancellation.guarding(send)
+        // An unstructured task inherits task-locals, so scopes nested in this
+        // one see `nested` and spare this scope from `cancelInFlight`.
+        let child = EffectContext.$current.withValue(nested) {
+            Task { try await operation(guardedSend) }
+        }
+        scope.cancellation.attach(child)
+        try await withTaskCancellationHandler {
+            try await child.value
+        } onCancel: {
+            child.cancel()
         }
     }
 
