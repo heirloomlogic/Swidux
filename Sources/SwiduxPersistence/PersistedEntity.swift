@@ -197,7 +197,10 @@ public struct PersistedEntity<State> {
             }
             reportDuplicates(duplicates, to: observers)
             reportUndecodable(undecodable, to: observers)
-            return (rows, removedIDs, undecodable.ids)
+            // Unreadable means no row of the ID decoded. An ID that did load a
+            // value is merged like any other, even if a duplicate of it didn't.
+            let loadedIDs = Set(rows.lazy.map(\.id))
+            return (rows, removedIDs, undecodable.ids.filter { !loadedIDs.contains($0) })
         }
 
         /// Reports the rows a read found but could not decode, when there were

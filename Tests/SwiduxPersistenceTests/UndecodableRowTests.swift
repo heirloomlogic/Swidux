@@ -175,4 +175,35 @@ struct UndecodableRowTests {
         #expect(store.docs[good.id] == good, "absence from a snapshot that could not decode it is not deletion")
         #expect(store.docs[other.id] == other)
     }
+
+    @Test("a resolver skipped for an undecodable duplicate says why")
+    func aSkippedResolverIsReported() async throws {
+        let (failures, onFailure) = failureLog()
+        let calls = SendableBox(0)
+        let coordinator = try makeDocsCoordinator(
+            collapse: { rows in
+                calls.withValue { $0 += 1 }
+                return rows
+            },
+            onFailure: onFailure)
+        let id = UUID()
+        // Two rows for one id, the second written by a newer version. The
+        // first decodes, so a plain read collapses to it — but the resolver
+        // is handed every row, and can't be handed this one.
+        let context = ModelContext(coordinator.database.modelContainer)
+        context.insert(try VersionedDocModel(from: VersionedDoc(id: id, title: "v1 row")))
+        try context.save()
+        context.insert(
+            try VersionedDocModel(from: VersionedDoc(id: id, title: "v2 dup", payload: SkewedPayload(version: 2))))
+        try context.save()
+
+        var state = VersionedDocsState()
+        await coordinator.hydrate(into: &state)
+
+        #expect(state.docs[id]?.title == "v1 row", "the decodable row still loads")
+        #expect(calls.value == 0, "the premise: a resolver that can't see every row does not run")
+        #expect(
+            failures.failures(.fetch).first?.failedIDs == [id],
+            "the resolver silently never ran, and nothing said why")
+    }
 }

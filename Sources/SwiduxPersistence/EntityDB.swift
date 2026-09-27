@@ -393,7 +393,10 @@ public actor EntityDB {
     /// When any row cannot be decoded the resolver does not run and nothing is
     /// written: it is handed the whole table and asked which rows survive, and a
     /// table with rows missing from it is a world it cannot see. The decodable
-    /// rows come back collapsed exactly as a plain read would collapse them.
+    /// rows come back collapsed exactly as a plain read would collapse them, and
+    /// the undecodable ones are reported — every one, including a duplicate a
+    /// plain read would have skipped past, because it is what kept the resolver
+    /// from running.
     func collapsingDuplicates<M: PersistableModel>(
         as type: M.Type,
         using collapse: @Sendable ([M.Domain]) -> [M.Domain]
@@ -419,7 +422,7 @@ public actor EntityDB {
                 let read = self.collapse(rows)
                 let outcome = CollapseOutcome(
                     survivors: read.domains, removedIDs: [], duplicateRowCount: read.duplicatesCollapsed)
-                return (outcome, read.undecodable)
+                return (outcome, undecodable)
             }
 
             let survivors = collapse(domains)
