@@ -517,6 +517,55 @@ struct StoreTests {
         #expect(store.items[a.id]?.name == "a2", "one undo also reverted the edit to A")
     }
 
+    @Test("an UndoPlugin registered only on the host drives undo and redo")
+    @MainActor
+    func undoPluginIsDiscovered() {
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(UndoPlugin<TestState, TestAction>())
+        let store = Store<TestState, TestAction>(initialState: TestState(), reducer: testReducer, plugins: plugins)
+
+        let entity = TestEntity(name: "Added")
+        store.send(.insert(entity))
+        #expect(store.canUndo, "snapshots accumulated while canUndo stayed false")
+
+        store.undo()
+        #expect(store.items[entity.id] == nil, "undo() was a no-op")
+        store.redo()
+        #expect(store.items[entity.id] == entity)
+    }
+
+    @Test("core plugins registered after Store.init are still found")
+    @MainActor
+    func lateRegisteredPluginsAreFound() async {
+        let collector = PersistCollector()
+        let plugins = PluginHost<TestState, TestAction>()
+        let store = Store<TestState, TestAction>(initialState: TestState(), reducer: testReducer, plugins: plugins)
+        plugins.register(UndoPlugin<TestState, TestAction>())
+        plugins.register(
+            PersistencePlugin<TestState, TestAction>(
+                writers: [
+                    StateWriter(keyPath: \.items) { writes, deletes in
+                        await collector.record(writes: writes, deletes: deletes)
+                    }
+                ],
+                debounce: .seconds(30)
+            )
+        )
+
+        let entity = TestEntity(name: "Late")
+        store.send(.insert(entity))
+        #expect(store.canUndo)
+
+        // `mutate` drains outside the plugin lifecycle; a store that missed the
+        // plugin recorded the change and scheduled nothing, so flush wrote nothing.
+        let merged = TestEntity(name: "Merged")
+        store.mutate { $0.items[merged.id] = merged }
+        await store.flush()
+
+        let writes = await collector.writes
+        #expect(writes.contains(merged))
+    }
+
     @Test("multiple send calls accumulate state")
     @MainActor
     func multipleSends() {
@@ -677,6 +726,27 @@ struct StoreUndoManagerTests {
 
         undoManager.undo()
         #expect(store.items[a.id]?.name == "a", "system Undo reverts the in-app redo")
+    }
+
+    @Test("with the undo plugin only registered, UndoManager registration follows it")
+    func undoManagerFollowsDiscoveredPlugin() {
+        let a = TestEntity(name: "a")
+        let plugins = PluginHost<TestState, TestAction>()
+        plugins.register(UndoPlugin<TestState, TestAction>(isUndoable: Self.isRename))
+        var initial = TestState()
+        initial.items = EntityStore([a])
+        let store = Store<TestState, TestAction>(initialState: initial, reducer: testReducer, plugins: plugins)
+        let undoManager = UndoManager()
+        store.undoManager = undoManager
+
+        event(undoManager) { store.send(.noOp) }
+        #expect(!undoManager.canUndo)
+
+        event(undoManager) { store.send(.rename(a.id, "b")) }
+        #expect(undoManager.canUndo, "shake and Edit-menu undo never appeared")
+
+        undoManager.undo()
+        #expect(store.items[a.id]?.name == "a")
     }
 
     @Test("in-app undo and redo work when the UndoManager holds none of the store's steps")

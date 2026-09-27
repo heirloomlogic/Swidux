@@ -31,9 +31,9 @@ let undoPlugin = UndoPlugin<AppState, AppAction>(
 )
 ```
 
-### 2. Register and pass to Store
+### 2. Register it
 
-Register the plugin with ``PluginHost`` for lifecycle hooks, and pass it directly to ``Store`` for undo/redo methods and `canUndo`/`canRedo` tracking:
+Register the plugin with ``PluginHost``, first, so it snapshots before anything else touches state. ``Store`` finds it there — as it finds a registered ``PersistencePlugin`` — so registering once is enough:
 
 ```swift
 let plugins = PluginHost<AppState, AppAction>()
@@ -45,14 +45,11 @@ return Store(
     reducer: { state, action in
         reducer.reduce(state: &state, action: action, environment: environment)
     },
-    plugins: plugins,
-    undoPlugin: undoPlugin,
-    persistencePlugin: persistencePlugin,
-    isUndoable: isUndoable
+    plugins: plugins
 )
 ```
 
-`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, and updating `canUndo`/`canRedo`.
+`Store` handles the rest internally: snapshotting state before undoable actions, restoring via `applyRestore` on undo/redo, draining persistence changes, updating `canUndo`/`canRedo`, and registering each undo step with the platform `UndoManager`. The `undoPlugin:`, `persistencePlugin:`, and `isUndoable:` initializer parameters still exist, for driving a plugin that isn't registered or narrowing what reaches the Edit menu, but the defaults follow the registered plugins.
 
 ### 3. Wire platform UI
 
