@@ -82,9 +82,11 @@ public nonisolated struct EntityStore<
     /// often the user deletes and restores it in between. A row storage hands
     /// back again is a new arrival with a new token.
     ///
-    /// Bounded by remote insertions per session. Survives ``resetChanges()``
-    /// for the same reason the removal record does, and a first-load hydration
-    /// replaces the store outright.
+    /// An entry is dropped when storage removes the row again. One for a row
+    /// the local user deleted stays — redoing that delete depends on it — so
+    /// the map holds the rows present plus remote rows deleted locally this
+    /// session. Survives ``resetChanges()`` for the same reason the removal
+    /// record does, and a hydration replaces it outright.
     private(set) var remoteArrivals: [UUID: UUID] = [:]
 
     // MARK: - Init
@@ -303,6 +305,13 @@ public nonisolated struct EntityStore<
             }
         case .remote:
             remotelyRemovedIDs.formUnion(removedIDs)
+            // The removal record now keeps undo from bringing the row back,
+            // and a later re-arrival gets a new token anyway, so the arrival
+            // entry has nothing left to decide. Checked first so a tick that
+            // removes nothing ever inserted remotely doesn't copy the map.
+            for id in removedIDs where remoteArrivals[id] != nil {
+                remoteArrivals[id] = nil
+            }
         }
     }
 

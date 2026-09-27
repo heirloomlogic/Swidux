@@ -1141,6 +1141,35 @@ struct EntityStoreTests {
         #expect(store.changes.isEmpty)
     }
 
+    @Test("a remote removal forgets the row's arrival")
+    func remoteRemovalPrunesArrival() {
+        let kept = TestEntity(name: "kept")
+        let gone = TestEntity(name: "gone")
+        var store = EntityStore<TestEntity>()
+        store.reconcile(with: EntityStore([kept, gone]), preserving: [], removingMissing: true)
+        let beforeRemoval = store
+
+        store.reconcile(with: EntityStore([kept]), preserving: [], removingMissing: true)
+
+        #expect(Set(store.remoteArrivals.keys) == [kept.id], "a churny synced table would keep every dead row's entry")
+        // The removal record, not the arrival, is what keeps undo from
+        // bringing the row back.
+        store.restore(from: beforeRemoval)
+        #expect(store[gone.id] == nil)
+        #expect(store.changes.isEmpty)
+    }
+
+    @Test("a local delete keeps the arrival, so redo of it still deletes")
+    func localDeleteKeepsArrival() {
+        let row = TestEntity(name: "remote")
+        var store = EntityStore<TestEntity>()
+        store.reconcile(with: EntityStore([row]), preserving: [], removingMissing: true)
+
+        store[row.id] = nil
+
+        #expect(store.remoteArrivals[row.id] != nil)
+    }
+
     @Test("remote arrivals are excluded from equality")
     func remoteArrivalsExcludedFromEquality() {
         let remote = TestEntity(name: "remote")
