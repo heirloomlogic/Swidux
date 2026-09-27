@@ -936,7 +936,7 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'PersistenceState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'PersistenceState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 16
                 )
@@ -1062,7 +1062,7 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'OptionalPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'OptionalPhaseState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 16
                 )
@@ -1137,13 +1137,13 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 25
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 21
                 ),
@@ -1218,19 +1218,19 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 18
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 15
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 31
                 ),
@@ -1321,19 +1321,19 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Config' must be written with its qualified name 'MixedNestedState.Config'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Config' must be written with its qualified name 'MixedNestedState.Config'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 10,
                     column: 17
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Handle' must be written with its qualified name 'MixedNestedState.Handle'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Handle' must be written with its qualified name 'MixedNestedState.Handle'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 11,
                     column: 17
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Count' must be written with its qualified name 'MixedNestedState.Count'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Count' must be written with its qualified name 'MixedNestedState.Count'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 12,
                     column: 16
                 ),
@@ -1404,7 +1404,7 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Wrapper' must be written with its qualified name 'MemberBaseState.Wrapper'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Wrapper' must be written with its qualified name 'MemberBaseState.Wrapper'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 8,
                     column: 16
                 )
@@ -1482,7 +1482,7 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Phase' must be written with its qualified name 'ShadowState.Phase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Phase' must be written with its qualified name 'ShadowState.Phase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 10,
                     column: 16
                 )
@@ -1551,7 +1551,7 @@ final class SwiduxMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'ChildState' must be written with its qualified name 'SliceParentState.ChildState'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'ChildState' must be written with its qualified name 'SliceParentState.ChildState'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 23
                 )

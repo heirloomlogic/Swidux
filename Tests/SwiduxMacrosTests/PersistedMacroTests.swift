@@ -242,7 +242,7 @@ final class PersistedMacroTests: XCTestCase {
             struct Deck: Identifiable, Equatable, Sendable {
                 var id: UUID
                 var title: String
-                @Relation(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [Card]
+                @Relation(deleteRule: .cascade) var cards: [Card]
             }
             """,
             expandedSource: """
@@ -258,7 +258,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var title: String = ""
-                    @Relationship(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [CardModel]? = nil
+                    @Relationship(deleteRule: .cascade) var cards: [CardModel]? = nil
 
                     init(from domain: Deck) throws {
                         self.id = domain.id
@@ -372,8 +372,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "@Relation to-one properties must be optional (T?) or to-many to be CloudKit-safe; CloudKit forbids non-optional relationships",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 41
                 )
             ],
             macros: macros
@@ -542,13 +542,13 @@ final class PersistedMacroTests: XCTestCase {
             @Persisted
             struct Note: Identifiable, Equatable, Sendable {
                 var id: UUID
-                let pinned = false
+                var pinned = false
             }
             """,
             expandedSource: """
                 struct Note: Identifiable, Equatable, Sendable {
                     var id: UUID
-                    let pinned = false
+                    var pinned = false
                 }
 
                 @Model
@@ -661,8 +661,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "@Ignored properties must be optional so they can be reconstructed as nil when loading from storage",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 18
                 )
             ],
             macros: macros
@@ -859,8 +859,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "Persisted properties of a non-primitive type must provide a default value (= …), be optional, or be marked @Inline to be CloudKit-safe",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 9
                 )
             ],
             macros: macros
@@ -937,8 +937,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "Non-optional @Inline properties must provide a default value (= …) or be optional, so a missing or undecodable blob can be recovered instead of crashing",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 17
                 )
             ],
             macros: macros
@@ -1086,7 +1086,7 @@ final class PersistedMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Kind' must be written with its qualified name 'Entry.Kind'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Kind' must be written with its qualified name 'Entry.Kind'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 15
                 )
@@ -1236,10 +1236,18 @@ final class PersistedMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 27
-                )
+                ),
+                // The default is copied into the getter's fallback, outside the
+                // struct, so the bare name fails there too.
+                DiagnosticSpec(
+                    message:
+                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
+                    line: 7,
+                    column: 38
+                ),
             ],
             macros: macros
         )
@@ -1318,7 +1326,7 @@ final class PersistedMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Card' must be written with its qualified name 'Deck.Card'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Card' must be written with its qualified name 'Deck.Card'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 27
                 )

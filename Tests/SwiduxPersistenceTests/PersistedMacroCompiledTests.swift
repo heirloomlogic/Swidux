@@ -39,6 +39,16 @@ nonisolated struct VersionedNote: Identifiable, Equatable, Sendable {
     var body: String = ""
 }
 
+/// `Optional<T>` is as optional as `T?`: no default, `@Ignored` and a to-one
+/// `@Relation` all accept it.
+@Persisted
+nonisolated struct SpelledOptionalNote: Identifiable, Equatable, Sendable {
+    var id: UUID
+    var link: Optional<URL>
+    @Ignored var preview: Optional<String>
+    @Relation(deleteRule: .nullify) var chapter: Optional<Chapter>
+}
+
 // MARK: - Tests
 
 @Suite("@Persisted compiled expansion")
@@ -59,5 +69,17 @@ struct PersistedMacroCompiledTests {
         let note = VersionedNote(id: UUID(), body: "kept")
 
         #expect(try VersionedNoteModel(from: note).toDomain() == note)
+    }
+
+    @Test("Optional<T> round-trips like T?")
+    func optionalSpellingRoundTrips() throws {
+        let note = SpelledOptionalNote(
+            id: UUID(),
+            link: URL(string: "https://example.com"),
+            preview: nil,
+            chapter: Chapter(id: UUID(), heading: "one")
+        )
+
+        #expect(try SpelledOptionalNoteModel(from: note).toDomain() == note)
     }
 }

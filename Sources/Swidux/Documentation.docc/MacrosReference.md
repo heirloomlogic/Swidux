@@ -37,6 +37,8 @@ For a struct named `MyState`, the macro emits:
 - **Must be a struct.** Applying `@Swidux` to a class or enum emits a diagnostic.
 - **Should declare `Equatable` and `Sendable`.** The protocol requires both. The example projects also mark the struct `nonisolated` so it can cross the `@MainActor` boundary inside ``Store``.
 - **Stored `var` properties only.** Computed properties (a getter, explicit or shorthand), `let` properties, and `static` properties are ignored. A property with only `willSet`/`didSet` observers is stored, so it is mirrored like any other; the observers run in your reducers but not when the macro packs or unpacks the value.
+- **Not generic, `private` or `fileprivate`.** The generated peer can't name a generic struct's parameters, and it must name the struct from outside its body. Both are diagnosed. For generic state, hand-write the ``SwiduxObservable`` conformance.
+- **Every stored property must be visible to the macro.** Each of these is a compile error rather than a property whose value silently resets on every dispatch: a stored property inside `#if` (declare it unconditionally and move the `#if` into its type or value), a tuple-pattern declaration (`var (a, b): (Int, Int)`), a combined declaration (`var a: Int, b: Int`), a missing type annotation, and a `lazy` property.
 
 ### Property handling rules
 
@@ -241,6 +243,9 @@ The generated model is **CloudKit-safe by construction**, which is what lets the
 
 - **Must be a struct** (a diagnostic fires otherwise).
 - **Must satisfy `Identifiable & Equatable & Sendable` with `ID == UUID`** — the ``EntityStore`` contract.
+- **Not generic, `private` or `fileprivate`**, for the same reasons as `@Swidux`.
+- **The same stored-property rules as `@Swidux`**, plus three of its own: `willSet`/`didSet` properties are mirrored like any other, a `let` with an initial value is an error (the memberwise initializer has no parameter for it, so it can't be loaded), and a `private` property is an error (the model reads it and rebuilds the struct from outside the struct; `fileprivate` works). `static` properties are never columns.
+- **`Optional<T>` and `T!` count as optional**, exactly like `T?`.
 
 ### Property handling and markers
 
@@ -318,6 +323,7 @@ If you see **"call to main actor-isolated initializer … in a synchronous nonis
 - **The struct must be `nonisolated`** in practice. The generated extension methods are `@MainActor`, but reducers run with the struct passed `inout` from non-isolated contexts inside ``Store``. Marking the struct `nonisolated` lets it cross that boundary.
 - **Properties must be `Sendable`.** The struct itself declares `Sendable`, so the compiler will reject any non-`Sendable` field.
 - **Computed properties are not observed.** If you want a derived value to participate in observation, store it (and update it inside the reducer) — or compute it inline in the view.
+- **Default values are copied into the generated code.** A leaf's default becomes the observer initializer's default argument, and a mirrored or `@Inline` property's default becomes the model's column default. So a default that names one of the struct's nested types (`= Phase.idle`) or `Self` (`= Self.limit`) fails outside the struct just as a type annotation does. Both are diagnosed on the default; write `MyState.Phase.idle` or `MyState.limit`.
 - **You can opt out.** For exotic shapes (collections of state slices, generic state), hand-write conformance to ``SwiduxObservable`` instead of using the macro. The protocol requires four methods; the macro just removes the boilerplate.
 
 ## See Also

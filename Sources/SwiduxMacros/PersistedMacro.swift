@@ -18,47 +18,83 @@ extension PersistedMacro: PeerMacro {
             return []
         }
 
+        let unsupported = unsupportedStructDiagnostics(of: structDecl, macro: "Persisted")
+        guard unsupported.isEmpty else {
+            for diagnostic in unsupported { context.diagnose(diagnostic) }
+            return []
+        }
+
         diagnoseSkippedStoredProperties(of: structDecl, includesLetBindings: true, in: context)
+        diagnoseInitializedLets(of: structDecl, in: context)
         let properties = classifyPersistedProperties(of: structDecl)
 
-        // The `@Model` shadow class is a peer at file scope, where a bare nested
-        // type name can't resolve. `@Ignored` is exempt: it emits no column and no
-        // type reference, so its type never reaches that scope.
+        // The `@Model` shadow class is a peer outside the struct, where a bare
+        // nested type name can't resolve. `@Ignored` is exempt: it emits no column
+        // and no type reference, so its type never reaches that scope. Defaults are
+        // copied into mirrored columns and `@Inline` getters.
         diagnoseUnqualifiedNestedTypes(
             of: structDecl,
             in: properties.filter { !isIgnored($0) }.map(\.typeSyntax),
+            defaultValues: properties.filter { isMirror($0) || isInline($0) }.compactMap(\.defaultValue),
             generatedDeclaration: "model class",
             in: context
         )
 
-        // `@Ignored` fields must be reconstructable as `nil` in `toDomain()`.
-        for property in properties where isIgnored(property) && !property.isOptional {
-            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.ignoredRequiresOptional))
+        // Property-level diagnostics are anchored on the property, not on the
+        // `@Persisted` attribute, so a struct with several offenders shows each.
+        func diagnose(_ property: PersistedProperty, _ message: SwiduxDiagnostic) {
+            context.diagnose(Diagnostic(node: property.binding, message: message))
         }
 
-        // A non-optional, non-primitive mirrored attribute has no CloudKit-safe
-        // default the macro can synthesize: require a default, optionality, or @Inline.
-        for property in properties where isMirror(property) && cloudKitMirrorDefault(for: property) == .missing {
-            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.mirrorRequiresDefault))
+        for property in properties {
+            // The model reads the property and rebuilds the struct through its
+            // memberwise initializer, both from outside the struct.
+            if let varDecl = property.binding.parent?.parent?.as(VariableDeclSyntax.self),
+                varDecl.modifiers.contains(where: { $0.name.tokenKind == .keyword(.private) && $0.detail == nil })
+            {
+                diagnose(property, .privatePersistedProperty)
+            }
+
+            switch property.kind {
+            case .ignored:
+                // `@Ignored` fields must be reconstructable as `nil` in `toDomain()`.
+                if !property.isOptional { diagnose(property, .ignoredRequiresOptional) }
+            case .mirror:
+                // A non-optional, non-primitive mirrored attribute has no CloudKit-safe
+                // default the macro can synthesize: require a default, optionality, or @Inline.
+                if cloudKitMirrorDefault(for: property) == .missing { diagnose(property, .mirrorRequiresDefault) }
+            case .relation(_, let cardinality, _):
+                if let inverse = property.relationInverse {
+                    context.diagnose(Diagnostic(node: inverse, message: SwiduxDiagnostic.relationInverseUnsupported))
+                }
+                if !property.hasSupportedRelationShape {
+                    diagnose(property, .relationUnsupportedShape)
+                } else if cardinality == .toOne {
+                    // CloudKit forbids non-optional relationships; a non-optional
+                    // to-one `@Relation` cannot be reconstructed safely.
+                    diagnose(property, .relationRequiresOptional)
+                }
+            case .inlineBlob:
+                // A non-optional `@Inline` blob backed by `Data()` (the CloudKit-safe
+                // column default) has nothing to decode until the first write; without
+                // a domain default the getter cannot recover and would have to trap.
+                if !property.isOptional && property.defaultValue == nil {
+                    diagnose(property, .inlineRequiresDefault)
+                }
+                let column = "\(property.name)Data"
+                if properties.contains(where: { $0.name == column && !isIgnored($0) }) {
+                    diagnose(property, .inlineColumnCollision(property: property.name, column: column))
+                }
+            }
         }
 
-        // CloudKit forbids non-optional relationships; a non-optional to-one
-        // `@Relation` cannot be reconstructed safely.
-        for property in properties where isNonOptionalToOneRelation(property) {
-            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.relationRequiresOptional))
-        }
-
-        // A non-optional `@Inline` blob backed by `Data()` (the CloudKit-safe
-        // column default) has nothing to decode until the first write; without
-        // a domain default the getter cannot recover and would have to trap.
-        for property in properties where isInline(property) && !property.isOptional && property.defaultExpr == nil {
-            context.diagnose(Diagnostic(node: node, message: SwiduxDiagnostic.inlineRequiresDefault))
-        }
-
+        // A relation whose shape has no `…Model` spelling is already an error;
+        // leaving it out keeps that error from arriving with a parse failure in
+        // the expansion buffer.
         return [
             generatePersistedModelClass(
                 structName: structDecl.name.text,
-                properties: properties,
+                properties: properties.filter(\.hasSupportedRelationShape),
                 accessLevel: accessLevel(of: structDecl)
             )
         ]
@@ -74,7 +110,10 @@ extension PersistedMacro: ExtensionMacro {
         conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
-        guard let structDecl = declaration.as(StructDeclSyntax.self) else {
+        // The peer expansion reports why an unsupported struct gets nothing.
+        guard let structDecl = declaration.as(StructDeclSyntax.self),
+            unsupportedStructDiagnostics(of: structDecl, macro: "Persisted").isEmpty
+        else {
             return []
         }
         return [
@@ -88,6 +127,18 @@ extension PersistedMacro: ExtensionMacro {
 
 // MARK: - Helpers
 
+/// Diagnoses `let` properties with an initial value. Swift leaves them out of
+/// the memberwise initializer, so `toDomain()` could never pass a stored value
+/// back; the classifier skips them rather than emit a call that can't compile.
+private func diagnoseInitializedLets(of structDecl: StructDeclSyntax, in context: some MacroExpansionContext) {
+    for member in structDecl.memberBlock.members {
+        guard let varDecl = member.decl.as(VariableDeclSyntax.self), !isTypeMember(varDecl),
+            isInitializedLet(varDecl)
+        else { continue }
+        context.diagnose(Diagnostic(node: varDecl, message: SwiduxDiagnostic.initializedLetNotPersistable))
+    }
+}
+
 private func isIgnored(_ property: PersistedProperty) -> Bool {
     if case .ignored = property.kind { return true }
     return false
@@ -100,11 +151,6 @@ private func isMirror(_ property: PersistedProperty) -> Bool {
 
 private func isInline(_ property: PersistedProperty) -> Bool {
     if case .inlineBlob = property.kind { return true }
-    return false
-}
-
-private func isNonOptionalToOneRelation(_ property: PersistedProperty) -> Bool {
-    if case .relation(_, _, .toOne, _) = property.kind { return true }
     return false
 }
 

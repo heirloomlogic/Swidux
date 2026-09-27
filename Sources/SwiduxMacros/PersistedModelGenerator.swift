@@ -146,11 +146,12 @@ private func identityAttribute(for prop: PersistedProperty) -> String {
     prop.isIdentity ? "@Attribute(.preserveValueOnDeletion) " : ""
 }
 
-private func relationshipAttribute(deleteRule: String?, inverse: String?) -> String {
-    var parts: [String] = []
-    if let deleteRule { parts.append("deleteRule: \(deleteRule)") }
-    if let inverse { parts.append("inverse: \(inverse)") }
-    return parts.isEmpty ? "@Relationship" : "@Relationship(\(parts.joined(separator: ", ")))"
+/// No `inverse:` is ever emitted. A `@Relation` is an owned value composition:
+/// the child's domain value can't hold its parent without containing itself, so
+/// an inverse SwiftData maintained would disagree with the domain on every save
+/// and `toDomain()` would recurse through it forever.
+private func relationshipAttribute(deleteRule: String?) -> String {
+    deleteRule.map { "@Relationship(deleteRule: \($0))" } ?? "@Relationship"
 }
 
 private func modelMemberLines(
@@ -182,8 +183,8 @@ private func modelMemberLines(
                     get throws { \(getter) }
                 }
             """
-    case .relation(let rule, let inverse, let cardinality, let element):
-        let attr = relationshipAttribute(deleteRule: rule, inverse: inverse)
+    case .relation(let rule, let cardinality, let element):
+        let attr = relationshipAttribute(deleteRule: rule)
         let modelType = relationModelType(cardinality: cardinality, element: element)
         return "    \(attr) \(accessPrefix)var \(prop.name): \(modelType) = nil"
     case .ignored:
@@ -197,7 +198,7 @@ private func initLine(for prop: PersistedProperty) -> String? {
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
         return "        self.\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
-    case .relation(_, _, let cardinality, let element):
+    case .relation(_, let cardinality, let element):
         switch cardinality {
         case .toMany, .toOneOptional:
             return "        self.\(prop.name) = try domain.\(prop.name).map { try \(element)Model(from: $0) }"
@@ -215,7 +216,7 @@ private func toDomainArgument(for prop: PersistedProperty) -> String {
         return "            \(prop.name): \(prop.name)"
     case .inlineBlob:
         return "            \(prop.name): try \(prop.name)"
-    case .relation(_, _, let cardinality, _):
+    case .relation(_, let cardinality, _):
         // The model stores relationships optionally (CloudKit requirement), so
         // reconstruct the domain shape from the optional.
         switch cardinality {
