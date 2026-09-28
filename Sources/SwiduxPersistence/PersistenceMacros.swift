@@ -41,11 +41,12 @@ public macro Persisted() = #externalMacro(module: "SwiduxMacros", type: "Persist
 /// The property's type must reference the related *domain* type (`[Card]` or
 /// `Card?`); the generated model substitutes the `…Model` shadow.
 ///
-/// A relation is an owned value composition: the parent's value contains its
-/// children, and saving the parent reconciles them. There is no back-reference —
-/// a child's domain value can't hold its parent without containing itself — so
-/// bidirectional relationships are not supported. Give the child a
-/// ``ForeignKey()`` `UUID` if it needs to name its parent.
+/// The current implementation embeds child values in the parent and reconciles
+/// them when the parent is saved. Its converters do not support back-references
+/// or bidirectional relationships. Give the child a ``ForeignKey()`` `UUID` if
+/// it needs to name its parent; this marker adds no referential constraint.
+/// Independently addressable associations with generated storage inverses are
+/// planned in Swidux issue #102, but are not implemented by this macro.
 ///
 /// That also makes the relationship **local-only**. CloudKit mirroring requires
 /// an inverse on every relationship, so a model that declares a `@Relation`

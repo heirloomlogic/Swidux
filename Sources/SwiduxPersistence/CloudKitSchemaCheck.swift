@@ -2,8 +2,8 @@
 //  CloudKitSchemaCheck.swift
 //  SwiduxPersistence
 //
-//  CloudKit mirroring refuses a relationship without an inverse, and a
-//  `@Relation` never has one. SwiftData only finds out when the store loads —
+//  CloudKit mirroring refuses a relationship without an inverse, and
+//  the current `@Relation` generator emits none. SwiftData finds out at load —
 //  as Core Data error 134060, or on some hosts as an abort — so the factory
 //  checks the schema first and says what to do instead.
 //
@@ -16,8 +16,9 @@ import SwiftData
 /// Thrown by ``ContainerFactory/makeContainer(models:cloudKitDatabase:url:inMemory:)``
 /// — and so by `CloudContainerFactory` and a sync toggle's rebuild — when a
 /// CloudKit-mirrored container is requested over models declaring a
-/// relationship with no inverse. A `@Relation` is always one: it is an owned
-/// value composition, and a child's domain value can't hold its parent.
+/// relationship with no inverse. The current `@Relation` generator emits no
+/// inverse; association support is tracked in Swidux issue #102. This check
+/// guards the generated schema, not a permanent restriction on domain structs.
 ///
 /// A local-only container over the same models is fine; only mirroring needs
 /// the inverse. For a synced app, store an owned value inline with `@Inline`,

@@ -154,10 +154,10 @@ private func identityAttribute(for prop: PersistedProperty) -> String {
     prop.isIdentity ? "@Attribute(.preserveValueOnDeletion) " : ""
 }
 
-/// No `inverse:` is ever emitted. A `@Relation` is an owned value composition:
-/// the child's domain value can't hold its parent without containing itself, so
-/// an inverse SwiftData maintained would disagree with the domain on every save
-/// and `toDomain()` would recurse through it forever.
+/// The current nested-value converters do not support inverse relationships,
+/// so this generator emits none. Adding a storage-only inverse requires the
+/// association identity and save contract tracked in Swidux issue #102; merely
+/// including the parent in child conversion would cause recursive traversal.
 private func relationshipAttribute(deleteRule: String?) -> String {
     deleteRule.map { "@Relationship(deleteRule: \($0))" } ?? "@Relationship"
 }
