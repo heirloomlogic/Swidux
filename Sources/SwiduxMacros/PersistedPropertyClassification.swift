@@ -15,6 +15,7 @@ enum PersistedPropertyKind {
     /// `@Ignored`: a derived/denormalized field with no column. Must be optional
     /// (or otherwise defaultable) so `toDomain()` can reconstruct it as `nil`.
     case ignored
+    case association(toMany: Bool, destination: String, inverse: String)
 }
 
 enum RelationCardinality {
@@ -112,6 +113,15 @@ func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedP
                 inverse: inverse,
                 supportedShape: shape.isSupported
             )
+        }
+        for (markerName, toMany) in [("BelongsTo", false), ("HasMany", true)] {
+            if let attribute = marker(named: markerName, on: varDecl) {
+                let arguments = associationArguments(attribute)
+                return property(
+                    .association(toMany: toMany, destination: arguments.destination, inverse: arguments.inverse),
+                    supportedShape: associationShape(typeSyntax, toMany: toMany) && arguments.valid
+                )
+            }
         }
         if marker(named: "Inline", on: varDecl) != nil {
             return property(.inlineBlob)
@@ -215,4 +225,40 @@ private func baseName(of typeSyntax: TypeSyntax) -> String {
         return identifier.name.text
     }
     return typeSyntax.trimmedDescription
+}
+
+/// Association endpoints use scalar UUIDs; model references are storage-only.
+private func associationShape(_ type: TypeSyntax, toMany: Bool) -> Bool {
+    let element: TypeSyntax?
+    if toMany {
+        element = type.as(ArrayTypeSyntax.self)?.element
+    } else {
+        element = optionalWrappedType(of: type)
+    }
+    guard let element else { return false }
+    return ["UUID", "Foundation.UUID"].contains(element.trimmedDescription)
+}
+
+private func associationArguments(_ attribute: AttributeSyntax) -> (destination: String, inverse: String, valid: Bool) {
+    guard case .argumentList(let arguments) = attribute.arguments,
+        let destination = arguments.first?.expression.as(MemberAccessExprSyntax.self),
+        destination.declName.baseName.text == "self", let base = destination.base,
+        let inverse = arguments.first(where: { $0.label?.text == "inverse" })?.expression.as(
+            StringLiteralExprSyntax.self),
+        inverse.segments.count == 1,
+        let segment = inverse.segments.first?.as(StringSegmentSyntax.self)
+    else { return ("Invalid", "", false) }
+    let name = segment.content.text
+    let validName =
+        !name.isEmpty && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+        && !(name.first?.isNumber ?? true)
+    return (base.trimmedDescription, name, validName && directlyNamedDestination(base))
+}
+
+private func directlyNamedDestination(_ expression: ExprSyntax) -> Bool {
+    if expression.is(DeclReferenceExprSyntax.self) { return true }
+    if let member = expression.as(MemberAccessExprSyntax.self), let base = member.base {
+        return directlyNamedDestination(base)
+    }
+    return false
 }

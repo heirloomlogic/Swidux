@@ -160,6 +160,11 @@ private struct EntityEditFieldOperation<State> {
 /// The session records only named fields and explicit association operations. `apply` compares them with current canonical state, validates the whole group, then mutates a staged state copy. Use it inside `Store.mutate` when applying to a live Swidux store. It does not flush persistence or provide a durable or cross-device transaction.
 @MainActor
 public final class EntityEditSession<State> where State: Sendable {
+    /// The guarded inverse produced by a successful application.
+    public private(set) var undoReceipt: EntityEditUndo<State>?
+    /// Unchanged parent rows that a durable writer must validate alongside the edited entities.
+    public private(set) var readDependencies: [AnyKeyPath: Set<UUID>] = [:]
+    private var undoFields: [EntityEditFieldIdentity: (State, State) -> EntityEditOperation<State>?] = [:]
     private let baseline: State
     private let associations: EntityAssociationCatalog<State>
     private var lifecycle = EntityEditSessionState.active
@@ -235,6 +240,9 @@ public final class EntityEditSession<State> where State: Sendable {
                 field: name, validate: { _ in nil }, mutate: { _ in })
             return
         }
+        undoFields[fieldIdentity] = { before, after in
+            fieldUndo(before: before, after: after, store: store, id: id, field: field, name: name)
+        }
         let original = box.original[keyPath: field]
         let entityIdentity = EntityEditEntityIdentity(Entity.self, id: id)
         fields[fieldIdentity] = EntityEditFieldOperation(
@@ -292,13 +300,13 @@ public final class EntityEditSession<State> where State: Sendable {
         deletedDrafts.removeAll()
     }
 
-    /// Validates against current canonical state and synchronously applies the complete group when conflict-free.
-    public func apply(to state: inout State) -> EntityEditResult {
+    /// Validates and stages a group without consuming its session or changing canonical state.
+    public func preview(applyingTo state: State) -> (result: EntityEditResult, state: State) {
         switch lifecycle {
         case .applied:
-            return terminalConflict(.alreadyApplied)
+            return (terminalConflict(.alreadyApplied), state)
         case .cancelled:
-            return terminalConflict(.cancelledSession)
+            return (terminalConflict(.cancelledSession), state)
         case .active:
             break
         }
@@ -312,7 +320,7 @@ public final class EntityEditSession<State> where State: Sendable {
                 $1.entity.typeName, $1.entity.id.uuidString, $1.field, String(describing: $1.kind)
             )
         }
-        guard conflicts.isEmpty else { return EntityEditResult(conflicts: conflicts) }
+        guard conflicts.isEmpty else { return (EntityEditResult(conflicts: conflicts), state) }
 
         var staged = state
         for field in fields.values {
@@ -321,9 +329,27 @@ public final class EntityEditSession<State> where State: Sendable {
         for operation in operations {
             operation.mutate(&staged)
         }
-        state = staged
+        return (.applied, staged)
+    }
+
+    /// The canonical store paths this session can change.
+    public var affectedStores: Set<AnyKeyPath> {
+        Set(drafts.keys.map { $0.store.keyPath })
+            .union(destructiveEntities.map { $0.store.keyPath })
+            .union(associationChildEntities.map { $0.store.keyPath })
+    }
+
+    /// Validates against current canonical state and applies the complete group when conflict-free.
+    public func apply(to state: inout State) -> EntityEditResult {
+        let staged = preview(applyingTo: state)
+        guard staged.result.wasApplied else { return staged.result }
+        var undos = associations.undoOperations(before: state, after: staged.state)
+        undos.append(contentsOf: undoFields.values.compactMap { $0(state, staged.state) })
+        undoReceipt = EntityEditUndo(
+            operations: undos, affectedStores: affectedStores, readDependencies: readDependencies)
+        state = staged.state
         lifecycle = .applied
-        return .applied
+        return staged.result
     }
 
     func requireRegistered<Parent, Child>(_ association: EntityAssociation<State, Parent, Child>) throws
@@ -342,6 +368,7 @@ public final class EntityEditSession<State> where State: Sendable {
     }
 
     func performCommand(_ body: () throws -> Void) throws {
+        let savedDependencies = readDependencies
         let savedOperations = operations
         let savedOperationKeys = operationKeys
         let savedDestructiveEntities = destructiveEntities
@@ -356,6 +383,7 @@ public final class EntityEditSession<State> where State: Sendable {
         do {
             try body()
         } catch {
+            readDependencies = savedDependencies
             operations = savedOperations
             operationKeys = savedOperationKeys
             destructiveEntities = savedDestructiveEntities
@@ -416,10 +444,11 @@ public final class EntityEditSession<State> where State: Sendable {
         if deletes { destructiveEntities.insert(record) }
     }
 
-    func registerAssociationParent(_ parentID: UUID, association: EntityAssociationIdentity) throws {
+    func registerAssociationParent(_ parentID: UUID, association: EntityAssociationIdentity, store: AnyKeyPath) throws {
         let key = "\(association):\(parentID)"
         guard !deletedAssociationParents.contains(key) else { throw EntityEditDefinitionError.duplicateOperation }
         referencedAssociationParents.insert(key)
+        readDependencies[store, default: []].insert(parentID)
     }
 
     func registerDeletedAssociationParent(_ parentID: UUID, association: EntityAssociationIdentity) throws {

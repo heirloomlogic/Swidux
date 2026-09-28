@@ -291,16 +291,23 @@ struct EntityStoreTests {
         #expect(store[pendingCreate.id] == nil, "storage has no authority over a preserved ID, insert included")
     }
 
-    @Test("naming an ID the store never held removes nothing and records nothing")
-    func partialReconcileIgnoresUnknownDeletion() {
+    @Test("an absent tombstone records deletion evidence without creating a local write")
+    func partialReconcileRecordsAbsentDeletionEvidence() {
         let kept = TestEntity(name: "kept")
         var store = EntityStore([kept])
         store.resetChanges()
 
-        store.reconcile(with: EntityStore<TestEntity>([]), deleting: [UUID()], preserving: [])
+        let deletedID = UUID()
+        store.reconcile(with: EntityStore<TestEntity>([]), deleting: [deletedID], preserving: [])
 
         #expect(store.values == [kept])
-        #expect(store.remotelyRemovedIDs.isEmpty, "an ID that was never held was not remotely removed")
+        #expect(store.remotelyRemovedIDs == [deletedID])
+        #expect(store.changes.isEmpty, "observed tombstones must not echo as local deletes")
+        let arrived = TestEntity(id: deletedID, name: "arrived after deletion")
+        store.reconcile(with: EntityStore([arrived]), deleting: [], preserving: [])
+        #expect(store.remotelyRemovedIDs.isEmpty)
+        #expect(store[deletedID] == arrived)
+        #expect(store.changes.isEmpty)
     }
 
     // MARK: - Subscript

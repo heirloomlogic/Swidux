@@ -90,7 +90,7 @@ await persistence.hydrate(into: &initial)
 
 `CloudContainerFactory` throws `CloudKitIncompatibleSchema` when asked to mirror a model that declares a `@Relation`: CloudKit requires an inverse on every relationship, and a `@Relation` has none. Without the check SwiftData fails to load the store (Core Data error 134060) and some hosts abort. The same models build local-only, which is the fallback above; to sync them, see <doc:HowToAddPersistence>.
 
-The planned association model supports independently identified children with parent ownership, direct child edits, and grouped parent/child changes; see [issue #102](https://github.com/heirloomlogic/Swidux/issues/102). It requires generated storage inverses and a save contract that preserves newer child edits the parent editing session did not modify. This is follow-up work, not functionality provided by the current macro. The runtime schema guard and current alternatives remain applicable until that support is implemented.
+`@BelongsTo` and `@HasMany` provide a separate identity-based association API with generated storage inverses, ordered ID metadata, and explicit grouped local persistence. See <doc:PersistedAssociations>. Mirrored containers containing these associations are still rejected while synchronization reconciliation and signed-device acceptance remain open in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
 
 `resolveDesiredSyncMode(from:)` reads the persisted `KVKey.syncMode`. The default is **sync-on with opt-out** (`.iCloud`) for any app that links this product; pass `default: .localOnly` to make sync strictly opt-in instead.
 

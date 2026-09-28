@@ -16,6 +16,8 @@ import SwiftData
 public protocol PersistableEntity: Identifiable, Equatable, Sendable where ID == UUID {
     /// The generated SwiftData shadow class for this entity.
     associatedtype Model: PersistableModel where Model.Domain == Self
+
+    static func swiduxAssociationInverse(_ property: String) -> AnyKeyPath?
 }
 
 /// The generated SwiftData `@Model` shadow for a ``PersistableEntity``.
@@ -25,6 +27,8 @@ public protocol PersistableEntity: Identifiable, Equatable, Sendable where ID ==
 public protocol PersistableModel: PersistentModel {
     /// The value-type domain entity this model shadows.
     associatedtype Domain: PersistableEntity
+
+    static var swiduxAssociations: [SwiduxAssociationDescriptor<Self>] { get }
 
     /// Creates a fresh model from a domain value (used for inserts).
     /// Throws if inline values or relationships cannot be encoded.
@@ -70,4 +74,14 @@ public protocol PersistableModel: PersistentModel {
     static func swiduxBatchFetchDescriptor(
         persistentIDs: [PersistentIdentifier]
     ) -> FetchDescriptor<Self>
+}
+
+extension PersistableEntity {
+    /// Returns no relationship key path for entities without generated associations.
+    public static func swiduxAssociationInverse(_ property: String) -> AnyKeyPath? { nil }
+}
+
+extension PersistableModel {
+    /// Models without generated associations contribute no descriptors.
+    public static var swiduxAssociations: [SwiduxAssociationDescriptor<Self>] { [] }
 }

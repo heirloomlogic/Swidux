@@ -4,7 +4,7 @@ Keep editor drafts separate from current application state, then apply their cha
 
 ``EntityEditSession`` compares each edited field's original value, current canonical value, and proposed value. It applies the group only if every field and association operation passes validation. A rejected group leaves current state unchanged and retains the complete draft, including its nonconflicting edits.
 
-This is a synchronous, in-memory operation on the main actor. A successful `apply` does not mean the data reached disk. Normal persistence writers still flush entities separately. Generated SwiftData inverses, a durable grouped commit, and cross-device convergence remain tracked in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
+This is a synchronous, in-memory operation on the main actor. A successful `apply` does not mean the data reached disk. Use `EntityEditPersistence.commit(_:to:)` for a grouped local save; see <doc:PersistedAssociations> for declarations, ordering, and persistence setup. Cross-device convergence remains open in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
 
 State and entities must have value semantics. Use structs whose editable fields do not mutate shared reference storage. A session snapshot is an editor draft; application reads and association navigation use the current ``EntityStore`` collections.
 
@@ -66,4 +66,6 @@ A required association rejects a detach policy. Reparenting is an explicit group
 
 The current command API rejects incompatible overlaps, such as reparenting to a parent the same session deletes. It also rejects deletion of a child type that has its own registered parent associations, rather than attempting a recursive cascade. These are errors while constructing the draft operation; handle them before calling `apply`.
 
-These checks concern the state presented to `apply`. They do not coordinate independently running devices. The existing snapshot-based ``UndoPlugin`` is not a guarded inverse of an association transaction; do not use it to claim conflict-safe undo for these operations. Storage-aware grouped undo remains part of issue #102.
+These checks concern the state presented to `apply`. They do not coordinate independently running devices. A successful session exposes `undoReceipt`, whose `undo(in:)` validates the inverse against current fields, identities, and observed deletion evidence. `EntityEditPersistence.undo(_:in:)` saves that inverse before publishing state. The existing snapshot-based ``UndoPlugin`` remains a separate API without these association guards.
+
+A partial storage merge retains an explicit deletion tombstone even when the row is already absent locally. That evidence prevents guarded undo from restoring a locally deleted row after storage also reports its deletion. It creates no pending local deletion, and a later accepted arrival clears the evidence.

@@ -44,8 +44,7 @@ public nonisolated struct EntityStore<
     /// Accumulated changes since the last `resetChanges()` call.
     public private(set) var changes = ChangeSet()
 
-    /// IDs a reconcile removed on storage's authority — a deletion made on
-    /// another device, inferred from absence by
+    /// IDs storage declared deleted, including tombstones for rows already absent locally. Deletion may be inferred from absence by
     /// ``reconcile(with:preserving:removingMissing:)`` or named outright by
     /// ``reconcile(with:deleting:preserving:)``.
     ///
@@ -341,6 +340,12 @@ public nonisolated struct EntityStore<
         changes = ChangeSet()
     }
 
+    /// Acknowledges only the identities durably saved by a grouped writer.
+    public mutating func acknowledgePersisted(_ ids: Set<UUID>) {
+        changes.upserts.subtract(ids)
+        changes.deletions.subtract(ids)
+    }
+
     // MARK: - Merging (Re-hydration)
 
     /// Merges entities from another store. Entities only present in `other`
@@ -477,6 +482,8 @@ public nonisolated struct EntityStore<
             removable.insert(id)
         }
         removeBatch(removable, origin: .remote)
+        // A tombstone can arrive after a local deletion was flushed. Keep that evidence even when no row remains to remove.
+        remotelyRemovedIDs.formUnion(deletedIDs.filter { !owned.contains($0) && !remote.contains($0) })
     }
 
     /// Folds every row of `remote` this store has no local claim on into

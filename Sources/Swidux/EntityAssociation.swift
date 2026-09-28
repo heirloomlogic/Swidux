@@ -28,6 +28,7 @@ struct EntityAssociationIdentity: Hashable, Sendable {
     let parents: ObjectIdentifier
     let children: ObjectIdentifier
     let owner: ObjectIdentifier
+    let order: ObjectIdentifier?
     let requiredness: EntityAssociationRequiredness
     let removal: EntityAssociationPolicy
     let parentDeletion: EntityAssociationPolicy
@@ -52,12 +53,14 @@ where
     let parents: WritableKeyPath<State, EntityStore<Parent>>
     let children: WritableKeyPath<State, EntityStore<Child>>
     let owner: WritableKeyPath<Child, UUID?>
+    let order: WritableKeyPath<Parent, [UUID]>?
 
     /// Declares a named association and its mandatory ownership policies.
     @MainActor
     public init(
         name: String, parents: WritableKeyPath<State, EntityStore<Parent>>,
         children: WritableKeyPath<State, EntityStore<Child>>, owner: WritableKeyPath<Child, UUID?>,
+        order: WritableKeyPath<Parent, [UUID]>? = nil,
         requiredness: EntityAssociationRequiredness, removal: EntityAssociationPolicy,
         parentDeletion: EntityAssociationPolicy
     ) throws {
@@ -71,6 +74,7 @@ where
         self.parents = parents
         self.children = children
         self.owner = owner
+        self.order = order
         self.requiredness = requiredness
         self.removal = removal
         self.parentDeletion = parentDeletion
@@ -78,7 +82,11 @@ where
 
     /// Resolves a parent's current children from canonical state.
     public func children(of parentID: UUID, in state: State) -> [Child] {
-        state[keyPath: children].values.filter { $0[keyPath: owner] == parentID }
+        let members = state[keyPath: children].values.filter { $0[keyPath: owner] == parentID }
+        guard let order, let parent = state[keyPath: parents][parentID] else { return members }
+        var byID = Dictionary(uniqueKeysWithValues: members.map { ($0.id, $0) })
+        let ordered = parent[keyPath: order].compactMap { byID.removeValue(forKey: $0) }
+        return ordered + byID.values.sorted { $0.id.uuidString < $1.id.uuidString }
     }
 
     /// Returns the stored owner ID even when its parent cannot be resolved.
@@ -97,6 +105,7 @@ where
         EntityAssociationIdentity(
             name: name, parentType: ObjectIdentifier(Parent.self), childType: ObjectIdentifier(Child.self),
             parents: ObjectIdentifier(parents), children: ObjectIdentifier(children), owner: ObjectIdentifier(owner),
+            order: order.map(ObjectIdentifier.init),
             requiredness: requiredness, removal: removal, parentDeletion: parentDeletion)
     }
 
@@ -196,6 +205,8 @@ struct AnyEntityAssociation<State> where State: Sendable {
 @MainActor
 public struct EntityAssociationCatalog<State> where State: Sendable {
     private var entries: [AnyEntityAssociation<State>] = []
+    private var undoStores: [AnyKeyPath: (State, State) -> [EntityEditOperation<State>]] = [:]
+    private var undoEdges: [(State, State) -> [EntityEditOperation<State>]] = []
 
     /// Creates an empty catalog.
     public init() {}
@@ -219,7 +230,45 @@ public struct EntityAssociationCatalog<State> where State: Sendable {
         }) {
             throw EntityAssociationConfigurationError.duplicateAssociationOwner
         }
+        undoStores[association.parents] = { before, after in
+            recordUndos(before: before, after: after, store: association.parents)
+        }
+        undoStores[association.children] = { before, after in
+            recordUndos(before: before, after: after, store: association.children)
+        }
+        undoEdges.append { before, after in
+            var operations: [EntityEditOperation<State>] = []
+            for child in before[keyPath: association.children].values {
+                guard
+                    let operation = fieldUndo(
+                        before: before, after: after, store: association.children,
+                        id: child.id, field: association.owner, name: association.name)
+                else { continue }
+                operations.append(operation)
+                if let parentID = child[keyPath: association.owner],
+                    after[keyPath: association.parents][parentID] != nil
+                {
+                    operations.append(
+                        EntityEditOperation(
+                            key: "undo-parent:\(association.name):\(parentID)",
+                            validate: { state in
+                                guard state[keyPath: association.parents][parentID] == nil else { return [] }
+                                return [
+                                    EntityEditConflict(
+                                        entity: EntityEditEntityIdentity(Parent.self, id: parentID),
+                                        field: association.name, kind: .missingEntity,
+                                        original: EntityEditValue(parentID), current: nil, proposed: nil)
+                                ]
+                            }, mutate: { _ in }))
+                }
+            }
+            return operations
+        }
         entries.append(candidate)
+    }
+
+    func undoOperations(before: State, after: State) -> [EntityEditOperation<State>] {
+        undoStores.values.flatMap { $0(before, after) } + undoEdges.flatMap { $0(before, after) }
     }
 
     func contains<Parent, Child>(_ association: EntityAssociation<State, Parent, Child>) -> Bool
@@ -255,6 +304,23 @@ public struct EntityAssociationCatalog<State> where State: Sendable {
 
 @MainActor
 extension EntityEditSession {
+    /// Replaces order metadata without changing ownership or dropping unresolved IDs.
+    public func reorder<Parent, Child>(
+        _ ids: [UUID], for parentID: UUID, through association: EntityAssociation<State, Parent, Child>
+    ) throws
+    where
+        Parent: Identifiable & Equatable & Sendable, Parent.ID == UUID,
+        Child: Identifiable & Equatable & Sendable, Child.ID == UUID
+    {
+        try requireRegistered(association)
+        guard let order = association.order, Set(ids).count == ids.count else {
+            throw EntityEditDefinitionError.invalidAssociationOwnership
+        }
+        try edit(
+            Parent.self, id: parentID, in: association.parents, field: order, named: association.name + ".order",
+            to: ids)
+    }
+
     /// Queues creation of a child owned by an existing parent.
     public func create<Parent, Child>(
         _ child: Child, for parentID: UUID, through association: EntityAssociation<State, Parent, Child>
@@ -274,7 +340,7 @@ extension EntityEditSession {
             }
             try registerAssociationChild(
                 child.id, store: association.children, association: association.identity, creates: true, deletes: false)
-            try registerAssociationParent(parentID, association: association.identity)
+            try registerAssociationParent(parentID, association: association.identity, store: association.parents)
             var ownedChild = child
             ownedChild[keyPath: association.owner] = parentID
             let createdDraft = setCreatedDraft(ownedChild, store: association.children)
@@ -327,7 +393,7 @@ extension EntityEditSession {
             try registerAssociationChild(
                 childID, store: association.children, association: association.identity,
                 deletes: association.removal == .delete)
-            try registerAssociationParent(parentID, association: association.identity)
+            try registerAssociationParent(parentID, association: association.identity, store: association.parents)
             if association.removal == .delete {
                 markDeletedDraft(childID, store: association.children)
             } else {
@@ -416,8 +482,9 @@ extension EntityEditSession {
             }
             try registerAssociationChild(
                 childID, store: association.children, association: association.identity, deletes: false)
-            try registerAssociationParent(sourceParentID, association: association.identity)
-            try registerAssociationParent(destinationParentID, association: association.identity)
+            try registerAssociationParent(sourceParentID, association: association.identity, store: association.parents)
+            try registerAssociationParent(
+                destinationParentID, association: association.identity, store: association.parents)
             try updateAssociationDraft(childID, store: association.children) {
                 $0[keyPath: association.owner] = destinationParentID
             }
