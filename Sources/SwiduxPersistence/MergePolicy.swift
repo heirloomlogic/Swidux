@@ -97,6 +97,15 @@ struct MergeContext {
     /// already covers are excluded, because attributing those to the hold would
     /// point a leak hunt at the wrong thing.
     let heldIDs: Set<UUID>
+
+    var deletionEvidence: [UUID: DeletionEvidence] = [:]
+
+    func remoteDeletions(excluding acknowledged: [UUID: UUID]) -> Set<UUID> {
+        deletedIDs.filter { id in
+            guard let transaction = deletionEvidence[id]?.transaction else { return true }
+            return acknowledged[id] != transaction
+        }
+    }
 }
 
 /// IDs whose most recent flush attempt failed.

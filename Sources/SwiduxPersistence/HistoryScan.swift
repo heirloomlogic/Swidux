@@ -171,9 +171,7 @@ extension EntityDB {
             if scan.newWatermark.map({ transaction.token > $0 }) ?? true {
                 scan.newWatermark = transaction.token
             }
-            let isOwnWrite =
-                transaction.author == transactionAuthor
-                || transaction.author == EntityPersistenceGate.forContainer(modelContainer).groupAuthor
+            let isOwnWrite = transaction.author == transactionAuthor
             var touched: Set<String> = []
             var embeddedDeletions: Set<String> = []
             for change in transaction.changes {
@@ -208,7 +206,11 @@ extension EntityDB {
                         scan.escalate(.unidentifiedDeletion(entityName: reader.entityName))
                         continue
                     }
-                    scan.rows.insert(deleted: [id], for: reader.entityName)
+                    scan.rows.insert(
+                        deleted: [id], for: reader.entityName,
+                        evidence: DeletionEvidence(
+                            historyToken: transaction.token,
+                            transaction: EntityEditTransaction.id(from: transaction.author)))
                 case .insert, .update:
                     changedPIDs[reader.entityName, default: []].append(identifier)
                 @unknown default:

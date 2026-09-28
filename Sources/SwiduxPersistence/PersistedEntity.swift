@@ -395,7 +395,8 @@ public struct PersistedEntity<State> {
                         // an earlier tick read — are evidence, not inference, and
                         // the guard below does not apply to them.
                         let declared =
-                            context.policy.removesMissingEntities ? context.deletedIDs : []
+                            context.policy.removesMissingEntities
+                            ? context.remoteDeletions(excluding: current.acknowledgedDeletionTransactions) : []
                         // An empty snapshot is indistinguishable from a store
                         // that is unreadable or mid-import, so refuse to read
                         // "everything was deleted" out of it — the same stance
@@ -464,7 +465,8 @@ public struct PersistedEntity<State> {
                         // nothing on its own. Removal is exactly what the caller
                         // declared, where policy grants the authority.
                         let deleting =
-                            context.policy.removesMissingEntities ? context.deletedIDs : []
+                            context.policy.removesMissingEntities
+                            ? context.remoteDeletions(excluding: current.acknowledgedDeletionTransactions) : []
                         // Only the rows this merge can reach: `reconcile` writes
                         // what the snapshot holds and removes what was declared,
                         // and consults the preserved set for nothing else.

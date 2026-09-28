@@ -7,7 +7,7 @@ import SwiftData
 public struct EntityEditPersistenceRegistration<State: Sendable> {
     let keyPath: AnyKeyPath
     let append: (State, State, inout EntityPersistenceGroup) throws -> Void
-    let acknowledge: (State, inout State) -> Void
+    let acknowledge: (State, inout State, UUID) -> Void
     let expect: (State, Set<UUID>, inout EntityPersistenceGroup) -> Void
 
     /// Registers a canonical entity collection for grouped persistence.
@@ -19,13 +19,13 @@ public struct EntityEditPersistenceRegistration<State: Sendable> {
             append: { original, proposed, group in
                 try group.changes(from: original[keyPath: keyPath], to: proposed[keyPath: keyPath])
             },
-            acknowledge: { original, proposed in
+            acknowledge: { original, proposed, transaction in
                 let before = original[keyPath: keyPath]
                 let after = proposed[keyPath: keyPath]
                 let changed = Set(before.values.map(\.id)).union(after.values.map(\.id)).filter {
                     before[$0] != after[$0]
                 }
-                proposed[keyPath: keyPath].acknowledgePersisted(changed)
+                proposed[keyPath: keyPath].acknowledgePersisted(changed, deletionTransaction: transaction)
             },
             expect: { state, ids, group in
                 for id in ids { if let entity = state[keyPath: keyPath][id] { group.expect(entity) } }
@@ -69,10 +69,10 @@ public final class EntityEditPersistence<State: Sendable> {
         }
         let staged = receipt.preview(in: state)
         guard staged.result.wasApplied else { return staged.result }
-        try persist(from: state, to: staged.state, dependencies: receipt.readDependencies)
+        let transaction = try persist(from: state, to: staged.state, dependencies: receipt.readDependencies)
         let original = state
         let result = receipt.undo(in: &state)
-        for entity in entities { entity.acknowledge(original, &state) }
+        for entity in entities { entity.acknowledge(original, &state, transaction) }
         return result
     }
 
@@ -84,13 +84,13 @@ public final class EntityEditPersistence<State: Sendable> {
         }
         let staged = session.preview(applyingTo: state)
         guard staged.result.wasApplied else { return staged.result }
-        try persist(from: state, to: staged.state, dependencies: session.readDependencies)
+        let transaction = try persist(from: state, to: staged.state, dependencies: session.readDependencies)
         let original = state
         let result = session.apply(to: &state)
-        for entity in entities { entity.acknowledge(original, &state) }
+        for entity in entities { entity.acknowledge(original, &state, transaction) }
         return result
     }
-    private func persist(from state: State, to proposed: State, dependencies: [AnyKeyPath: Set<UUID>]) throws {
+    private func persist(from state: State, to proposed: State, dependencies: [AnyKeyPath: Set<UUID>]) throws -> UUID {
         var group = EntityPersistenceGroup()
         for entity in entities {
             try entity.append(state, proposed, &group)
@@ -101,7 +101,20 @@ public final class EntityEditPersistence<State: Sendable> {
         defer { gate.lock.unlock() }
         let context = ModelContext(container)
         context.autosaveEnabled = false
-        context.author = gate.groupAuthor
+        let transaction = UUID()
+        context.author = EntityEditTransaction.author(transaction)
         try group.apply(in: context)
+        return transaction
+    }
+}
+
+enum EntityEditTransaction {
+    private static let prefix = "swidux.group."
+
+    static func author(_ id: UUID) -> String { prefix + id.uuidString }
+
+    static func id(from author: String?) -> UUID? {
+        guard let author, author.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(author.dropFirst(prefix.count)))
     }
 }

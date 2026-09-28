@@ -500,14 +500,22 @@ public final class PersistenceCoordinator<State, Action> {
         /// when the scope is built. Every entity is handed the same answer, so
         /// computing it per entity would be E copies of one set — the waste this
         /// whole scoping exists to remove, reintroduced on the other path.
-        case unattributed(reading: Set<UUID>, deleted: Set<UUID>)
+        case unattributed(reading: Set<UUID>, deleted: Set<UUID>, evidence: [String: [UUID: DeletionEvidence]])
 
         /// The IDs `entityName` was told were deleted.
         func declaredDeletions(for entityName: String) -> Set<UUID> {
             switch self {
             case .wholeTable(let owed): owed.deletions(for: entityName)
             case .attributed(let ids): ids.deletions(for: entityName)
-            case .unattributed(_, let deleted): deleted
+            case .unattributed(_, let deleted, _): deleted
+            }
+        }
+
+        func deletionEvidence(for entityName: String) -> [UUID: DeletionEvidence] {
+            switch self {
+            case .wholeTable(let owed): owed.deletionEvidence[entityName] ?? [:]
+            case .attributed(let ids): ids.deletionEvidence[entityName] ?? [:]
+            case .unattributed(_, _, let evidence): evidence[entityName] ?? [:]
             }
         }
 
@@ -516,7 +524,7 @@ public final class PersistenceCoordinator<State, Action> {
             switch self {
             case .wholeTable: []
             case .attributed(let ids): ids.reading(for: entityName)
-            case .unattributed(let reading, _): reading
+            case .unattributed(let reading, _, _): reading
             }
         }
     }
@@ -554,7 +562,10 @@ public final class PersistenceCoordinator<State, Action> {
             }
             if !read.succeeded { unread.append(entity.entityName) }
             if let removal = read.collapsedAway { collapsedAway.append(removal) }
-            folds.append(fold(read.apply, entity, writers[index], flushes[index], deleted: deleted))
+            folds.append(
+                fold(
+                    read.apply, entity, writers[index], flushes[index], deleted: deleted,
+                    evidence: scope.deletionEvidence(for: entity.entityName)))
         }
         await duringReadPhase?()
         return MergePhase(folds: folds, collapsedAway: collapsedAway, unread: unread)
@@ -615,7 +626,7 @@ public final class PersistenceCoordinator<State, Action> {
         _ entity: PersistedEntity<State>,
         _ writer: StateWriter<State>,
         _ flushed: FlushRecord,
-        deleted: Set<UUID>
+        deleted: Set<UUID>, evidence: [UUID: DeletionEvidence]
     ) -> MergeFold {
         // Lifted out field-by-field so the fold doesn't capture `entity` itself:
         // it outlives this call, and holding the whole registration would keep
@@ -648,9 +659,10 @@ public final class PersistenceCoordinator<State, Action> {
             let outcome = merge(
                 &state,
                 MergeContext(
-                    policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held))
+                    policy: resolved, locallyOwnedIDs: owned, deletedIDs: deleted, heldIDs: held,
+                    deletionEvidence: evidence))
             var carryOver = AttributedIDs()
-            carryOver.record(outcome.withheld, for: entityName)
+            carryOver.record(outcome.withheld, for: entityName, evidence: evidence)
             return (carryOver, outcome.leftAbsenceUndecided)
         }
     }
@@ -1152,10 +1164,14 @@ extension PersistenceCoordinator where State: SwiduxObservable {
             // deferred additional rows while this caller was reading.
             let declared = deleted.union(anchor.carryOver.allDeleted)
             let reading = ids.union(declared).union(anchor.carryOver.allChanged)
+            var evidence = anchor.carryOver.deletionEvidence
+            for entity in evidence.keys {
+                for id in deleted { evidence[entity]?[id] = nil }
+            }
             // Everything owed is re-offered, so the result replaces the debt.
             // This caller consumes no history window of its own.
             try await self.merge(
-                .unattributed(reading: reading, deleted: declared),
+                .unattributed(reading: reading, deleted: declared, evidence: evidence),
                 into: store, policy: policy, attempt: attempt, recordAnchor: true)
         }
     }

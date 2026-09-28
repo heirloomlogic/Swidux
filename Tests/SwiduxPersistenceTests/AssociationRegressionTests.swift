@@ -175,4 +175,127 @@ struct AssociationRegressionTests {
         }
         #expect(store.children[child.id] == (foreignDeletion ? nil : child))
     }
+    @Test("grouped deletion reaches another canonical store sharing its container", arguments: [false, true])
+    func groupedDeletionSharedContainer(held: Bool) async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [TagModel.self, ScalarOwnedModel.self])
+        let first = PersistenceCoordinator<ScalarAssociationState, Int>(
+            entities: [.entity(\.parents), .entity(\.children)], container: container)
+        let second = PersistenceCoordinator<ScalarAssociationState, Int>(
+            entities: [.entity(\.parents), .entity(\.children)], container: container)
+        let parent = Tag(id: UUID(), label: "Parent")
+        let child = ScalarOwned(id: UUID(), ownerID: parent.id)
+        try await first.database.upsert(parent, as: TagModel.self)
+        try await first.database.upsert(child, as: ScalarOwnedModel.self)
+        let source = Store<ScalarAssociationState, Int>(
+            initialState: ScalarAssociationState(), reducer: { _, _ in nil })
+        let peer = Store<ScalarAssociationState, Int>(initialState: ScalarAssociationState(), reducer: { _, _ in nil })
+        await first.hydrate(into: source)
+        await second.hydrate(into: peer)
+        let edge = try EntityAssociation(
+            name: "children", parents: \ScalarAssociationState.parents, children: \ScalarAssociationState.children,
+            owner: \ScalarOwned.ownerID, requiredness: .optional, removal: .delete, parentDeletion: .delete)
+        var catalog = EntityAssociationCatalog<ScalarAssociationState>()
+        try catalog.register(edge)
+        let deletion = EntityEditSession(
+            state: ScalarAssociationState(observer: source.observer), associations: catalog)
+        try deletion.remove(child.id, from: parent.id, through: edge)
+        let writer = try EntityEditPersistence<ScalarAssociationState>(
+            container: container, entities: [.entity(\.parents), .entity(\.children)])
+        source.mutate { state in
+            do { #expect(try writer.commit(deletion, to: &state).wasApplied) } catch { Issue.record(error) }
+        }
+        await first.mergeChanges(into: source)
+        #expect(!source.children.remotelyRemovedIDs.contains(child.id))
+        if held { second.editing.hold(child.id) }
+        await second.mergeChanges(into: peer)
+        if held {
+            #expect(peer.children[child.id] == child)
+            second.editing.release(child.id)
+            second.failNextHistoryScan = HistoryScanFailure.fetchFailed("exercise deferred deletion fallback")
+            await second.mergeChanges(into: peer)
+        }
+        #expect(peer.children[child.id] == nil)
+        #expect(peer.children.remotelyRemovedIDs.contains(child.id))
+        let receipt = try #require(deletion.undoReceipt)
+        source.mutate { state in
+            do { #expect(try writer.undo(receipt, in: &state).wasApplied) } catch { Issue.record(error) }
+        }
+        #expect(source.children[child.id] == child)
+        await second.mergeChanges(into: peer)
+        #expect(peer.children[child.id] == child)
+    }
+
+    @Test("repeated grouped deletion retains only the latest state-local transaction", arguments: [false, true])
+    func repeatedGroupedDeletion(foreignFinal: Bool) async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [TagModel.self, ScalarOwnedModel.self])
+        let coordinator = PersistenceCoordinator<ScalarAssociationState, Int>(
+            entities: [.entity(\.parents), .entity(\.children)], container: container)
+        let parent = Tag(id: UUID(), label: "Parent")
+        let child = ScalarOwned(id: UUID(), ownerID: parent.id)
+        try await coordinator.database.upsert(parent, as: TagModel.self)
+        try await coordinator.database.upsert(child, as: ScalarOwnedModel.self)
+        let store = Store<ScalarAssociationState, Int>(initialState: ScalarAssociationState(), reducer: { _, _ in nil })
+        await coordinator.hydrate(into: store)
+        let before = store.children
+        let edge = try EntityAssociation(
+            name: "children", parents: \ScalarAssociationState.parents, children: \ScalarAssociationState.children,
+            owner: \ScalarOwned.ownerID, requiredness: .optional, removal: .delete, parentDeletion: .delete)
+        var catalog = EntityAssociationCatalog<ScalarAssociationState>()
+        try catalog.register(edge)
+        let writer = try EntityEditPersistence<ScalarAssociationState>(
+            container: container, entities: [.entity(\.parents), .entity(\.children)])
+        func remove(in state: inout ScalarAssociationState) throws -> EntityEditUndo<ScalarAssociationState> {
+            let session = EntityEditSession(state: state, associations: catalog)
+            try session.remove(child.id, from: parent.id, through: edge)
+            #expect(try writer.commit(session, to: &state).wasApplied)
+            return try #require(session.undoReceipt)
+        }
+        var state = ScalarAssociationState(observer: store.observer)
+        let first = try remove(in: &state)
+        let deletedSnapshot = state.children
+        let firstToken = try #require(deletedSnapshot.acknowledgedDeletionTransactions[child.id])
+        #expect(before.acknowledgedDeletionTransactions.isEmpty)
+        #expect(try writer.undo(first, in: &state).wasApplied)
+        #expect(state.children.acknowledgedDeletionTransactions.isEmpty)
+        let second = try remove(in: &state)
+        let secondToken = try #require(state.children.acknowledgedDeletionTransactions[child.id])
+        #expect(secondToken != firstToken)
+        state.children.resetChanges()
+        #expect(state.children.acknowledgedDeletionTransactions == [child.id: secondToken])
+        #expect(deletedSnapshot.acknowledgedDeletionTransactions == [child.id: firstToken])
+        store.mutate { $0 = state }
+        if foreignFinal {
+            var peer = ScalarAssociationState(parents: EntityStore([parent]))
+            let creation = EntityEditSession(state: peer, associations: catalog)
+            try creation.create(child, for: parent.id, through: edge)
+            #expect(try writer.commit(creation, to: &peer).wasApplied)
+            _ = try remove(in: &peer)
+            #expect(peer.children.acknowledgedDeletionTransactions[child.id] != secondToken)
+        }
+        await coordinator.mergeChanges(into: store)
+        #expect(store.children.remotelyRemovedIDs.contains(child.id) == foreignFinal)
+        #expect(store.children.acknowledgedDeletionTransactions.isEmpty == foreignFinal)
+        store.mutate { state in
+            do { #expect(try writer.undo(second, in: &state).wasApplied == !foreignFinal) } catch {
+                Issue.record(error)
+            }
+        }
+        #expect(store.children.acknowledgedDeletionTransactions.isEmpty)
+        #expect(store.children[child.id] == (foreignFinal ? nil : child))
+        #expect(deletedSnapshot.acknowledgedDeletionTransactions == [child.id: firstToken])
+    }
+
+    @Test("accepted arrivals clear state-local deletion acknowledgements without changing older copies")
+    func groupedDeletionArrivalCleanup() {
+        let child = ScalarOwned(id: UUID(), ownerID: nil)
+        var current = EntityStore([child])
+        current[child.id] = nil
+        let transaction = UUID()
+        current.acknowledgePersisted([child.id], deletionTransaction: transaction)
+        let snapshot = current
+        current.reconcile(with: EntityStore([child]), preserving: [], removingMissing: false)
+        #expect(current[child.id] == child)
+        #expect(current.acknowledgedDeletionTransactions.isEmpty)
+        #expect(snapshot.acknowledgedDeletionTransactions == [child.id: transaction])
+    }
 }

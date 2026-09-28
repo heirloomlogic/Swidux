@@ -136,7 +136,6 @@ final class EntityPersistenceGate: @unchecked Sendable {
     nonisolated(unsafe) private static var registry: [ObjectIdentifier: Entry] = [:]
     let lock = NSRecursiveLock()
     var requiresGroups = false
-    let groupAuthor = "swidux.group.\(UUID().uuidString)"
     private var revision: UInt64 = 0
 
     var groupRevision: UInt64 {
