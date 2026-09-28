@@ -585,47 +585,50 @@ struct PersistencePluginTests {
 
     @Test("A steady stream of edits cannot postpone the flush indefinitely")
     func steadyEditsStillFlush() async throws {
-        let flushes = SendableBox(0)
-        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in flushes.withValue { $0 += 1 } }
-        let plugin = PersistencePlugin<TestState, TestAction>(writers: [writer], debounce: .milliseconds(100))
-        var state = TestState()
-        let entity = TestEntity(name: "0")
-        state.items[entity.id] = entity
-
-        // Keep editing faster than the debounce until something is written, or
-        // for 3 s — three times the default max wait of 1 s.
-        let clock = ContinuousClock()
-        let start = clock.now
-        var index = 0
-        while flushes.value == 0, clock.now - start < .seconds(3) {
-            index += 1
-            state.items.modify(entity.id) { $0.name = "\(index)" }
-            plugin.afterReduce(state: &state, action: .noOp)
-            try await Task.sleep(for: .milliseconds(25))
-        }
-
-        #expect(flushes.value > 0, "a slider drag or a streaming effect kept every edit off disk")
-        await plugin.flush()
+        try await assertSteadyEditsFlush(maxWait: nil, expectedWait: .seconds(1))
     }
 
     @Test("maxWait bounds how long edits stay pending")
     func explicitMaxWait() async throws {
-        let flushes = SendableBox(0)
-        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in flushes.withValue { $0 += 1 } }
+        try await assertSteadyEditsFlush(maxWait: .milliseconds(200), expectedWait: .milliseconds(200))
+    }
+
+    private func assertSteadyEditsFlush(maxWait: Duration?, expectedWait: Duration) async throws {
+        let clock = DebounceTestClock()
+        defer { clock.advance(by: .seconds(60)) }
+        let flushedNames = SendableBox<[String]>([])
+        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
+            flushedNames.withValue { $0.append(contentsOf: writes.map(\.name)) }
+        }
         let plugin = PersistencePlugin<TestState, TestAction>(
-            writers: [writer], debounce: .milliseconds(100), maxWait: .milliseconds(200))
+            writers: [writer], debounce: .milliseconds(100), maxWait: maxWait,
+            debounceNow: { clock.now }, sleepUntilDebounce: { await clock.sleep(until: $0) })
         var state = TestState()
         let entity = TestEntity(name: "0")
         state.items[entity.id] = entity
 
-        for index in 1...40 {
-            state.items.modify(entity.id) { $0.name = "\(index)" }
-            plugin.afterReduce(state: &state, action: .noOp)
-            try await Task.sleep(for: .milliseconds(25))
+        // Virtual time advances only after the newly scheduled timer registers.
+        // Executor contention can delay that handshake without consuming maxWait.
+        for batch in 0..<2 {
+            let start = clock.now
+            var edit = 0
+            while clock.now - start < expectedWait {
+                let registrations = clock.deadlines.count
+                edit += 1
+                state.items.modify(entity.id) { $0.name = "\(batch):\(edit)" }
+                plugin.afterReduce(state: &state, action: .noOp)
+                try await poll(until: { clock.deadlines.count > registrations })
+                let deadline = try #require(clock.deadlines.last)
+                #expect(clock.deadlines.count == registrations + 1)
+                #expect(deadline <= start + expectedWait, "edits must not push the timer past the oldest drain's cap")
+                #expect(flushedNames.value.count == batch, "the current batch must stay buffered before its deadline")
+                clock.advance(by: .milliseconds(25))
+            }
+            try await poll(until: { flushedNames.value.count > batch })
+            try #require(
+                flushedNames.value.count == batch + 1, "the timer must flush at maxWait without an explicit flush")
+            #expect(flushedNames.value.last == "\(batch):\(edit)")
         }
-
-        #expect(flushes.value >= 2, "~1 s of edits against a 200 ms max wait")
-        await plugin.flush()
     }
 
     @Test("Edits do not postpone the retry of a failed flush")
@@ -662,5 +665,26 @@ struct PersistencePluginTests {
 
         #expect(persistedFailed.value, "each drain cancelled the scheduled retry")
         await plugin.flush()
+    }
+}
+
+@MainActor
+private final class DebounceTestClock {
+    private(set) var now = ContinuousClock.now
+    private(set) var deadlines: [ContinuousClock.Instant] = []
+    private var sleepers: [(ContinuousClock.Instant, CheckedContinuation<Void, Never>)] = []
+
+    func sleep(until deadline: ContinuousClock.Instant) async {
+        deadlines.append(deadline)
+        guard deadline > now else { return }
+        await withCheckedContinuation { sleepers.append((deadline, $0)) }
+    }
+
+    func advance(by duration: Duration) {
+        now += duration
+        let due = sleepers.filter { $0.0 <= now }
+        sleepers.removeAll { $0.0 <= now }
+        // Cancelled timers also resume; the plugin must reject their work.
+        for (_, continuation) in due { continuation.resume() }
     }
 }
