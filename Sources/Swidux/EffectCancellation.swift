@@ -66,6 +66,7 @@ struct ActiveScope: Sendable {
 final class ScopeCancellation: Sendable {
     private struct State {
         var isCancelled = false
+        var isSignalled = false
         var isFinished = false
         var cancelWork: (@Sendable () -> Void)?
     }
@@ -75,11 +76,11 @@ final class ScopeCancellation: Sendable {
     /// Whether the store has cancelled this scope.
     var isCancelled: Bool { state.withLock(\.isCancelled) }
 
-    /// Binds the work to cancel. Cancels it at once if the scope already was.
+    /// Binds the work to cancel. Cancels it at once if cancellation was signalled.
     func attach(_ task: Task<some Sendable, some Error>) {
         let cancelled = state.withLock { state in
             state.cancelWork = { task.cancel() }
-            return state.isCancelled
+            return state.isSignalled
         }
         if cancelled { task.cancel() }
     }
@@ -92,18 +93,24 @@ final class ScopeCancellation: Sendable {
         state.withLock { $0.isFinished = true }
     }
 
-    /// Cancels the scope's work. Returns `false` if it was already cancelled,
-    /// or had already finished.
-    @discardableResult
-    func cancel() -> Bool {
-        let work = state.withLock { state -> (@Sendable () -> Void)?? in
-            guard !state.isCancelled, !state.isFinished else { return nil }
+    /// Claims cancellation before any task is signalled, so cancelling an
+    /// ancestor cannot finish a descendant before its report is claimed.
+    /// Returns the work to cancel, or `nil` for an already cancelled or finished scope.
+    func prepareCancellation() -> (@Sendable () -> Void)? {
+        let claimed = state.withLock { state in
+            guard !state.isCancelled, !state.isFinished else { return false }
             state.isCancelled = true
-            return .some(state.cancelWork)
+            return true
         }
-        guard let work else { return false }
-        work?()
-        return true
+        guard claimed else { return nil }
+        return { [self] in
+            let work = state.withLock { state -> (@Sendable () -> Void)? in
+                guard !state.isSignalled else { return nil }
+                state.isSignalled = true
+                return state.cancelWork
+            }
+            work?()
+        }
     }
 
     /// Wraps `send` so nothing is dispatched once the scope is cancelled —

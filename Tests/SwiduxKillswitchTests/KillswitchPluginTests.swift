@@ -318,82 +318,55 @@ struct KillswitchPluginTests {
 
     // MARK: - Bounded fetch
 
-    /// Runs `action`'s effect to completion, feeding what it dispatches back
-    /// through the plugin; a 5 s watchdog cancels it so a hang fails instead
-    /// of stalling the run. Returns how long it took.
-    private func drive(
-        _ action: KillswitchAction,
-        through plugin: KillswitchPlugin<TestState, TestAction>,
-        state: inout TestState
-    ) async throws -> Duration {
-        let effect = try #require(plugin.reduce(state: &state, action: .killswitch(action)))
-        let clock = ContinuousClock()
-        let started = clock.now
+    /// Observes timeout delivery while the fetch is still suspended. The
+    /// iteration budget lets queued actor work run without counting that delay
+    /// as fetch execution time; cleanup releases the fetch even on failure.
+    private func driveBoundedFetch(honorsCancellation: Bool) async throws {
+        let pending = PendingKillswitchFetch(honorsCancellation: honorsCancellation)
+        defer { pending.release() }
+        let service = KillswitchService(
+            fetch: { try await pending.fetch() }, loadCached: { nil }, saveCached: { _ in },
+            cacheLifetime: 3_600, fetchTimeout: 0.2)
+        let plugin = makePlugin(service: service)
+        var state = TestState()
+        let effect = try #require(plugin.reduce(state: &state, action: .killswitch(.forceFetch)))
+        var dispatched: [TestAction] = []
+        var completed = false
         let run = Task { @MainActor in
-            var dispatched: [TestAction] = []
             try? await effect { dispatched.append($0) }
-            return dispatched
+            completed = true
         }
-        let watchdog = Task {
-            try await Task.sleep(for: .seconds(5))
-            run.cancel()
+        for await _ in pending.started { break }
+        for _ in 0..<500 {
+            if completed && pending.wasCancelled { break }
+            try await Task.sleep(for: .milliseconds(10))
         }
-        let dispatched = await run.value
-        watchdog.cancel()
+        let finishedBeforeRelease = completed
+        let cancelledBeforeRelease = pending.wasCancelled
+        pending.release()
+        await run.value
+
+        #expect(finishedBeforeRelease, "fetchTimeout must finish the effect while its fetch is still pending")
+        #expect(cancelledBeforeRelease, "the timed-out fetch must be cancelled")
+        #expect(dispatched.count == 1)
+        if case .killswitch(.fetchFailed(let message)) = dispatched.first {
+            #expect(message == URLError(.timedOut).localizedDescription)
+        } else {
+            Issue.record("Expected fetchFailed with the timeout error, got \(dispatched)")
+        }
         for action in dispatched { _ = plugin.reduce(state: &state, action: action) }
-        return clock.now - started
+        #expect(state.killswitch.isFetching == false)
+        #expect(state.killswitch.fetchError == URLError(.timedOut).localizedDescription)
     }
 
     @Test("a custom fetch that never returns is abandoned at fetchTimeout, releasing the guard")
     func hangingCustomFetchIsBounded() async throws {
-        let service = KillswitchService(
-            fetch: {
-                try await Task.sleep(for: .seconds(3_600))
-                return KillswitchConfig()
-            },
-            loadCached: { nil },
-            saveCached: { _ in },
-            cacheLifetime: 3_600,
-            fetchTimeout: 0.2
-        )
-        let plugin = makePlugin(service: service)
-        var state = TestState()
-
-        // `.live` bounds its own transfer; a custom closure need not. Unbounded,
-        // it holds `isFetching`, and so every later fetch, for the session.
-        let elapsed = try await drive(.forceFetch, through: plugin, state: &state)
-
-        #expect(elapsed < .seconds(5), "the fetch ran until the watchdog cancelled it")
-        #expect(state.killswitch.isFetching == false)
-        #expect(state.killswitch.fetchError != nil)
+        try await driveBoundedFetch(honorsCancellation: true)
     }
 
     @Test("a fetch that ignores cancellation is still abandoned at fetchTimeout")
     func uncooperativeFetchIsAbandoned() async throws {
-        let service = KillswitchService(
-            fetch: {
-                // A callback API with no cancellation hook: it answers when it
-                // answers, cancelled or not.
-                await withCheckedContinuation { continuation in
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-                        continuation.resume(returning: KillswitchConfig())
-                    }
-                }
-            },
-            loadCached: { nil },
-            saveCached: { _ in },
-            cacheLifetime: 3_600,
-            fetchTimeout: 0.2
-        )
-        let plugin = makePlugin(service: service)
-        var state = TestState()
-
-        let elapsed = try await drive(.forceFetch, through: plugin, state: &state)
-
-        // Far from both the 0.2 s bound and the 10 s answer, so a loaded CI
-        // runner can't make it flaky in either direction.
-        #expect(elapsed < .seconds(5), "the plugin waited for the fetch to finish on its own")
-        #expect(state.killswitch.isFetching == false)
+        try await driveBoundedFetch(honorsCancellation: false)
     }
 
     // MARK: - Cold launch
@@ -544,5 +517,53 @@ struct KillswitchPluginTests {
     func canOpenUpdateURL(verdict: KillswitchVerdict, expected: Bool) {
         let state = KillswitchState(verdict: verdict)
         #expect(state.canOpenUpdateURL == expected)
+    }
+}
+
+/// Models a callback that stays pending until cancellation or explicit cleanup.
+private final class PendingKillswitchFetch: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<KillswitchConfig, any Error>?
+        var cancelled = false
+        var released = false
+    }
+    private let state = Mutex(State())
+    private let honorsCancellation: Bool
+    private let registration = AsyncStream<Void>.makeStream()
+    var started: AsyncStream<Void> { registration.stream }
+    var wasCancelled: Bool { state.withLock { $0.cancelled } }
+
+    init(honorsCancellation: Bool) { self.honorsCancellation = honorsCancellation }
+
+    func fetch() async throws -> KillswitchConfig {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let immediate: Result<KillswitchConfig, any Error>? = state.withLock { state in
+                    if state.cancelled && honorsCancellation { return .failure(CancellationError()) }
+                    if state.released { return .success(KillswitchConfig()) }
+                    state.continuation = continuation
+                    return nil
+                }
+                if let immediate { continuation.resume(with: immediate) }
+                registration.continuation.yield()
+            }
+        } onCancel: {
+            let continuation = state.withLock { state in
+                state.cancelled = true
+                guard self.honorsCancellation else { return nil as CheckedContinuation<KillswitchConfig, any Error>? }
+                defer { state.continuation = nil }
+                return state.continuation
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    func release() {
+        let continuation = state.withLock { state in
+            state.released = true
+            defer { state.continuation = nil }
+            return state.continuation
+        }
+        continuation?.resume(returning: KillswitchConfig())
     }
 }

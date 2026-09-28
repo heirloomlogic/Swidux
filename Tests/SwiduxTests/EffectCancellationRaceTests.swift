@@ -510,6 +510,82 @@ extension EffectCancellationRaceTests {
         #expect(log.value == ["search cancelled"])
     }
 
+    @Test("parent cancellation cannot finish a nested scope before its report is claimed")
+    func parentCancellationCannotEraseNestedReport() async throws {
+        let context = SendableBox<EffectContext?>(nil)
+        let started = AsyncStream<Void>.makeStream()
+        let parked = AsyncStream<Void>.makeStream()
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { _ in
+                context.value = EffectContext.current
+                started.continuation.yield()
+                for await _ in parked.stream { break }
+            }
+        }
+        store.send(.noOp)
+        for await _ in started.stream { break }
+        let taskID = try #require(context.value?.taskID)
+        let parentToken = UUID()
+        let parentCancellation = ScopeCancellation()
+        let childCancellation = ScopeCancellation()
+        let armed = AsyncStream<Void>.makeStream()
+        let parentParked = AsyncStream<Void>.makeStream()
+        let parentWork = Task {
+            await withTaskCancellationHandler {
+                armed.continuation.yield()
+                for await _ in parentParked.stream { break }
+            } onCancel: {
+                // Cancellation can finish descendant work on another executor
+                // before the store reaches that descendant's registry entry.
+                childCancellation.finish()
+            }
+        }
+        for await _ in armed.stream { break }
+        parentCancellation.attach(parentWork)
+        store.register(
+            ActiveScope(id: AnyHashableSendable("screen"), cancellation: parentCancellation, onCancel: nil),
+            token: parentToken, in: taskID, cancelInFlight: false, sparing: [])
+        store.register(
+            ActiveScope(
+                id: AnyHashableSendable("search"), cancellation: childCancellation,
+                onCancel: { log.value.append("search cancelled") }, enclosingScopes: [parentToken]),
+            token: UUID(), in: taskID, cancelInFlight: false, sparing: [])
+
+        store.cancel(id: "screen")
+
+        #expect(log.value == ["search cancelled"])
+        #expect(childCancellation.isCancelled)
+        store.cancelEffects()
+        await parentWork.value
+    }
+
+    @Test("late task attachment waits until claimed cancellations are signalled")
+    func lateAttachmentWaitsForCancellationSignal() async throws {
+        let scope = ScopeCancellation()
+        let armed = AsyncStream<Void>.makeStream()
+        let parked = AsyncStream<Void>.makeStream()
+        let handlerRan = SendableBox(false)
+        let work = Task {
+            await withTaskCancellationHandler {
+                armed.continuation.yield()
+                for await _ in parked.stream { break }
+            } onCancel: {
+                handlerRan.value = true
+            }
+        }
+        for await _ in armed.stream { break }
+        let signal = try #require(scope.prepareCancellation())
+        #expect(scope.isCancelled, "sends must be suppressed as soon as cancellation is claimed")
+
+        scope.attach(work)
+        #expect(!handlerRan.value, "attachment must not finish descendants before their cancellation is claimed")
+        signal()
+
+        #expect(handlerRan.value)
+        await work.value
+    }
+
     @Test("onCancel is not dispatched for a scope whose operation already returned")
     func noReportAfterOperationReturned() async throws {
         let log = SendableBox<[String]>([])

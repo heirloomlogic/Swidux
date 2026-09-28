@@ -564,6 +564,7 @@ extension Store: EffectCancellationRegistrar {
         where predicate: (ActiveScope, UUID) -> Bool
     ) -> [@MainActor @Sendable () -> Void] {
         var reports: [@MainActor @Sendable () -> Void] = []
+        var cancellations: [@Sendable () -> Void] = []
         for handle in effectTasks.values {
             let matched = Set(handle.scopes.filter { predicate($0.value, $0.key) }.keys)
             guard !matched.isEmpty else { continue }
@@ -572,11 +573,14 @@ extension Store: EffectCancellationRegistrar {
                 .map(\.value)
                 .sorted { $0.enclosingScopes.count < $1.enclosingScopes.count }
             for scope in cancelled {
-                if scope.cancellation.cancel(), reporting, let report = scope.onCancel {
-                    reports.append(report)
-                }
+                guard let cancel = scope.cancellation.prepareCancellation() else { continue }
+                cancellations.append(cancel)
+                if reporting, let report = scope.onCancel { reports.append(report) }
             }
         }
+        // Task cancellation can synchronously invoke handlers and finish other
+        // scopes. Claim every affected report before allowing that work to run.
+        for cancel in cancellations { cancel() }
         return reports
     }
 
