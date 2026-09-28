@@ -184,6 +184,7 @@ public final class PersistenceCoordinator<State, Action> {
     private struct MergeAttempt {
         let generation: Int
         let revision: UInt64
+        let groupRevision: UInt64
     }
 
     private enum MergeConflict: Error {
@@ -193,7 +194,9 @@ public final class PersistenceCoordinator<State, Action> {
 
     private func check(_ attempt: MergeAttempt) throws(MergeConflict) {
         guard attempt.generation == handle.anchor.generation else { throw .replacedDatabase }
-        guard attempt.revision == mergeRevision else { throw .newerCommit }
+        guard attempt.revision == mergeRevision,
+            attempt.groupRevision == EntityPersistenceGate.forContainer(handle.db.modelContainer).groupRevision
+        else { throw .newerCommit }
     }
 
     /// Retry the entire operation, including its history scan and debt snapshot.
@@ -204,7 +207,9 @@ public final class PersistenceCoordinator<State, Action> {
     ) async {
         let generation = handle.anchor.generation
         while generation == handle.anchor.generation {
-            let attempt = MergeAttempt(generation: generation, revision: mergeRevision)
+            let attempt = MergeAttempt(
+                generation: generation, revision: mergeRevision,
+                groupRevision: EntityPersistenceGate.forContainer(handle.db.modelContainer).groupRevision)
             do {
                 try await operation(attempt)
                 return

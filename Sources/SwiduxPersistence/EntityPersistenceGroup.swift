@@ -104,6 +104,9 @@ public struct EntityPersistenceGroup: Sendable {
             for mutate in mutations { try mutate() }
             try SwiduxAssociationGraph.reconcile(models: models, in: context)
             try context.save()
+            if !identities.isEmpty {
+                EntityPersistenceGate.forContainer(context.container).recordGroupCommit()
+            }
         } catch {
             context.rollback()
             throw error
@@ -133,6 +136,20 @@ final class EntityPersistenceGate: @unchecked Sendable {
     nonisolated(unsafe) private static var registry: [ObjectIdentifier: Entry] = [:]
     let lock = NSRecursiveLock()
     var requiresGroups = false
+    let groupAuthor = "swidux.group.\(UUID().uuidString)"
+    private var revision: UInt64 = 0
+
+    var groupRevision: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return revision
+    }
+
+    func recordGroupCommit() {
+        lock.lock()
+        defer { lock.unlock() }
+        revision &+= 1
+    }
 
     static func forContainer(_ container: ModelContainer) -> EntityPersistenceGate {
         registryLock.lock()

@@ -239,12 +239,12 @@ public struct EntityAssociationCatalog<State> where State: Sendable {
         undoEdges.append { before, after in
             var operations: [EntityEditOperation<State>] = []
             for child in before[keyPath: association.children].values {
-                guard
-                    let operation = fieldUndo(
-                        before: before, after: after, store: association.children,
-                        id: child.id, field: association.owner, name: association.name)
-                else { continue }
-                operations.append(operation)
+                let operation = fieldUndo(
+                    before: before, after: after, store: association.children,
+                    id: child.id, field: association.owner, name: association.name)
+                let restoresChild = after[keyPath: association.children][child.id] == nil
+                guard operation != nil || restoresChild else { continue }
+                if let operation { operations.append(operation) }
                 if let parentID = child[keyPath: association.owner],
                     after[keyPath: association.parents][parentID] != nil
                 {
@@ -261,6 +261,25 @@ public struct EntityAssociationCatalog<State> where State: Sendable {
                                 ]
                             }, mutate: { _ in }))
                 }
+            }
+            for parent in after[keyPath: association.parents].values
+            where before[keyPath: association.parents][parent.id] == nil {
+                let expectedChildren = Set(association.children(of: parent.id, in: after).map(\.id))
+                operations.append(
+                    EntityEditOperation(
+                        key: "undo-dependents:\(association.name):\(parent.id)",
+                        validate: { state in
+                            let currentChildren = Set(association.children(of: parent.id, in: state).map(\.id))
+                            guard currentChildren != expectedChildren else { return [] }
+                            return [
+                                EntityEditConflict(
+                                    entity: EntityEditEntityIdentity(Parent.self, id: parent.id),
+                                    field: association.name, kind: .associationChanged,
+                                    original: EntityEditValue(expectedChildren),
+                                    current: EntityEditValue(currentChildren),
+                                    proposed: EntityEditValue(EntityEditDeletion()))
+                            ]
+                        }, mutate: { _ in }))
             }
             return operations
         }
@@ -548,6 +567,11 @@ extension EntityEditSession {
             }
             try registerDestructiveEntity(parentID, type: ObjectIdentifier(Parent.self), store: store)
             for association in registered {
+                if association.parentDeletion != .restrict,
+                    !association.linkedChildIDs(parentID, baseline).isEmpty
+                {
+                    markAffectedAssociationStore(association.childStore)
+                }
                 if association.parentDeletion == .delete {
                     for childID in association.linkedChildIDs(parentID, baseline) {
                         try registerDestructiveEntity(

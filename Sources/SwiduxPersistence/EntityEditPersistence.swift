@@ -101,6 +101,7 @@ public final class EntityEditPersistence<State: Sendable> {
         defer { gate.lock.unlock() }
         let context = ModelContext(container)
         context.autosaveEnabled = false
+        context.author = gate.groupAuthor
         try group.apply(in: context)
     }
 }

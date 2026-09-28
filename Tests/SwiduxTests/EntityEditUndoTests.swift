@@ -15,6 +15,7 @@ private struct UndoChild: Identifiable, Equatable, Sendable {
 private struct UndoState: Sendable {
     var parents: EntityStore<UndoParent>
     var children: EntityStore<UndoChild>
+    var grandchildren = EntityStore<UndoChild>()
 }
 
 @MainActor
@@ -136,5 +137,49 @@ struct EntityEditUndoTests {
         state.children.reconcile(with: EntityStore([replacement]), preserving: [], removingMissing: false)
         #expect(try !#require(session.undoReceipt).undo(in: &state).wasApplied)
         #expect(state.children[child.id]?.title == "Edited")
+    }
+}
+
+extension EntityEditUndoTests {
+    @Test("undo deleted child rejects a parent deleted after the original group")
+    func deletedChildMissingParent() throws {
+        let parent = UndoParent(id: UUID(), title: "Parent")
+        let child = UndoChild(id: UUID(), parentID: parent.id, title: "Child")
+        var state = UndoState(parents: EntityStore([parent]), children: EntityStore([child]))
+        let edge = try association()
+        var catalog = EntityAssociationCatalog<UndoState>()
+        try catalog.register(edge)
+        let deletion = EntityEditSession(state: state, associations: catalog)
+        try deletion.remove(child.id, from: parent.id, through: edge)
+        #expect(deletion.apply(to: &state).wasApplied)
+        let parentDeletion = EntityEditSession(state: state, associations: catalog)
+        try parentDeletion.deleteParent(parent.id, from: \UndoState.parents)
+        #expect(parentDeletion.apply(to: &state).wasApplied)
+        #expect(try !#require(deletion.undoReceipt).undo(in: &state).wasApplied)
+        #expect(state.children[child.id] == nil)
+    }
+
+    @Test("undo created parent rejects children attached after the original group")
+    func createdParentWithLaterChild() throws {
+        let root = UndoParent(id: UUID(), title: "Root")
+        let parent = UndoChild(id: UUID(), parentID: root.id, title: "Parent")
+        let child = UndoChild(id: UUID(), parentID: parent.id, title: "Child")
+        var state = UndoState(parents: EntityStore([root]), children: EntityStore())
+        let edge = try association()
+        let nested = try EntityAssociation(
+            name: "grandchildren", parents: \UndoState.children, children: \UndoState.grandchildren,
+            owner: \UndoChild.parentID, requiredness: .optional, removal: .delete, parentDeletion: .delete)
+        var catalog = EntityAssociationCatalog<UndoState>()
+        try catalog.register(edge)
+        try catalog.register(nested)
+        let creation = EntityEditSession(state: state, associations: catalog)
+        try creation.create(parent, for: root.id, through: edge)
+        #expect(creation.apply(to: &state).wasApplied)
+        let childCreation = EntityEditSession(state: state, associations: catalog)
+        try childCreation.create(child, for: parent.id, through: nested)
+        #expect(childCreation.apply(to: &state).wasApplied)
+        #expect(try !#require(creation.undoReceipt).undo(in: &state).wasApplied)
+        #expect(state.children[parent.id] == parent)
+        #expect(state.grandchildren[child.id] == child)
     }
 }

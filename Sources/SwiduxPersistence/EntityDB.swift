@@ -464,6 +464,7 @@ public actor EntityDB {
                 }
             }
 
+            try SwiduxAssociationGraph.reconcile(models: [M.self], in: modelContext)
             // Survivors are chosen from disk, not from state: a foreign write.
             modelContext.author = nil
             try modelContext.save()

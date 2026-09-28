@@ -173,6 +173,7 @@ public final class EntityEditSession<State> where State: Sendable {
     private var names: [EntityEditFieldNameIdentity: AnyKeyPath] = [:]
     private var operations: [EntityEditOperation<State>] = []
     private var operationKeys: Set<String> = []
+    private var affectedAssociationStores: Set<AnyKeyPath> = []
     private var destructiveEntities: Set<EntityEditRecordIdentity> = []
     private var associationChildren: Set<String> = []
     private var associationChildEntities: Set<EntityEditRecordIdentity> = []
@@ -291,6 +292,7 @@ public final class EntityEditSession<State> where State: Sendable {
         names.removeAll()
         operations.removeAll()
         operationKeys.removeAll()
+        affectedAssociationStores.removeAll()
         destructiveEntities.removeAll()
         associationChildren.removeAll()
         associationChildEntities.removeAll()
@@ -337,6 +339,7 @@ public final class EntityEditSession<State> where State: Sendable {
         Set(drafts.keys.map { $0.store.keyPath })
             .union(destructiveEntities.map { $0.store.keyPath })
             .union(associationChildEntities.map { $0.store.keyPath })
+            .union(affectedAssociationStores)
     }
 
     /// Validates against current canonical state and applies the complete group when conflict-free.
@@ -367,7 +370,12 @@ public final class EntityEditSession<State> where State: Sendable {
         operations.append(operation)
     }
 
+    func markAffectedAssociationStore(_ store: AnyKeyPath) {
+        affectedAssociationStores.insert(store)
+    }
+
     func performCommand(_ body: () throws -> Void) throws {
+        let savedAffectedStores = affectedAssociationStores
         let savedDependencies = readDependencies
         let savedOperations = operations
         let savedOperationKeys = operationKeys
@@ -383,6 +391,7 @@ public final class EntityEditSession<State> where State: Sendable {
         do {
             try body()
         } catch {
+            affectedAssociationStores = savedAffectedStores
             readDependencies = savedDependencies
             operations = savedOperations
             operationKeys = savedOperationKeys
