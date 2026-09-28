@@ -4,7 +4,7 @@ Keep editor drafts separate from current application state, then apply their cha
 
 ``EntityEditSession`` compares each edited field's original value, current canonical value, and proposed value. It applies the group only if every field and association operation passes validation. A rejected group leaves current state unchanged and retains the complete draft, including its nonconflicting edits.
 
-This is a synchronous, in-memory operation on the main actor. A successful `apply` does not mean the data reached disk. Normal persistence writers still flush entities separately. Generated SwiftData inverses, a durable grouped commit, migration, and cross-device convergence remain tracked in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
+This is a synchronous, in-memory operation on the main actor. A successful `apply` does not mean the data reached disk. Normal persistence writers still flush entities separately. Generated SwiftData inverses, a durable grouped commit, and cross-device convergence remain tracked in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
 
 State and entities must have value semantics. Use structs whose editable fields do not mutate shared reference storage. A session snapshot is an editor draft; application reads and association navigation use the current ``EntityStore`` collections.
 
