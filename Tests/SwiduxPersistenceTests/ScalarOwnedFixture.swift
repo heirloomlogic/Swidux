@@ -12,4 +12,5 @@ struct ScalarOwned: Identifiable, Equatable, Sendable {
 nonisolated struct ScalarAssociationState: Equatable, Sendable {
     var parents: EntityStore<Tag> = EntityStore()
     var children: EntityStore<ScalarOwned> = EntityStore()
+    var books: EntityStore<Book> = EntityStore()
 }

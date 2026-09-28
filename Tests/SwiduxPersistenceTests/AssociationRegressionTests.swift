@@ -298,4 +298,59 @@ struct AssociationRegressionTests {
         #expect(current.acknowledgedDeletionTransactions.isEmpty)
         #expect(snapshot.acknowledgedDeletionTransactions == [child.id: transaction])
     }
+    @Test("nonempty full fallback distinguishes own and foreign tombstones for guarded undo", arguments: [false, true])
+    func fullFallbackDeletionProvenance(foreignDeletion: Bool) async throws {
+        let container = try ContainerFactory.makeInMemoryContainer(models: [
+            TagModel.self, ScalarOwnedModel.self, BookModel.self, ChapterModel.self, ColophonModel.self,
+        ])
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = PersistenceCoordinator<ScalarAssociationState, Int>(
+            entities: [.entity(\.parents), .entity(\.children), .entity(\.books)], container: container,
+            historyRetention: nil, onDiagnostic: onDiagnostic)
+        let parent = Tag(id: UUID(), label: "Parent")
+        let child = ScalarOwned(id: UUID(), ownerID: parent.id)
+        let survivor = ScalarOwned(id: UUID(), ownerID: parent.id)
+        try await coordinator.database.upsert(parent, as: TagModel.self)
+        try await coordinator.database.upsert(child, as: ScalarOwnedModel.self)
+        try await coordinator.database.upsert(survivor, as: ScalarOwnedModel.self)
+        let seed = ModelContext(container)
+        seed.insert(try ChapterModel(from: Chapter(id: UUID(), heading: "stray")))
+        try seed.save()
+        let store = Store<ScalarAssociationState, Int>(initialState: ScalarAssociationState(), reducer: { _, _ in nil })
+        await coordinator.hydrate(into: store)
+        let edge = try EntityAssociation(
+            name: "children", parents: \ScalarAssociationState.parents, children: \ScalarAssociationState.children,
+            owner: \ScalarOwned.ownerID, requiredness: .optional, removal: .delete, parentDeletion: .delete)
+        var catalog = EntityAssociationCatalog<ScalarAssociationState>()
+        try catalog.register(edge)
+        let deletion = EntityEditSession(state: ScalarAssociationState(observer: store.observer), associations: catalog)
+        try deletion.remove(child.id, from: parent.id, through: edge)
+        let writer = try EntityEditPersistence<ScalarAssociationState>(
+            container: container, entities: [.entity(\.parents), .entity(\.children)])
+        store.mutate { state in
+            do { #expect(try writer.commit(deletion, to: &state).wasApplied) } catch { Issue.record(error) }
+        }
+        let peer = ModelContext(container)
+        if foreignDeletion {
+            let row = try ScalarOwnedModel(from: child)
+            peer.insert(row)
+            try peer.save()
+            peer.delete(row)
+            try peer.save()
+        }
+        for stray in try peer.fetch(FetchDescriptor<ChapterModel>()) { peer.delete(stray) }
+        try peer.save()
+        log.clear()
+        await coordinator.mergeChanges(into: store)
+        #expect(log.contains(.historyUnavailable))
+        #expect(store.children[survivor.id] == survivor)
+        #expect(store.children.remotelyRemovedIDs.contains(child.id) == foreignDeletion)
+        let receipt = try #require(deletion.undoReceipt)
+        store.mutate { state in
+            do { #expect(try writer.undo(receipt, in: &state).wasApplied == !foreignDeletion) } catch {
+                Issue.record(error)
+            }
+        }
+        #expect(store.children[child.id] == (foreignDeletion ? nil : child))
+    }
 }

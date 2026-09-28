@@ -411,13 +411,11 @@ public struct PersistedEntity<State> {
                             candidates: current.values.lazy.map(\.id), unreadable: loaded.undecodable,
                             context: context, observers: observers,
                             absenceRemoves: { infers || declared.contains($0) })
+                        var deleting = declared
                         if infers {
-                            current.reconcile(
-                                with: incoming, preserving: resolved.preserved, removingMissing: true)
-                        } else {
-                            current.reconcile(
-                                with: incoming, deleting: declared, preserving: resolved.preserved)
+                            deleting.formUnion(current.values.lazy.map(\.id).filter { !incoming.contains($0) })
                         }
+                        current.reconcile(with: incoming, deleting: deleting, preserving: resolved.preserved)
                         // Whatever is still here, absent from storage, and owned
                         // by nothing local is a question this read declined.
                         //
