@@ -72,6 +72,64 @@ struct EntityAssociationTests {
         #expect(state.children[child.id]?.primaryParentID == parent.id)
     }
 
+    @Test("a child created in the session remains editable")
+    func createdChildCanBeEdited() throws {
+        let parent = AssociationParent(id: UUID(), name: "Parent")
+        let child = AssociationChild(id: UUID(), name: "Original", primaryParentID: nil, secondaryParentID: nil)
+        var state = AssociationState(parents: EntityStore([parent]))
+        let association = try primaryAssociation(removal: .detach, parentDeletion: .restrict)
+        let session = try editSession(state: state, associations: [association])
+        try session.create(child, for: parent.id, through: association)
+        try session.edit(
+            AssociationChild.self, id: child.id, in: \AssociationState.children, field: \AssociationChild.name,
+            named: "name", to: "Draft")
+
+        #expect(session.draft(AssociationChild.self, id: child.id, in: \AssociationState.children)?.name == "Draft")
+        #expect(session.apply(to: &state).wasApplied)
+        #expect(state.children[child.id]?.name == "Draft")
+        #expect(state.children[child.id]?.primaryParentID == parent.id)
+    }
+
+    @Test("a rejected group retains edits to a child created in the session")
+    func rejectedGroupRetainsCreatedChildEdit() throws {
+        let parent = AssociationParent(id: UUID(), name: "Original parent")
+        let child = AssociationChild(id: UUID(), name: "Original child", primaryParentID: nil, secondaryParentID: nil)
+        var state = AssociationState(parents: EntityStore([parent]))
+        let association = try primaryAssociation(removal: .detach, parentDeletion: .restrict)
+        let session = try editSession(state: state, associations: [association])
+        try session.create(child, for: parent.id, through: association)
+        try session.edit(
+            AssociationChild.self, id: child.id, in: \AssociationState.children, field: \AssociationChild.name,
+            named: "name", to: "Draft child")
+        try session.edit(
+            AssociationParent.self, id: parent.id, in: \AssociationState.parents, field: \AssociationParent.name,
+            named: "name", to: "Draft parent")
+        state.parents.modify(parent.id) { $0.name = "Current parent" }
+
+        #expect(session.apply(to: &state).conflicts.map(\.field) == ["name"])
+        #expect(state.children[child.id] == nil)
+        #expect(
+            session.draft(AssociationChild.self, id: child.id, in: \AssociationState.children)?.name == "Draft child")
+    }
+
+    @Test("the same child cannot be created through two named associations")
+    func createdChildCannotOverlapNamedAssociations() throws {
+        let parent = AssociationParent(id: UUID(), name: "Parent")
+        let child = AssociationChild(id: UUID(), name: "Child", primaryParentID: nil, secondaryParentID: nil)
+        var state = AssociationState(parents: EntityStore([parent]))
+        let primary = try primaryAssociation(removal: .detach, parentDeletion: .restrict)
+        let secondary = try secondaryAssociation(removal: .detach, parentDeletion: .restrict)
+        let session = try editSession(state: state, associations: [primary, secondary])
+        try session.create(child, for: parent.id, through: primary)
+
+        #expect(throws: EntityEditDefinitionError.duplicateOperation) {
+            try session.create(child, for: parent.id, through: secondary)
+        }
+        #expect(session.apply(to: &state).wasApplied)
+        #expect(state.children[child.id]?.primaryParentID == parent.id)
+        #expect(state.children[child.id]?.secondaryParentID == nil)
+    }
+
     @Test(arguments: [EntityAssociationPolicy.detach, .delete, .restrict])
     func explicitRemovalPolicy(policy: EntityAssociationPolicy) throws {
         let parent = AssociationParent(id: UUID(), name: "Parent")
@@ -348,6 +406,118 @@ struct EntityAssociationTests {
         #expect(throws: EntityAssociationConfigurationError.duplicateAssociationOwner) {
             try catalog.register(duplicateOwner)
         }
+    }
+
+    @Test("commands reject descriptors with unregistered policies")
+    func descriptorPoliciesParticipateInRegistration() throws {
+        let parent = AssociationParent(id: UUID(), name: "Parent")
+        let destination = AssociationParent(id: UUID(), name: "Destination")
+        let child = AssociationChild(id: UUID(), name: "Child", primaryParentID: parent.id, secondaryParentID: nil)
+        let state = AssociationState(parents: EntityStore([parent, destination]), children: EntityStore([child]))
+        let registered = try primaryAssociation(requiredness: .required, removal: .restrict, parentDeletion: .restrict)
+        let session = try editSession(state: state, associations: [registered])
+        let optionalDetach = try primaryAssociation(
+            requiredness: .optional, removal: .detach, parentDeletion: .restrict)
+        let deleteOnRemoval = try primaryAssociation(
+            requiredness: .required, removal: .delete, parentDeletion: .restrict)
+        let deleteOnParentDeletion = try primaryAssociation(
+            requiredness: .required, removal: .restrict, parentDeletion: .delete)
+
+        #expect(throws: EntityEditDefinitionError.unregisteredAssociation) {
+            try session.remove(child.id, from: parent.id, through: optionalDetach)
+        }
+        #expect(throws: EntityEditDefinitionError.unregisteredAssociation) {
+            try session.remove(child.id, from: parent.id, through: deleteOnRemoval)
+        }
+        #expect(throws: EntityEditDefinitionError.unregisteredAssociation) {
+            try session.reparent(child.id, from: parent.id, to: destination.id, through: deleteOnParentDeletion)
+        }
+    }
+
+    @Test("destructive parent deletion and another named child command cannot overlap")
+    func destructiveCrossAssociationOverlapRejectsInEitherOrder() throws {
+        let first = AssociationParent(id: UUID(), name: "First")
+        let second = AssociationParent(id: UUID(), name: "Second")
+        let destination = AssociationParent(id: UUID(), name: "Destination")
+        let child = AssociationChild(
+            id: UUID(), name: "Child", primaryParentID: first.id, secondaryParentID: second.id)
+        let initial = AssociationState(
+            parents: EntityStore([first, second, destination]), children: EntityStore([child]))
+        let primary = try primaryAssociation(removal: .delete, parentDeletion: .delete)
+        let secondary = try secondaryAssociation(removal: .detach, parentDeletion: .detach)
+
+        var reparentState = initial
+        let reparentFirst = try editSession(state: initial, associations: [primary, secondary])
+        try reparentFirst.reparent(child.id, from: second.id, to: destination.id, through: secondary)
+        #expect(throws: EntityEditDefinitionError.duplicateOperation) {
+            try reparentFirst.deleteParent(first.id, from: \AssociationState.parents)
+        }
+        #expect(reparentFirst.apply(to: &reparentState).wasApplied)
+        #expect(reparentState.children[child.id]?.secondaryParentID == destination.id)
+
+        var deletionState = initial
+        let deletionFirst = try editSession(state: initial, associations: [primary, secondary])
+        try deletionFirst.deleteParent(first.id, from: \AssociationState.parents)
+        #expect(throws: EntityEditDefinitionError.duplicateOperation) {
+            try deletionFirst.reparent(child.id, from: second.id, to: destination.id, through: secondary)
+        }
+        #expect(deletionFirst.apply(to: &deletionState).wasApplied)
+        #expect(deletionState.parents[first.id] == nil)
+        #expect(deletionState.children[child.id] == nil)
+    }
+
+    @Test("delete-on-remove and another named child command cannot overlap")
+    func destructiveRemovalOverlapRejectsInEitherOrder() throws {
+        let first = AssociationParent(id: UUID(), name: "First")
+        let second = AssociationParent(id: UUID(), name: "Second")
+        let destination = AssociationParent(id: UUID(), name: "Destination")
+        let child = AssociationChild(
+            id: UUID(), name: "Child", primaryParentID: first.id, secondaryParentID: second.id)
+        let initial = AssociationState(
+            parents: EntityStore([first, second, destination]), children: EntityStore([child]))
+        let primary = try primaryAssociation(removal: .delete, parentDeletion: .restrict)
+        let secondary = try secondaryAssociation(removal: .detach, parentDeletion: .restrict)
+
+        var reparentState = initial
+        let reparentFirst = try editSession(state: initial, associations: [primary, secondary])
+        try reparentFirst.reparent(child.id, from: second.id, to: destination.id, through: secondary)
+        #expect(throws: EntityEditDefinitionError.duplicateOperation) {
+            try reparentFirst.remove(child.id, from: first.id, through: primary)
+        }
+        #expect(reparentFirst.apply(to: &reparentState).wasApplied)
+        #expect(reparentState.children[child.id]?.secondaryParentID == destination.id)
+
+        var deletionState = initial
+        let deletionFirst = try editSession(state: initial, associations: [primary, secondary])
+        try deletionFirst.remove(child.id, from: first.id, through: primary)
+        #expect(throws: EntityEditDefinitionError.duplicateOperation) {
+            try deletionFirst.reparent(child.id, from: second.id, to: destination.id, through: secondary)
+        }
+        #expect(deletionFirst.apply(to: &deletionState).wasApplied)
+        #expect(deletionState.children[child.id] == nil)
+    }
+
+    @Test("non-destructive commands through separate named associations can share a child")
+    func independentNamedAssociationCommandsApplyTogether() throws {
+        let first = AssociationParent(id: UUID(), name: "First")
+        let second = AssociationParent(id: UUID(), name: "Second")
+        let primaryDestination = AssociationParent(id: UUID(), name: "Primary destination")
+        let secondaryDestination = AssociationParent(id: UUID(), name: "Secondary destination")
+        let child = AssociationChild(
+            id: UUID(), name: "Child", primaryParentID: first.id, secondaryParentID: second.id)
+        var state = AssociationState(
+            parents: EntityStore([first, second, primaryDestination, secondaryDestination]),
+            children: EntityStore([child]))
+        let primary = try primaryAssociation(removal: .detach, parentDeletion: .restrict)
+        let secondary = try secondaryAssociation(removal: .detach, parentDeletion: .restrict)
+        let session = try editSession(state: state, associations: [primary, secondary])
+
+        try session.reparent(child.id, from: first.id, to: primaryDestination.id, through: primary)
+        try session.reparent(child.id, from: second.id, to: secondaryDestination.id, through: secondary)
+
+        #expect(session.apply(to: &state).wasApplied)
+        #expect(state.children[child.id]?.primaryParentID == primaryDestination.id)
+        #expect(state.children[child.id]?.secondaryParentID == secondaryDestination.id)
     }
 
     @Test("generic field edits cannot bypass a registered association owner")

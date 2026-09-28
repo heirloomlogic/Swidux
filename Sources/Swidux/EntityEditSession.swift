@@ -117,13 +117,13 @@ private struct EntityEditFieldNameIdentity: Hashable {
 }
 
 @MainActor
-private protocol AnyEntityEditDraftBox: AnyObject {
+protocol AnyEntityEditDraftBox: AnyObject {
     func snapshot() -> Any
     func restore(_ snapshot: Any)
 }
 
 @MainActor
-private final class EntityEditDraftBox<Entity>: AnyEntityEditDraftBox
+final class EntityEditDraftBox<Entity>: AnyEntityEditDraftBox
 where Entity: Identifiable & Equatable & Sendable, Entity.ID == UUID {
     let original: Entity
     var draft: Entity
@@ -170,9 +170,10 @@ public final class EntityEditSession<State> where State: Sendable {
     private var operationKeys: Set<String> = []
     private var destructiveEntities: Set<EntityEditRecordIdentity> = []
     private var associationChildren: Set<String> = []
+    private var associationChildEntities: Set<EntityEditRecordIdentity> = []
     private var referencedAssociationParents: Set<String> = []
     private var deletedAssociationParents: Set<String> = []
-    private var createdDrafts: [EntityEditRecordIdentity: Any] = [:]
+    private var createdDrafts: Set<EntityEditRecordIdentity> = []
     private var deletedDrafts: Set<EntityEditRecordIdentity> = []
 
     /// Captures a value-semantic baseline and the complete association catalog for this session.
@@ -196,6 +197,7 @@ public final class EntityEditSession<State> where State: Sendable {
 
         let storeIdentity = EntityEditStoreIdentity(entityType: ObjectIdentifier(Entity.self), keyPath: store)
         let recordIdentity = EntityEditRecordIdentity(store: storeIdentity, id: id)
+        let isCreated = createdDrafts.contains(recordIdentity)
         guard !destructiveEntities.contains(recordIdentity) else { throw EntityEditDefinitionError.duplicateOperation }
         let fieldIdentity = EntityEditFieldIdentity(entity: recordIdentity, keyPath: field)
         let nameIdentity = EntityEditFieldNameIdentity(entity: recordIdentity, name: name)
@@ -217,9 +219,6 @@ public final class EntityEditSession<State> where State: Sendable {
                 throw EntityEditDefinitionError.missingEntity
             }
             box = EntityEditDraftBox(original)
-            if let associationDraft = createdDrafts[recordIdentity] as? Entity {
-                box.draft = associationDraft
-            }
             drafts[recordIdentity] = box
         }
         let previous = box.draft[keyPath: field]
@@ -231,6 +230,11 @@ public final class EntityEditSession<State> where State: Sendable {
         names[nameIdentity] = field
 
         guard fields[fieldIdentity] == nil else { return }
+        if isCreated {
+            fields[fieldIdentity] = EntityEditFieldOperation(
+                field: name, validate: { _ in nil }, mutate: { _ in })
+            return
+        }
         let original = box.original[keyPath: field]
         let entityIdentity = EntityEditEntityIdentity(Entity.self, id: id)
         fields[fieldIdentity] = EntityEditFieldOperation(
@@ -267,7 +271,7 @@ public final class EntityEditSession<State> where State: Sendable {
         let identity = EntityEditRecordIdentity(
             store: EntityEditStoreIdentity(entityType: ObjectIdentifier(Entity.self), keyPath: store), id: id)
         guard !deletedDrafts.contains(identity) else { return nil }
-        return (drafts[identity] as? EntityEditDraftBox<Entity>)?.draft ?? createdDrafts[identity] as? Entity
+        return (drafts[identity] as? EntityEditDraftBox<Entity>)?.draft
     }
 
     /// Discards the draft and ends the session.
@@ -281,6 +285,7 @@ public final class EntityEditSession<State> where State: Sendable {
         operationKeys.removeAll()
         destructiveEntities.removeAll()
         associationChildren.removeAll()
+        associationChildEntities.removeAll()
         referencedAssociationParents.removeAll()
         deletedAssociationParents.removeAll()
         createdDrafts.removeAll()
@@ -341,10 +346,12 @@ public final class EntityEditSession<State> where State: Sendable {
         let savedOperationKeys = operationKeys
         let savedDestructiveEntities = destructiveEntities
         let savedAssociationChildren = associationChildren
+        let savedAssociationChildEntities = associationChildEntities
         let savedReferencedParents = referencedAssociationParents
         let savedDeletedParents = deletedAssociationParents
         let savedCreatedDrafts = createdDrafts
         let savedDeletedDrafts = deletedDrafts
+        let savedDrafts = drafts
         let savedDraftValues = drafts.compactMapValues { ($0 as? AnyEntityEditDraftBox)?.snapshot() }
         do {
             try body()
@@ -353,6 +360,7 @@ public final class EntityEditSession<State> where State: Sendable {
             operationKeys = savedOperationKeys
             destructiveEntities = savedDestructiveEntities
             associationChildren = savedAssociationChildren
+            associationChildEntities = savedAssociationChildEntities
             referencedAssociationParents = savedReferencedParents
             deletedAssociationParents = savedDeletedParents
             createdDrafts = savedCreatedDrafts
@@ -360,6 +368,7 @@ public final class EntityEditSession<State> where State: Sendable {
             for (identity, value) in savedDraftValues {
                 (drafts[identity] as? AnyEntityEditDraftBox)?.restore(value)
             }
+            drafts = savedDrafts
             throw error
         }
     }
@@ -383,11 +392,17 @@ public final class EntityEditSession<State> where State: Sendable {
 
     func registerAssociationChild<Child>(
         _ childID: UUID, store: WritableKeyPath<State, EntityStore<Child>>, association: EntityAssociationIdentity,
-        deletes: Bool
+        creates: Bool = false, deletes: Bool
     ) throws where Child: Identifiable & Equatable & Sendable, Child.ID == UUID {
         let command = "\(association):\(childID)"
         let record = EntityEditRecordIdentity(
             store: EntityEditStoreIdentity(entityType: ObjectIdentifier(Child.self), keyPath: store), id: childID)
+        guard !destructiveEntities.contains(record) else { throw EntityEditDefinitionError.duplicateOperation }
+        if creates || deletes {
+            guard !associationChildEntities.contains(record) else {
+                throw EntityEditDefinitionError.duplicateOperation
+            }
+        }
         if deletes {
             guard !associations.hasAssociations(parentStore: store) else {
                 throw EntityEditDefinitionError.nestedAssociationDeletionUnsupported
@@ -397,6 +412,7 @@ public final class EntityEditSession<State> where State: Sendable {
             }
         }
         guard associationChildren.insert(command).inserted else { throw EntityEditDefinitionError.duplicateOperation }
+        associationChildEntities.insert(record)
         if deletes { destructiveEntities.insert(record) }
     }
 
@@ -414,7 +430,7 @@ public final class EntityEditSession<State> where State: Sendable {
 
     func registerDestructiveEntity(_ id: UUID, type: ObjectIdentifier, store: AnyKeyPath) throws {
         let record = EntityEditRecordIdentity(store: EntityEditStoreIdentity(entityType: type, keyPath: store), id: id)
-        guard !fields.keys.contains(where: { $0.entity == record }) else {
+        guard !associationChildEntities.contains(record), !fields.keys.contains(where: { $0.entity == record }) else {
             throw EntityEditDefinitionError.duplicateOperation
         }
         destructiveEntities.insert(record)
@@ -427,21 +443,26 @@ public final class EntityEditSession<State> where State: Sendable {
             store: EntityEditStoreIdentity(entityType: ObjectIdentifier(Child.self), keyPath: store), id: childID)
         if let box = drafts[record] as? EntityEditDraftBox<Child> {
             update(&box.draft)
-        } else if var child = createdDrafts[record] as? Child ?? baseline[keyPath: store][childID] {
-            update(&child)
-            createdDrafts[record] = child
+        } else if let child = baseline[keyPath: store][childID] {
+            let box = EntityEditDraftBox(child)
+            update(&box.draft)
+            drafts[record] = box
         } else {
             throw EntityEditDefinitionError.missingEntity
         }
         deletedDrafts.remove(record)
     }
 
-    func setCreatedDraft<Child>(_ child: Child, store: WritableKeyPath<State, EntityStore<Child>>)
-    where Child: Identifiable & Equatable & Sendable, Child.ID == UUID {
+    func setCreatedDraft<Child>(
+        _ child: Child, store: WritableKeyPath<State, EntityStore<Child>>
+    ) -> EntityEditDraftBox<Child> where Child: Identifiable & Equatable & Sendable, Child.ID == UUID {
         let record = EntityEditRecordIdentity(
             store: EntityEditStoreIdentity(entityType: ObjectIdentifier(Child.self), keyPath: store), id: child.id)
-        createdDrafts[record] = child
+        let box = EntityEditDraftBox(child)
+        drafts[record] = box
+        createdDrafts.insert(record)
         deletedDrafts.remove(record)
+        return box
     }
 
     func markDeletedDraft<Child>(_ childID: UUID, store: WritableKeyPath<State, EntityStore<Child>>)

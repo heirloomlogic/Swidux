@@ -1,14 +1,14 @@
 import Foundation
 
 /// An explicit action for removing an ownership edge.
-public enum EntityAssociationPolicy: Sendable, Equatable, CaseIterable {
+public enum EntityAssociationPolicy: Sendable, Equatable, Hashable, CaseIterable {
     case detach
     case delete
     case restrict
 }
 
 /// Whether a child may exist without this association.
-public enum EntityAssociationRequiredness: Sendable, Equatable {
+public enum EntityAssociationRequiredness: Sendable, Equatable, Hashable {
     case optional
     case required
 }
@@ -28,6 +28,9 @@ struct EntityAssociationIdentity: Hashable, Sendable {
     let parents: ObjectIdentifier
     let children: ObjectIdentifier
     let owner: ObjectIdentifier
+    let requiredness: EntityAssociationRequiredness
+    let removal: EntityAssociationPolicy
+    let parentDeletion: EntityAssociationPolicy
 }
 
 /// A named local ownership edge between canonical parent and child entity stores.
@@ -93,7 +96,8 @@ where
     var identity: EntityAssociationIdentity {
         EntityAssociationIdentity(
             name: name, parentType: ObjectIdentifier(Parent.self), childType: ObjectIdentifier(Child.self),
-            parents: ObjectIdentifier(parents), children: ObjectIdentifier(children), owner: ObjectIdentifier(owner))
+            parents: ObjectIdentifier(parents), children: ObjectIdentifier(children), owner: ObjectIdentifier(owner),
+            requiredness: requiredness, removal: removal, parentDeletion: parentDeletion)
     }
 
     @MainActor
@@ -269,11 +273,11 @@ extension EntityEditSession {
                 throw EntityEditDefinitionError.entityAlreadyExists
             }
             try registerAssociationChild(
-                child.id, store: association.children, association: association.identity, deletes: false)
+                child.id, store: association.children, association: association.identity, creates: true, deletes: false)
             try registerAssociationParent(parentID, association: association.identity)
             var ownedChild = child
             ownedChild[keyPath: association.owner] = parentID
-            setCreatedDraft(ownedChild, store: association.children)
+            let createdDraft = setCreatedDraft(ownedChild, store: association.children)
             let childIdentity = EntityEditEntityIdentity(Child.self, id: child.id)
             try append(
                 EntityEditOperation(
@@ -291,11 +295,12 @@ extension EntityEditSession {
                         return [
                             EntityEditConflict(
                                 entity: childIdentity, field: association.name, kind: .associationChanged,
-                                original: nil, current: EntityEditValue(current), proposed: EntityEditValue(ownedChild))
+                                original: nil, current: EntityEditValue(current),
+                                proposed: EntityEditValue(createdDraft.draft))
                         ]
                     },
                     mutate: { state in
-                        state[keyPath: association.children][child.id] = ownedChild
+                        state[keyPath: association.children][child.id] = createdDraft.draft
                     }))
         }
     }
