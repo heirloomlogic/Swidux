@@ -61,6 +61,7 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 - <doc:PluginAnalyticsReference>
 - <doc:PluginFeatureFlagsReference>
 - <doc:EntityStoreGuide>
+- <doc:EntityEditingGuide>
 - <doc:PersistenceMiddlewareGuide>
 - <doc:KeyValueStoreGuide>
 - <doc:UndoRedo>
@@ -89,6 +90,8 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 ### Data
 
 - ``EntityStore``
+- ``EntityEditSession``
+- ``EntityAssociation``
 - ``ChangeSet``
 
 ### Persistence & Undo
