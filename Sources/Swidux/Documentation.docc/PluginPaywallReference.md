@@ -26,7 +26,7 @@ For production RevenueCat integrations, the [`SwiduxRevenueCatPaywall`](https://
 
 - `RevenueCatPaywallService` — a `PaywallService` conformer that bridges RevenueCat's `CustomerInfo` stream and `restorePurchases()` API.
 - `MockRevenueCatPaywallService` — a RevenueCat-flavored mock for previews.
-- `SwiduxRevenueCatPaywallUI` — a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin.
+- `SwiduxRevenueCatPaywallUI` — a SwiftUI sheet built on RevenueCatUI. It dispatches only presentation actions (`.dismiss`, `.dismissCustomerCenter`); purchase results reach the plugin through `RevenueCatPaywallService.customerInfoStream()`, so start `.observeCustomerInfo`.
 
 Full API documentation lives in the package's own [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/).
 
@@ -43,7 +43,18 @@ let resilient = ResilientPaywallService(
 )
 ```
 
-Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: successful live snapshots overwrite the cache unless a newer successful read or live stream update has superseded them. Starting or failing an independent read does not discard another caller's successful response. Cached values preserve their original freshness window. See the type's own documentation for the staleness policy and threat model.
+Feed the wrapped instance to both `PaywallPlugin(..., service:)` and any app-side entitlement reader. The live provider stays authoritative: successful live snapshots overwrite the cache unless a newer successful read, restore, or live stream update has superseded them. A restore is ordered by when it completes, not when it started, so a read that began during a restore cannot discard the restored entitlement. A base-stream event persisted after the restore began does outrank it: the restore then returns the cached (streamed) entitlement instead of writing its own. Starting or failing an independent read does not discard another caller's successful response. Cached values preserve their original freshness window. See the type's own documentation for the staleness policy and threat model.
+
+The cache holds a single entitlement and is not scoped to an account. If your app signs users in and out, call `clearCache()` when the user signs out or switches accounts; otherwise an offline launch hands the previous user's entitlement to the next one. Clearing also discards any read or restore still in flight, so a result for the previous account cannot write itself back. Stream events carry no account, and one produced before the sign-out can arrive after it, so the stream keeps updating `PaywallState` but stops writing the cache until a refresh or restore begun after the clear succeeds.
+
+Clearing the cache does not touch `PaywallState`, and a refresh that fails (the likely outcome offline) leaves `isPro` as it was. So reset the gate explicitly, then refresh:
+
+```swift
+try? await RevenueCatPaywall.logOut()   // or your backend's sign-out
+resilient.clearCache()
+store.send(.paywall(.customerInfoUpdated(EntitlementSnapshot())))   // free until the new account is read
+store.send(.paywall(.refreshCustomerInfo))
+```
 
 ## Types
 
@@ -113,7 +124,7 @@ public enum PaywallAction: Sendable {
 }
 ```
 
-The plugin emits `refreshCancelled(requestID:)` when a refresh or restore task is cancelled. It clears that request's loading state without changing entitlements or reporting an error, even if the provider remains suspended. The reducer checks the request ID so delayed cancellation cannot finish a newer request. App code starts refreshes and restores; it does not construct cancellation-completion actions.
+The plugin emits `refreshCancelled(requestID:)` when a refresh or restore task is cancelled, and when a restore succeeds after a live stream update has already outranked it. It clears that request's loading state without changing entitlements or reporting an error, even if the provider remains suspended. The reducer checks the request ID so delayed cancellation cannot finish a newer request. App code starts refreshes and restores; it does not construct cancellation-completion actions.
 
 ### `EntitlementSnapshot`
 
@@ -246,11 +257,13 @@ Sets `isPro` and `hasPermanentLicense` from the snapshot, clears `isLoading`, an
 
 ### `refreshFailed(String)`
 
-Sets `error` to the given message and clears `isLoading`. Returns no effect.
+Sets `error` to the given message and clears `isLoading` (unless another refresh or restore is still in flight). Returns no effect.
 
 ### `restorePurchases`
 
 Sets `isLoading = true`. Returns a one-shot effect that calls `PaywallService.restorePurchases()` and dispatches `.customerInfoUpdated` on success or `.refreshFailed` on error.
+
+A restore is a write, so its result is the newest entitlement when it completes. Refreshes are ordered by when they start, and a newer result supersedes an older refresh; a refresh never supersedes a restore. If the user closes the sheet mid-restore (which dispatches `.refreshCustomerInfo`), the refresh may land first, and the restore's snapshot or error still lands when the restore completes. The exception is a live `customerInfoStream()` update delivered after the restore began: the provider's feed is at least as new as the restore (and a feed that reflects restores, as RevenueCat's does, re-emits the restored state), so the restore's snapshot is dropped. Its error, if it fails, still lands. `isLoading` stays `true` while the restore runs, until it finishes or a newer snapshot lands: a provider can leave a restore suspended indefinitely, so a later refresh or stream update clears the spinner rather than wait on it.
 
 ### `presentCustomerCenter` / `dismissCustomerCenter`
 

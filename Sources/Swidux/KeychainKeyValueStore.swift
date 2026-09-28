@@ -24,17 +24,17 @@ import os
 /// Keychain again at steady state.
 ///
 /// ```swift
-/// extension KVKey where Value == String {
-///     static let deviceID = KVKey<String>("device-id")
-/// }
-///
 /// let kv = KeychainKeyValueStore(service: "com.example.myapp")
-/// let deviceID = kv.value(.deviceID) ?? {
-///     let new = UUID().uuidString
-///     kv.setValue(new, for: .deviceID)
-///     return new
-/// }()
+/// let deviceID = kv.deviceIdentity()   // reads, or mints-and-persists, ``KVKey/deviceID``
 /// ```
+///
+/// Prefer ``KeyValueStore/deviceIdentity(key:)`` to a hand-rolled
+/// read-or-mint under a key of your own: it uses the fixed key
+/// ``KVKey/deviceID``, and on this store it distinguishes "no identity yet"
+/// from "couldn't read the identity right now", so a locked keychain never
+/// mints a second identity over an existing one. An app that minted under its
+/// own key and later switches to the helper silently gives every existing user
+/// a new identity, because the two keys never collide.
 ///
 /// ## Accessibility
 ///
@@ -122,13 +122,15 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     /// Controls when stored items are readable. See Apple's
     /// `kSecAttrAccessible` documentation for the full semantics.
     public enum Accessibility: Sendable {
-        /// Accessible after first unlock. Migrates with a device backup and
-        /// can sync via iCloud Keychain if the app enables it.
+        /// Accessible after first unlock. Migrates via an encrypted device
+        /// backup. This store never sets `kSecAttrSynchronizable`, so items
+        /// never sync through iCloud Keychain regardless of accessibility.
         case afterFirstUnlock
         /// Accessible after first unlock. **This device only** — excluded
-        /// from iCloud Keychain and device-to-device migration. Default.
+        /// from encrypted-backup migration too. Default.
         case afterFirstUnlockThisDeviceOnly
-        /// Accessible only while the device is unlocked. iCloud-syncable.
+        /// Accessible only while the device is unlocked. Migrates via an
+        /// encrypted device backup; see ``afterFirstUnlock`` on iCloud sync.
         case whenUnlocked
         /// Accessible only while the device is unlocked. This device only.
         case whenUnlockedThisDeviceOnly
@@ -194,6 +196,42 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
     /// Both missing keys (`errSecItemNotFound`) and decode failures return
     /// `nil`; only decode failures and unexpected Keychain errors are logged.
     public func value<Value>(_ key: KVKey<Value>) -> Value? {
+        switch lookup(key) {
+        case .found(let value): return value
+        case .missing, .unreadable, .undecodable: return nil
+        }
+    }
+
+    /// The outcome of a Keychain lookup, distinguishing "no item" from the two
+    /// different ways an item can fail to read — the distinction
+    /// ``KeyValueStore/deviceIdentity(key:)`` needs so a read failure never
+    /// mints over an identity that's still there, and so a permanently
+    /// undecodable item doesn't masquerade as a transient one forever.
+    /// ``value(_:)`` collapses `.missing`, `.unreadable`, and `.undecodable`
+    /// to `nil`; use `lookup(_:)` where the distinction matters.
+    enum LookupResult<Value> {
+        /// Found and decoded successfully.
+        case found(Value)
+        /// No item exists for this key (`errSecItemNotFound`).
+        case missing
+        /// The item itself couldn't be read: an environment condition
+        /// (locked keychain, missing entitlement) that a later read, once
+        /// the environment changes, can resolve. Callers must not treat this
+        /// like `.missing` and write over it.
+        case unreadable(OSStatus)
+        /// The item was read successfully but its bytes don't decode as
+        /// `Value`. Unlike `.unreadable`, re-reading returns the same bytes
+        /// every time — this doesn't self-resolve. Most commonly a payload
+        /// written by something other than this type (an earlier hand-rolled
+        /// wrapper, a different app version). Callers must not treat this
+        /// like `.missing` either: the item is still there, just not in the
+        /// shape expected.
+        case undecodable(Data)
+    }
+
+    /// Reads `key`, distinguishing `.missing` from the two read-failure
+    /// cases. See ``LookupResult``.
+    func lookup<Value>(_ key: KVKey<Value>) -> LookupResult<Value> {
         var query = baseQuery(account: key.name)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -202,24 +240,34 @@ public struct KeychainKeyValueStore: KeyValueStore, @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
         case errSecSuccess:
-            guard let data = result as? Data else { return nil }
+            guard let data = result as? Data else { return .unreadable(status) }
             do {
-                return try decoder.decode(Value.self, from: data)
+                return .found(try decoder.decode(Value.self, from: data))
             } catch {
                 logger.error(
                     "Decode failed for key '\(key.name, privacy: .public)': \(error.localizedDescription, privacy: .public)"
                 )
-                return nil
+                return .undecodable(data)
             }
         case errSecItemNotFound:
-            return nil
+            return .missing
         default:
             logger.error(
                 "Keychain read failed for key '\(key.name, privacy: .public)': OSStatus \(status)"
             )
-            return nil
+            return .unreadable(status)
         }
     }
+
+    /// Identifies this store's backing Keychain location — `(service,
+    /// accessGroup)` — independent of any particular struct instance.
+    ///
+    /// `KeychainKeyValueStore` is a value type, so a caller may construct a
+    /// fresh instance per call while still meaning "the same store." Process-
+    /// wide state that must agree across such instances (see the session
+    /// identity cache in `keychainDeviceIdentity`) keys on this instead of
+    /// `self`.
+    var storeIdentity: String { "\(service)|\(accessGroup ?? "")" }
 
     /// Stores `value`. Passing `nil` removes the key.
     ///

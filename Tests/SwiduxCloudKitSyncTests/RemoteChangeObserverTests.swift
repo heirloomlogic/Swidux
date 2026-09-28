@@ -159,6 +159,76 @@ struct RemoteChangeObserverTests {
     }
 
     @MainActor
+    @Test("an observer dropped while a merge is armed deallocates, and the merge never runs")
+    func droppedWhileArmedDeallocates() async throws {
+        let center = NotificationCenter()
+        let recorder = Recorder()
+        weak var leaked: RemoteChangeObserver?
+
+        do {
+            // Long enough that the debounce is still sleeping when the owner lets go.
+            let observer = RemoteChangeObserver(
+                debounce: .seconds(1), notificationCenter: center
+            ) { change in
+                recorder.changes.append(change)
+            }
+            observer.start()
+            post(to: center, storeURL: Self.ours)
+            try await poll(until: { observer.hasScheduledMerge })
+            #expect(observer.hasScheduledMerge)
+            // Arming only enqueues the debounce task. Yield once so it gets to
+            // run up to its sleep — the main actor is FIFO, so it goes first —
+            // otherwise the observer is dropped before the task has captured it.
+            await Task.yield()
+            leaked = observer
+        }
+
+        // The pending debounce must not be what keeps the observer alive. If it
+        // were, the still-registered block would re-arm it on the next
+        // notification, and a dropped observer would keep merging alongside its
+        // replacement for as long as notifications kept arriving.
+        #expect(leaked == nil, "an armed debounce must not retain the observer")
+        post(to: center, storeURL: Self.ours)
+        try await poll(until: { !recorder.changes.isEmpty }, timeout: .milliseconds(1200))
+        #expect(recorder.changes.isEmpty, "a dropped observer must not deliver its burst")
+    }
+
+    @MainActor
+    @Test("a steady stream of notifications still merges once the max wait elapses")
+    func maxWaitBoundsTheDebounce() async throws {
+        // The debounce alone would never fire here: every post lands well inside
+        // it. A CloudKit import saving in batches, or a user editing steadily,
+        // looks exactly like this, and remote edits would wait for it to stop.
+        let center = NotificationCenter()
+        let recorder = Recorder()
+        let observer = RemoteChangeObserver(
+            debounce: .seconds(1),
+            maxWait: .milliseconds(200),
+            notificationCenter: center
+        ) { change in
+            recorder.changes.append(change)
+        }
+        observer.start()
+        defer { observer.stop() }
+
+        var posted = 0
+        let clock = ContinuousClock()
+        let started = clock.now
+        while recorder.changes.isEmpty, clock.now - started < .seconds(8) {
+            post(to: center, storeURL: Self.ours)
+            posted += 1
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        let change = try #require(recorder.changes.first, "the burst never fired while notifications kept arriving")
+        // It fired mid-stream, not because the stream ran out: the loop only
+        // stops posting once a change arrives. The bound is loose for CI.
+        #expect(clock.now - started < .seconds(6))
+        #expect(change.notificationCount >= 1)
+        #expect(change.notificationCount <= posted)
+    }
+
+    @MainActor
     @Test("a notification from an unidentifiable store still triggers a merge")
     func unidentifiedStoreStillMerges() async throws {
         let (observer, center, recorder) = makeObserver(owning: [Self.ours])

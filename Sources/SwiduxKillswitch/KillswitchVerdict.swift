@@ -30,10 +30,24 @@ public enum KillswitchVerdict: Sendable, Equatable {
     /// leniently, or if the config contains no matching rules, the verdict is
     /// `.allowed`. The unparseable case logs an error — it means the
     /// killswitch is silently inert for this install.
+    ///
+    /// A config-side version or range that fails strict parsing is skipped,
+    /// and logged at error level with the offending string public. An
+    /// operator who types `"2.0"` into `minimumSupportedVersion` sees their
+    /// JSON served verbatim; this log is where the dead rule shows up.
     public static func evaluate(
         _ config: KillswitchConfig,
         against currentVersionString: String
     ) -> KillswitchVerdict {
+        for rule in config.malformedRules {
+            logger.error(
+                """
+                Killswitch config rule \(rule, privacy: .public) is not strict \
+                major.minor.patch SemVer (ranges: a.b.c..<x.y.z, lower < upper) — \
+                the rule is ignored.
+                """
+            )
+        }
         guard let currentVersion = SemanticVersion(tolerant: currentVersionString) else {
             logger.error(
                 """

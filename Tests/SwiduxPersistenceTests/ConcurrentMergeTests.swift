@@ -56,6 +56,83 @@ struct ConcurrentMergeTests {
         #expect(coordinator.handle.anchor.token == newestToken)
     }
 
+    @Test("a merge that read before a store hydration cannot fold its older rows over it")
+    func olderMergeCannotRollBackAHydration() async throws {
+        let coordinator = try makeNotesCoordinator(historyRetention: nil)
+        let store = makeNotesStore(coordinator)
+        let id = UUID()
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "older", pinned: false)])
+        let gate = MergeReadGate()
+        coordinator.duringReadPhase = { await gate.pauseFirstCall() }
+        // A remote-change observer started before hydration finished.
+        let older = Task { await coordinator.rehydrate(into: store) }
+        await gate.waitUntilPaused()
+
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "newer", pinned: false)])
+        await coordinator.hydrate(into: store)
+        #expect(store.notes[id]?.title == "newer")
+        await gate.release()
+        await older.value
+
+        #expect(store.notes[id]?.title == "newer", "a read older than the hydration was folded over it")
+    }
+
+    @Test("a merge that read before collapseDuplicates cannot put the losers back")
+    func olderMergeCannotResurrectCollapsedLosers() async throws {
+        let container = try makeNotesContainer()
+        // Singletons: whatever else is on disk, only the lowest title survives.
+        let coordinator = try makeNotesCoordinator(
+            container: container, mergePolicy: .preferInMemory, historyRetention: nil,
+            collapse: { rows in Array(rows.sorted { $0.title < $1.title }.prefix(1)) })
+        let store = makeNotesStore(coordinator)
+        let (keeper, loser) = (UUID(), UUID())
+        try seedNotes(container, [Note(id: keeper, title: "a", pinned: false)])
+        await coordinator.hydrate(into: store)
+        try seedNotes(container, [Note(id: loser, title: "b", pinned: false)])
+
+        let gate = MergeReadGate()
+        coordinator.duringReadPhase = { await gate.pauseFirstCall() }
+        let older = Task { await coordinator.mergeRemote(into: store, ids: [loser]) }
+        await gate.waitUntilPaused()
+
+        await coordinator.collapseDuplicates(into: store)
+        #expect(store.notes[loser] == nil)
+        await gate.release()
+        await older.value
+
+        #expect(store.notes[loser] == nil, "a read older than the collapse put the loser back in memory")
+    }
+
+    @Test("a collapse whose merge is discarded still removes its losers from memory")
+    func aDiscardedCollapseStillRemovesItsLosers() async throws {
+        let container = try makeNotesContainer()
+        let coordinator = try makeNotesCoordinator(
+            container: container, mergePolicy: .preferInMemory, historyRetention: nil,
+            collapse: { rows in Array(rows.sorted { $0.title < $1.title }.prefix(1)) })
+        let store = makeNotesStore(coordinator)
+        let (keeper, loser) = (UUID(), UUID())
+        try seedNotes(container, [Note(id: keeper, title: "a", pinned: false)])
+        await coordinator.hydrate(into: store)
+        // Created here as well as on another device: two singletons now.
+        store.send(.add(Note(id: loser, title: "b", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        let gate = MergeReadGate()
+        coordinator.duringReadPhase = { await gate.pauseFirstCall() }
+        // The whole-table read deletes the loser on disk inside its read phase…
+        let older = Task { await coordinator.rehydrate(into: store) }
+        await gate.waitUntilPaused()
+        // …and another merge commits meanwhile, so that read's fold is discarded.
+        await coordinator.mergeRemote(into: store, ids: [])
+        await gate.release()
+        await older.value
+
+        // The retry's collapse finds nothing left to remove, and under
+        // preferInMemory absence removes nothing either.
+        #expect(try rawNoteRows(container).map(\.id) == [keeper])
+        #expect(store.notes[loser] == nil, "the loser lingers in memory, and an edit would re-upload it")
+    }
+
     @Test("an overlapping caller-fed merge preserves distinct signals and newer debt")
     func overlappingPartialMergesPreserveSignalsAndDebt() async throws {
         let coordinator = try makeNotesCoordinator(historyRetention: nil)

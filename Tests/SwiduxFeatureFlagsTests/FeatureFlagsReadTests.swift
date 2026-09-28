@@ -111,4 +111,23 @@ struct FeatureFlagsReadTests {
         )
         #expect(state.value(of: ValueFlag<Int>("max", default: 5)) == 99)
     }
+
+    @Test("a Double flag reads a whole-number remote value, which decodes as Int")
+    @MainActor
+    func doubleReadsWholeNumber() throws {
+        let json = #"{"version":1,"flags":{"ratio":{"type":"value","value":2.0}}}"#
+        let config = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        let state = FeatureFlagsState(config: config, resolvedDeviceID: Self.fixedDeviceID)
+        let ratio = ValueFlag<Double>("ratio", default: 1.0)
+
+        #expect(config.flags["ratio"] == .value(.int(2)))
+        #expect(state.value(of: ratio) == 2.0)
+        #expect(FeatureFlagsState.makeObserver(from: state).value(of: ratio) == 2.0)
+    }
+
+    @Test("a Double flag reads an Int local override")
+    func doubleReadsIntOverride() {
+        let state = makeState(flags: [:], overrides: ["ratio": .int(3)])
+        #expect(state.value(of: ValueFlag<Double>("ratio", default: 1.0)) == 3.0)
+    }
 }

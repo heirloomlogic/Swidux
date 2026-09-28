@@ -75,10 +75,12 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
             guard !state.isObservingCustomerInfo else { return nil }
             state.isObservingCustomerInfo = true
             let service = self.service
+            let requests = self.requests
             return Effect { send in
                 for await snapshot in service.customerInfoStream() {
                     await MainActor.run {
                         guard !Task.isCancelled else { return }
+                        if snapshot.source == .live { requests.acceptStreamUpdate() }
                         send(.customerInfoUpdated(snapshot))
                     }
                     if Task.isCancelled { break }
@@ -98,7 +100,7 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
         case .refreshCustomerInfo:
             state.isLoading = true
             let service = self.service
-            return requestEffect { try await service.customerInfo() }
+            return requestEffect(requests.beginRead()) { try await service.customerInfo() }
 
         case .customerInfoUpdated(let snapshot):
             if snapshot.source == .cacheSeed {
@@ -115,22 +117,21 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
             requests.acceptResult()
             state.isPro = snapshot.isPro
             state.hasPermanentLicense = snapshot.hasPermanentLicense
-            state.isLoading = false
+            state.isLoading = requests.isLoading
             state.error = nil
 
         case .refreshFailed(let message):
-            state.isLoading = false
+            state.isLoading = requests.isLoading
             state.error = message
 
         case .refreshCancelled(let requestID):
-            guard requests.current == requestID else { return nil }
-            _ = requests.begin()
-            state.isLoading = false
+            guard requests.end(requestID) else { return nil }
+            state.isLoading = requests.isLoading
 
         case .restorePurchases:
             state.isLoading = true
             let service = self.service
-            return requestEffect { try await service.restorePurchases() }
+            return requestEffect(requests.beginRestore()) { try await service.restorePurchases() }
 
         case .presentCustomerCenter:
             state.isCustomerCenterPresented = true
@@ -148,15 +149,15 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 
     private func requestEffect(
+        _ generation: UUID,
         _ operation: @escaping @Sendable () async throws -> EntitlementSnapshot
     ) -> Effect<PaywallAction> {
         let requests = self.requests
-        let generation = requests.begin()
         return Effect { send in
             await withTaskCancellationHandler {
                 guard
                     await MainActor.run(body: {
-                        guard requests.current == generation else { return false }
+                        guard requests.isLive(generation) else { return false }
                         guard !Task.isCancelled else {
                             send(.refreshCancelled(requestID: generation))
                             return false
@@ -167,20 +168,24 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
                 do {
                     let snapshot = try await operation()
                     await MainActor.run {
-                        guard requests.current == generation else { return }
-                        if Task.isCancelled {
+                        guard requests.isLive(generation) else { return }
+                        if Task.isCancelled || requests.isOutranked(generation) {
+                            // An outranked restore ends like a cancelled one:
+                            // the stream's newer snapshot already stands.
                             send(.refreshCancelled(requestID: generation))
                         } else {
+                            requests.end(generation)
                             send(.customerInfoUpdated(snapshot))
                         }
                     }
                 } catch {
                     let message = error.localizedDescription
                     await MainActor.run {
-                        guard requests.current == generation else { return }
+                        guard requests.isLive(generation) else { return }
                         if Task.isCancelled {
                             send(.refreshCancelled(requestID: generation))
                         } else {
+                            requests.end(generation)
                             send(.refreshFailed(message))
                         }
                     }
@@ -189,7 +194,7 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
                 // Providers may ignore cancellation indefinitely. Clear only
                 // this request's loading on MainActor without waiting for them.
                 Task { @MainActor in
-                    guard requests.current == generation else { return }
+                    guard requests.isLive(generation) else { return }
                     send(.refreshCancelled(requestID: generation))
                 }
             }
@@ -197,18 +202,81 @@ public struct PaywallPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 }
 
+/// Decides which request results may still land.
+///
+/// Reads are ordered by when they *start*: only the newest may land, and any
+/// accepted result supersedes it. A restore is a write, so it is ordered by
+/// when it *completes*: its result reflects the account after the restore,
+/// which is newer than anything a read resolved while it ran — even a read
+/// that started later. No read therefore supersedes a restore.
+///
+/// The one thing that outranks a restore's snapshot is a live stream update
+/// delivered after the restore began. The provider's feed is at least as new
+/// as the restore, and a feed that reflects restores (RevenueCat's does)
+/// re-emits the restored state anyway. A restore's error still lands.
+///
+/// Whether a restore may land and whether it holds the spinner are separate.
+/// A provider can leave a restore suspended forever (a sign-in sheet that
+/// never resolves), and nothing distinguishes that from a slow one. So an
+/// accepted result releases the spinner of every restore in flight, while
+/// each restore's own result or error still lands when it completes.
 @MainActor
 private final class PaywallRequestGeneration {
-    private(set) var current = UUID()
+    /// The newest read, until it resolves or is superseded.
+    private var currentRead: UUID?
+    private var restores: [UUID: Restore] = [:]
     private(set) var hasResolved = false
 
-    func acceptResult() {
-        _ = begin()
-        hasResolved = true
+    private struct Restore {
+        /// Cleared once any newer result lands, so a hung restore can't pin `isLoading`.
+        var holdsSpinner = true
+        /// Set by a live stream update delivered after the restore began.
+        var isOutranked = false
     }
 
-    func begin() -> UUID {
-        current = UUID()
-        return current
+    /// Whether the spinner should show: a read is in flight, or a restore no
+    /// newer result has landed behind.
+    var isLoading: Bool { currentRead != nil || restores.values.contains { $0.holdsSpinner } }
+
+    func beginRead() -> UUID {
+        let id = UUID()
+        currentRead = id
+        return id
+    }
+
+    func beginRestore() -> UUID {
+        let id = UUID()
+        restores[id] = Restore()
+        return id
+    }
+
+    func isLive(_ id: UUID) -> Bool {
+        id == currentRead || restores[id] != nil
+    }
+
+    /// Whether `id` is a restore whose snapshot a stream update has outranked.
+    func isOutranked(_ id: UUID) -> Bool {
+        restores[id]?.isOutranked == true
+    }
+
+    /// Ends `id`. Returns `false` if it had already ended or been superseded,
+    /// so a duplicate or delayed completion changes nothing.
+    @discardableResult
+    func end(_ id: UUID) -> Bool {
+        if restores.removeValue(forKey: id) != nil { return true }
+        guard id == currentRead else { return false }
+        currentRead = nil
+        return true
+    }
+
+    func acceptResult() {
+        currentRead = nil
+        hasResolved = true
+        for id in restores.keys { restores[id]?.holdsSpinner = false }
+    }
+
+    /// Marks every restore in flight as outranked by a live stream update.
+    func acceptStreamUpdate() {
+        for id in restores.keys { restores[id]?.isOutranked = true }
     }
 }

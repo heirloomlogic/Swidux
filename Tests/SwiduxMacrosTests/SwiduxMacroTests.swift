@@ -87,7 +87,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: SimpleState, to current: inout SimpleState) {
-                        current.count = snapshot.count
+                        current = SimpleState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: SimpleState, from snapshot: SimpleState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -154,9 +159,14 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MultiState, to current: inout MultiState) {
-                        current.name = snapshot.name
-                        current.age = snapshot.age
-                        current.isActive = snapshot.isActive
+                        current = MultiState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: MultiState, from snapshot: MultiState) {
+                        self.name = SwiduxRestore.restored(current.name, from: snapshot.name)
+                        self.age = SwiduxRestore.restored(current.age, from: snapshot.age)
+                        self.isActive = SwiduxRestore.restored(current.isActive, from: snapshot.isActive)
                     }
                 }
                 """,
@@ -211,7 +221,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: StoreState, to current: inout StoreState) {
-                        current.items.restore(from: snapshot.items)
+                        current = StoreState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: StoreState, from snapshot: StoreState) {
+                        self.items = SwiduxRestore.restored(current.items, from: snapshot.items)
                     }
                 }
                 """,
@@ -271,8 +286,13 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MultiEntityState, to current: inout MultiEntityState) {
-                        current.decks.restore(from: snapshot.decks)
-                        current.cards.restore(from: snapshot.cards)
+                        current = MultiEntityState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: MultiEntityState, from snapshot: MultiEntityState) {
+                        self.decks = SwiduxRestore.restored(current.decks, from: snapshot.decks)
+                        self.cards = SwiduxRestore.restored(current.cards, from: snapshot.cards)
                     }
                 }
                 """,
@@ -334,8 +354,13 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: ParentState, to current: inout ParentState) {
-                        current.count = snapshot.count
-                        ChildState.applyRestore(from: snapshot.child, to: &current.child)
+                        current = ParentState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: ParentState, from snapshot: ParentState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
+                        self.child = SwiduxRestore.restored(current.child, from: snapshot.child)
                     }
                 }
                 """,
@@ -397,8 +422,13 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: AppState, to current: inout AppState) {
-                        current.counters.restore(from: snapshot.counters)
-                        UIState.applyRestore(from: snapshot.ui, to: &current.ui)
+                        current = AppState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: AppState, from snapshot: AppState) {
+                        self.counters = SwiduxRestore.restored(current.counters, from: snapshot.counters)
+                        self.ui = SwiduxRestore.restored(current.ui, from: snapshot.ui)
                     }
                 }
                 """,
@@ -475,7 +505,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: SkippedState, to current: inout SkippedState) {
-                        current.count = snapshot.count
+                        current = SkippedState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: SkippedState, from snapshot: SkippedState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -538,7 +573,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: CombinedState, to current: inout CombinedState) {
-                        current.count = snapshot.count
+                        current = CombinedState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: CombinedState, from snapshot: CombinedState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -561,14 +601,22 @@ final class SwiduxMacroTests: XCTestCase {
             struct QuietState: Equatable, Sendable {
                 var count: Int = 0
                 static let shared = QuietState()
+                nonisolated(unsafe) static var instances: Int = 0
                 var doubled: Int { count * 2 }
+                var tripled: Int {
+                    get { count * 3 }
+                }
             }
             """,
             expandedSource: """
                 struct QuietState: Equatable, Sendable {
                     var count: Int = 0
                     static let shared = QuietState()
+                    nonisolated(unsafe) static var instances: Int = 0
                     var doubled: Int { count * 2 }
+                    var tripled: Int {
+                        get { count * 3 }
+                    }
                 }
 
                 @Observable
@@ -603,7 +651,233 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: QuietState, to current: inout QuietState) {
-                        current.count = snapshot.count
+                        current = QuietState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: QuietState, from snapshot: QuietState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    // MARK: Property Observers
+
+    // `willSet`/`didSet` don't make a property computed. It still has storage,
+    // so it has to reach the observer, or every pack resets it to its default.
+    func testObservedStoredPropertiesAreMirrored() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct ObservedState: Equatable, Sendable {
+                var clamped: Int = 0 {
+                    didSet { if clamped < 0 { clamped = 0 } }
+                }
+                var watched: String = "" {
+                    willSet {}
+                    didSet {}
+                }
+            }
+            """,
+            expandedSource: """
+                struct ObservedState: Equatable, Sendable {
+                    var clamped: Int = 0 {
+                        didSet { if clamped < 0 { clamped = 0 } }
+                    }
+                    var watched: String = "" {
+                        willSet {}
+                        didSet {}
+                    }
+                }
+
+                @Observable
+                @MainActor
+                final class ObservedStateObserver: @unchecked Sendable {
+                    var clamped: Int
+                    var watched: String
+
+                    init(clamped: Int = 0, watched: String = "") {
+                        self.clamped = clamped
+                        self.watched = watched
+                    }
+                }
+
+                extension ObservedState: SwiduxObservable {
+                    typealias Observer = ObservedStateObserver
+
+                    @MainActor
+                    init(observer: ObservedStateObserver) {
+                        self.clamped = observer.clamped
+                        self.watched = observer.watched
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: ObservedState) -> ObservedStateObserver {
+                        ObservedStateObserver(
+                            clamped: state.clamped,
+                            watched: state.watched
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: ObservedState, to observer: ObservedStateObserver) {
+                        observer.clamped = snapshot.clamped
+                        observer.watched = snapshot.watched
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: ObservedState, to current: inout ObservedState) {
+                        current = ObservedState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: ObservedState, from snapshot: ObservedState) {
+                        self.clamped = SwiduxRestore.restored(current.clamped, from: snapshot.clamped)
+                        self.watched = SwiduxRestore.restored(current.watched, from: snapshot.watched)
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    // An observed property with an inferred type is as invisible as any other,
+    // so it gets the same diagnostic instead of being mistaken for computed.
+    func testObservedPropertyWithInferredTypeIsDiagnosed() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            struct ObservedInferState: Equatable, Sendable {
+                var count: Int = 0
+                var flag = false {
+                    didSet {}
+                }
+            }
+            """,
+            expandedSource: """
+                struct ObservedInferState: Equatable, Sendable {
+                    var count: Int = 0
+                    var flag = false {
+                        didSet {}
+                    }
+                }
+
+                @Observable
+                @MainActor
+                final class ObservedInferStateObserver: @unchecked Sendable {
+                    var count: Int
+
+                    init(count: Int = 0) {
+                        self.count = count
+                    }
+                }
+
+                extension ObservedInferState: SwiduxObservable {
+                    typealias Observer = ObservedInferStateObserver
+
+                    @MainActor
+                    init(observer: ObservedInferStateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: ObservedInferState) -> ObservedInferStateObserver {
+                        ObservedInferStateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: ObservedInferState, to observer: ObservedInferStateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: ObservedInferState, to current: inout ObservedInferState) {
+                        current = ObservedInferState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: ObservedInferState, from snapshot: ObservedInferState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
+                    }
+                }
+                """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message:
+                        "Stored properties need an explicit type annotation (var name: Type = …); a property with an inferred type is invisible to the macro, so its value would silently reset instead of being observed/persisted",
+                    line: 4,
+                    column: 9
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    // MARK: Nesting
+
+    // The extension names the struct as the compiler does — `Feature.State` — and
+    // so the observer beside it, `Feature.StateObserver`. A bare `State` would
+    // extend some other type, or none.
+    func testNestedStructExtendsQualifiedName() throws {
+        assertMacroExpansion(
+            """
+            enum Feature {
+                @Swidux
+                struct State: Equatable, Sendable {
+                    var count: Int = 0
+                }
+            }
+            """,
+            expandedSource: """
+                enum Feature {
+                    struct State: Equatable, Sendable {
+                        var count: Int = 0
+                    }
+
+                    @Observable
+                    @MainActor
+                    final class StateObserver: @unchecked Sendable {
+                        var count: Int
+
+                        init(count: Int = 0) {
+                            self.count = count
+                        }
+                    }
+                }
+
+                extension Feature.State: SwiduxObservable {
+                    typealias Observer = Feature.StateObserver
+
+                    @MainActor
+                    init(observer: Feature.StateObserver) {
+                        self.count = observer.count
+                    }
+
+                    @MainActor
+                    static func makeObserver(from state: Feature.State) -> Feature.StateObserver {
+                        Feature.StateObserver(
+                            count: state.count
+                        )
+                    }
+
+                    @MainActor
+                    static func apply(_ snapshot: Feature.State, to observer: Feature.StateObserver) {
+                        observer.count = snapshot.count
+                    }
+
+                    @MainActor
+                    static func applyRestore(from snapshot: Feature.State, to current: inout Feature.State) {
+                        current = Feature.State(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: Feature.State, from snapshot: Feature.State) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -658,7 +932,107 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: NoDefaultState, to current: inout NoDefaultState) {
-                        current.name = snapshot.name
+                        current = NoDefaultState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: NoDefaultState, from snapshot: NoDefaultState) {
+                        self.name = SwiduxRestore.restored(current.name, from: snapshot.name)
+                    }
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    // Each observer member takes the narrower of the struct's and the member's
+    // own access, so an internal or private field of a public struct is never
+    // republished as a public, settable property of the observer. `private` becomes
+    // `fileprivate`: the extension that reads it is another declaration in the file.
+    // A setter-only modifier (`internal(set)`) doesn't narrow the member.
+    func testMemberAccessIsNeverWidened() throws {
+        assertMacroExpansion(
+            """
+            @Swidux
+            public struct MixedAccess: Equatable, Sendable {
+                public var shown: Int = 0
+                public internal(set) var readOnly: Int = 0
+                package var shared: Int = 0
+                var hidden: Int = 0
+                private var secret: Int = 0
+            }
+            """,
+            expandedSource: """
+                public struct MixedAccess: Equatable, Sendable {
+                    public var shown: Int = 0
+                    public internal(set) var readOnly: Int = 0
+                    package var shared: Int = 0
+                    var hidden: Int = 0
+                    private var secret: Int = 0
+                }
+
+                @Observable
+                @MainActor
+                public final class MixedAccessObserver: @unchecked Sendable {
+                    public var shown: Int
+                    public var readOnly: Int
+                    package var shared: Int
+                    var hidden: Int
+                    fileprivate var secret: Int
+
+                    public init(shown: Int = 0, readOnly: Int = 0, shared: Int = 0, hidden: Int = 0, secret: Int = 0) {
+                        self.shown = shown
+                        self.readOnly = readOnly
+                        self.shared = shared
+                        self.hidden = hidden
+                        self.secret = secret
+                    }
+                }
+
+                extension MixedAccess: SwiduxObservable {
+                    public typealias Observer = MixedAccessObserver
+
+                    @MainActor
+                    public init(observer: MixedAccessObserver) {
+                        self.shown = observer.shown
+                        self.readOnly = observer.readOnly
+                        self.shared = observer.shared
+                        self.hidden = observer.hidden
+                        self.secret = observer.secret
+                    }
+
+                    @MainActor
+                    public static func makeObserver(from state: MixedAccess) -> MixedAccessObserver {
+                        MixedAccessObserver(
+                            shown: state.shown,
+                            readOnly: state.readOnly,
+                            shared: state.shared,
+                            hidden: state.hidden,
+                            secret: state.secret
+                        )
+                    }
+
+                    @MainActor
+                    public static func apply(_ snapshot: MixedAccess, to observer: MixedAccessObserver) {
+                        observer.shown = snapshot.shown
+                        observer.readOnly = snapshot.readOnly
+                        observer.shared = snapshot.shared
+                        observer.hidden = snapshot.hidden
+                        observer.secret = snapshot.secret
+                    }
+
+                    @MainActor
+                    public static func applyRestore(from snapshot: MixedAccess, to current: inout MixedAccess) {
+                        current = MixedAccess(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: MixedAccess, from snapshot: MixedAccess) {
+                        self.shown = SwiduxRestore.restored(current.shown, from: snapshot.shown)
+                        self.readOnly = SwiduxRestore.restored(current.readOnly, from: snapshot.readOnly)
+                        self.shared = SwiduxRestore.restored(current.shared, from: snapshot.shared)
+                        self.hidden = SwiduxRestore.restored(current.hidden, from: snapshot.hidden)
+                        self.secret = SwiduxRestore.restored(current.secret, from: snapshot.secret)
                     }
                 }
                 """,
@@ -682,7 +1056,7 @@ final class SwiduxMacroTests: XCTestCase {
                 @Observable
                 @MainActor
                 public final class PublicStateObserver: @unchecked Sendable {
-                    public var count: Int
+                    var count: Int
 
                     public init(count: Int = 0) {
                         self.count = count
@@ -711,7 +1085,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     public static func applyRestore(from snapshot: PublicState, to current: inout PublicState) {
-                        current.count = snapshot.count
+                        current = PublicState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PublicState, from snapshot: PublicState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
@@ -777,14 +1156,19 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PersistenceState, to current: inout PersistenceState) {
-                        current.phase = snapshot.phase
+                        current = PersistenceState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PersistenceState, from snapshot: PersistenceState) {
+                        self.phase = SwiduxRestore.restored(current.phase, from: snapshot.phase)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'PersistenceState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'PersistenceState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 16
                 )
@@ -844,7 +1228,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: PersistenceState, to current: inout PersistenceState) {
-                        current.phase = snapshot.phase
+                        current = PersistenceState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: PersistenceState, from snapshot: PersistenceState) {
+                        self.phase = SwiduxRestore.restored(current.phase, from: snapshot.phase)
                     }
                 }
                 """,
@@ -903,14 +1292,19 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: OptionalPhaseState, to current: inout OptionalPhaseState) {
-                        current.phase = snapshot.phase
+                        current = OptionalPhaseState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: OptionalPhaseState, from snapshot: OptionalPhaseState) {
+                        self.phase = SwiduxRestore.restored(current.phase, from: snapshot.phase)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'OptionalPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'OptionalPhaseState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 16
                 )
@@ -977,21 +1371,26 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: GenericPhaseState, to current: inout GenericPhaseState) {
-                        current.boxed = snapshot.boxed
-                        current.phases = snapshot.phases
+                        current = GenericPhaseState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: GenericPhaseState, from snapshot: GenericPhaseState) {
+                        self.boxed = SwiduxRestore.restored(current.boxed, from: snapshot.boxed)
+                        self.phases = SwiduxRestore.restored(current.phases, from: snapshot.phases)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 25
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'GenericPhaseState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 21
                 ),
@@ -1058,27 +1457,32 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: CollectionState, to current: inout CollectionState) {
-                        current.phases = snapshot.phases
-                        current.map = snapshot.map
+                        current = CollectionState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: CollectionState, from snapshot: CollectionState) {
+                        self.phases = SwiduxRestore.restored(current.phases, from: snapshot.phases)
+                        self.map = SwiduxRestore.restored(current.map, from: snapshot.map)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 18
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 15
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'HydrationPhase' must be written with its qualified name 'CollectionState.HydrationPhase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 31
                 ),
@@ -1160,28 +1564,33 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MixedNestedState, to current: inout MixedNestedState) {
-                        current.config = snapshot.config
-                        current.handle = snapshot.handle
-                        current.count = snapshot.count
+                        current = MixedNestedState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: MixedNestedState, from snapshot: MixedNestedState) {
+                        self.config = SwiduxRestore.restored(current.config, from: snapshot.config)
+                        self.handle = SwiduxRestore.restored(current.handle, from: snapshot.handle)
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Config' must be written with its qualified name 'MixedNestedState.Config'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Config' must be written with its qualified name 'MixedNestedState.Config'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 10,
                     column: 17
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Handle' must be written with its qualified name 'MixedNestedState.Handle'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Handle' must be written with its qualified name 'MixedNestedState.Handle'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 11,
                     column: 17
                 ),
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Count' must be written with its qualified name 'MixedNestedState.Count'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Count' must be written with its qualified name 'MixedNestedState.Count'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 12,
                     column: 16
                 ),
@@ -1245,14 +1654,19 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: MemberBaseState, to current: inout MemberBaseState) {
-                        current.value = snapshot.value
+                        current = MemberBaseState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: MemberBaseState, from snapshot: MemberBaseState) {
+                        self.value = SwiduxRestore.restored(current.value, from: snapshot.value)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Wrapper' must be written with its qualified name 'MemberBaseState.Wrapper'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Wrapper' must be written with its qualified name 'MemberBaseState.Wrapper'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 8,
                     column: 16
                 )
@@ -1323,14 +1737,19 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: ShadowState, to current: inout ShadowState) {
-                        current.phase = snapshot.phase
+                        current = ShadowState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: ShadowState, from snapshot: ShadowState) {
+                        self.phase = SwiduxRestore.restored(current.phase, from: snapshot.phase)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Phase' must be written with its qualified name 'ShadowState.Phase'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Phase' must be written with its qualified name 'ShadowState.Phase'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 10,
                     column: 16
                 )
@@ -1392,14 +1811,19 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: SliceParentState, to current: inout SliceParentState) {
-                        ChildState.applyRestore(from: snapshot.child, to: &current.child)
+                        current = SliceParentState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: SliceParentState, from snapshot: SliceParentState) {
+                        self.child = SwiduxRestore.restored(current.child, from: snapshot.child)
                     }
                 }
                 """,
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'ChildState' must be written with its qualified name 'SliceParentState.ChildState'; the generated observer class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'ChildState' must be written with its qualified name 'SliceParentState.ChildState'; the generated observer class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 6,
                     column: 23
                 )
@@ -1464,7 +1888,12 @@ final class SwiduxMacroTests: XCTestCase {
 
                     @MainActor
                     static func applyRestore(from snapshot: ComputedOnlyState, to current: inout ComputedOnlyState) {
-                        current.count = snapshot.count
+                        current = ComputedOnlyState(swiduxRestoring: current, from: snapshot)
+                    }
+
+                    @MainActor
+                    private init(swiduxRestoring current: ComputedOnlyState, from snapshot: ComputedOnlyState) {
+                        self.count = SwiduxRestore.restored(current.count, from: snapshot.count)
                     }
                 }
                 """,

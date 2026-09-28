@@ -272,6 +272,64 @@ struct KeychainKeyValueStoreTests {
         #expect(store.removeValue(for: .deviceID))
         #expect(store.setValue(nil, for: .deviceID))
     }
+
+    @Test("deviceIdentity recovers a raw UTF-8 identity and migrates it to the JSON encoding")
+    func deviceIdentityRecoversRawUTF8Identity() {
+        let service = "swidux.tests.\(UUID().uuidString)"
+        defer { wipe(service: service) }
+
+        // Write a raw UTF-8 UUID string directly under the deviceID account —
+        // simulates an item written by an earlier, hand-rolled version of
+        // this helper, before it JSON-encoded values. `value(_:)` can't
+        // decode this as JSON `String`, but the bytes are still a legible
+        // identity.
+        let original = UUID().uuidString
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: KVKey<String>.deviceID.name,
+            kSecValueData as String: Data(original.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+        #expect(SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess)
+
+        // Held as the protocol, the way an app environment usually stores it:
+        // the Keychain-aware path must still be taken.
+        let store: any KeyValueStore = KeychainKeyValueStore(service: service)
+        #expect(store.deviceIdentity() == original)
+
+        // Migrated: a plain JSON-decoding read now succeeds and returns the
+        // same identity, so a relaunch doesn't need to recover it again.
+        #expect(store.value(.deviceID) == original)
+    }
+
+    @Test("deviceIdentity overwrites an item that's undecodable and unrecoverable")
+    func deviceIdentityOverwritesUnrecoverableGarbage() {
+        let service = "swidux.tests.\(UUID().uuidString)"
+        defer { wipe(service: service) }
+
+        // Write bytes that are neither valid JSON nor a recoverable raw
+        // identity string — genuinely corrupt, not a shape this type has
+        // ever produced.
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: KVKey<String>.deviceID.name,
+            kSecValueData as String: Data("not-an-identity".utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+        #expect(SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess)
+
+        let store: any KeyValueStore = KeychainKeyValueStore(service: service)
+        let minted = store.deviceIdentity()
+        #expect(UUID(uuidString: minted) != nil)
+
+        // Unrecoverable garbage is overwritten — a one-time cost, same as an
+        // absent item — rather than left in place forever unreadable.
+        #expect(store.value(.deviceID) == minted)
+    }
 }
 
 // MARK: - Failure classification
@@ -366,5 +424,116 @@ struct KeychainUnentitledHostTests {
         _ = store.removeValue(for: .deviceID)
 
         #expect(store.contains(.deviceID) == false)
+    }
+
+    @Test("deviceIdentity mints independently per call when the item is genuinely missing")
+    func deviceIdentityMintsIndependentlyWhenMissing() {
+        // On this host, `SecItemCopyMatching` reports `errSecItemNotFound`
+        // even without the write entitlement — reads aren't gated the way
+        // writes are, so this is a true `.missing`, not `.unreadable`. Since
+        // nothing can ever be persisted here either, every call mints fresh:
+        // there's nothing to remember, because there was never anything
+        // written to read back. That's the pre-existing #65 behavior for an
+        // unwritable store — unrelated to the `.unreadable` memoization
+        // fix, which `SessionIdentityTests` below covers directly, since
+        // `.unreadable` doesn't reproduce via `SecItemCopyMatching` on this
+        // particular host.
+        let service = "swidux.tests.\(UUID().uuidString)"
+        let first = KeychainKeyValueStore(service: service).deviceIdentity()
+        let second = KeychainKeyValueStore(service: service).deviceIdentity()
+
+        #expect(first != second)
+    }
+}
+
+// MARK: - Session identity memoization
+
+/// Direct, Keychain-free coverage of the session-identity cache
+/// `keychainDeviceIdentity` falls back to on `.unreadable`. Bypasses
+/// `lookup(_:)` entirely — this only exercises the in-process memoization,
+/// so it runs everywhere, including where `.unreadable` itself can't be
+/// produced (this repo's unsigned `swift test`, where reads report
+/// `.missing` instead — see `deviceIdentityMintsIndependentlyWhenMissing`
+/// above).
+@Suite("KeychainKeyValueStore session identity memoization")
+struct SessionIdentityTests {
+    @Test("agrees across separate store instances at the same location")
+    func agreesAcrossInstances() {
+        let service = "swidux.tests.\(UUID().uuidString)"
+        let first = KeychainKeyValueStore(service: service).sessionIdentity(for: .deviceID)
+        let second = KeychainKeyValueStore(service: service).sessionIdentity(for: .deviceID)
+
+        #expect(first == second)
+    }
+
+    @Test("differs across different store locations")
+    func differsAcrossLocations() {
+        let first = KeychainKeyValueStore(service: "swidux.tests.\(UUID().uuidString)").sessionIdentity(for: .deviceID)
+        let second = KeychainKeyValueStore(service: "swidux.tests.\(UUID().uuidString)").sessionIdentity(for: .deviceID)
+
+        #expect(first != second)
+    }
+
+    @Test("differs across different keys at the same location")
+    func differsAcrossKeys() {
+        let service = "swidux.tests.\(UUID().uuidString)"
+        let store = KeychainKeyValueStore(service: service)
+        let other = KVKey<String>("other-key")
+
+        #expect(store.sessionIdentity(for: .deviceID) != store.sessionIdentity(for: other))
+    }
+
+    @Test("is a valid UUID string")
+    func isAValidUUID() {
+        let identity = KeychainKeyValueStore(service: "swidux.tests.\(UUID().uuidString)")
+            .sessionIdentity(for: .deviceID)
+
+        #expect(UUID(uuidString: identity) != nil)
+    }
+}
+
+// MARK: - Identity recovery
+
+/// Pure, Keychain-free coverage of ``KeychainKeyValueStore/recoverIdentity(fromUndecodable:)``.
+/// Runs in every environment, including the unsigned macOS `swift test` CI uses.
+@Suite("KeychainKeyValueStore.recoverIdentity(fromUndecodable:)")
+struct RecoverIdentityTests {
+    @Test("recovers a raw UTF-8 UUID string")
+    func recoversRawUUID() {
+        let uuid = UUID()
+        #expect(KeychainKeyValueStore.recoverIdentity(fromUndecodable: Data(uuid.uuidString.utf8)) == uuid.uuidString)
+    }
+
+    @Test("recovers a UUID string with surrounding whitespace")
+    func recoversTrimmedUUID() {
+        let uuid = UUID()
+        let padded = Data("  \(uuid.uuidString)\n".utf8)
+        #expect(KeychainKeyValueStore.recoverIdentity(fromUndecodable: padded) == uuid.uuidString)
+    }
+
+    @Test(
+        "rejects text that isn't a UUID",
+        arguments: ["not-a-uuid", "", "   ", "12345", "550e8400-e29b-41d4-a716"]
+    )
+    func rejectsNonUUIDText(_ text: String) {
+        #expect(KeychainKeyValueStore.recoverIdentity(fromUndecodable: Data(text.utf8)) == nil)
+    }
+
+    @Test("rejects a JSON-quoted string")
+    func rejectsQuotedJSON() {
+        // A quoted string is valid JSON, so `lookup(_:)` would have already
+        // decoded it successfully — this never reaches `.undecodable` in
+        // practice. Included as a boundary: `recoverIdentity` itself has no
+        // JSON awareness, so quotes just make an otherwise-valid UUID string
+        // fail the direct `UUID(uuidString:)` check.
+        let uuid = UUID()
+        let quoted = Data("\"\(uuid.uuidString)\"".utf8)
+        #expect(KeychainKeyValueStore.recoverIdentity(fromUndecodable: quoted) == nil)
+    }
+
+    @Test("rejects bytes that aren't valid UTF-8")
+    func rejectsInvalidUTF8() {
+        let invalid = Data([0xFF, 0xFE, 0xFD])
+        #expect(KeychainKeyValueStore.recoverIdentity(fromUndecodable: invalid) == nil)
     }
 }

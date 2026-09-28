@@ -37,7 +37,7 @@ struct FeatureFlagsSliceWiringTests {
                 lastFetchError: "timeout",
                 isFetching: true,
                 localOverrides: ["newEditor": .bool(false)],
-                exposedKeys: ["newEditor"],
+                exposedValues: ["newEditor": [.bool(false)]],
                 resolvedDeviceID: "device-1",
                 resolvedUserID: "user-1"
             ),

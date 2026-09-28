@@ -212,6 +212,33 @@ struct HistoryWatermarkTests {
         #expect(store.notes[id]?.title == "typed mid-fetch")
     }
 
+    @Test("a write flushed during the fetch is not rolled back, and the next edit builds on it")
+    func writeFlushedDuringTheFetchSurvives() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "v1")
+
+        // An ordinary local save. Its own transaction is what makes the next tick
+        // read this row back — which is every tick an on-disk store produces,
+        // because local saves post the remote-change notification too.
+        store.send(.add(Note(id: id, title: "v2", pinned: false)))
+        await coordinator.corePlugin.flush()
+
+        coordinator.duringReadPhase = {
+            store.send(.add(Note(id: id, title: "v3", pinned: false)))
+            await coordinator.corePlugin.flush()
+        }
+        await coordinator.mergeChanges(into: store)
+        coordinator.duringReadPhase = nil
+
+        #expect(store.notes[id]?.title == "v3", "the read of v2 predates the save of v3")
+
+        // What the rollback costs: the user's next keystroke is built on whatever
+        // memory shows, and overwrites the flushed value on disk.
+        store.send(.add(Note(id: id, title: (store.notes[id]?.title ?? "") + "!", pinned: false)))
+        await coordinator.corePlugin.flush()
+        let disk = try await coordinator.fetchAll(of: Note.self, flushPending: false)
+        #expect(disk.first?.title == "v3!")
+    }
+
     @Test("a locally deleted row is not resurrected by its own history")
     func doesNotResurrectALocalDelete() async throws {
         let (coordinator, store, id) = try await makeAnchoredNote(title: "doomed")
@@ -553,6 +580,200 @@ struct HistoryWatermarkTests {
             "the same window has to be re-offered, or a hold silently becomes a veto")
     }
 
+    @Test("a draft committed as its hold lifts can ask whether a peer deleted the row")
+    func aHeldDeletionIsVisibleToTheCommit() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+        #expect(!coordinator.isRemotelyDeleted(id))
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "the premise: the hold deferred the deletion")
+        #expect(coordinator.isRemotelyDeleted(id), "the one thing the app needs to know before committing")
+
+        // The documented shape: the editor goes away, its hold with it, and its
+        // draft is committed — before any merge can run. Committing would write
+        // the row back, and a live row refutes the tombstone on every peer.
+        coordinator.editing.release(id)
+        if !coordinator.isRemotelyDeleted(id) {
+            store.send(.add(Note(id: id, title: "draft", pinned: false)))
+        }
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "the deferred deletion lands once the hold lifts")
+        #expect(try await coordinator.fetchAll(of: Note.self).isEmpty, "and the draft did not resurrect it")
+        #expect(!coordinator.isRemotelyDeleted(id), "a settled deletion is no longer owed")
+    }
+
+    @Test(
+        "a held last row a peer deleted, first seen by a fallback, stays owed",
+        arguments: [
+            HistoryScanFailure.fetchFailed("transient") as any Error,
+            HistoryScanFailure.unidentifiedDeletion(entityName: "NoteModel"),
+        ])
+    func aHeldLastRowsDeletionSurvivesAFallback(reason: any Error) async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        // The first tick to see the deletion falls back, reads an empty table,
+        // and the guard refuses to infer anything from it. The hold is not an
+        // answer to that question, so it must not let the watermark step past
+        // the tombstone that is.
+        coordinator.failNextHistoryScan = reason
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "the premise: the hold defers it")
+        await coordinator.mergeChanges(into: store)
+        #expect(coordinator.isRemotelyDeleted(id), "the deferred deletion was neither applied nor owed")
+
+        // The documented editor close.
+        coordinator.editing.release(id)
+        if !coordinator.isRemotelyDeleted(id) {
+            store.send(.add(Note(id: id, title: "draft", pinned: false)))
+        }
+        await coordinator.mergeChanges(into: store)
+        await coordinator.corePlugin.flush()
+
+        #expect(store.notes[id] == nil, "the hold vetoed the deletion")
+        #expect(try await coordinator.fetchAll(of: Note.self, flushPending: false).isEmpty)
+    }
+
+    @Test("a held last row's deletion lands once the hold lifts, though a fallback saw it first")
+    func aHeldLastRowsDeletionLandsAfterAFallback() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "being edited")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        coordinator.failNextHistoryScan = HistoryScanFailure.fetchFailed("transient")
+        await coordinator.mergeChanges(into: store)
+        coordinator.editing.release(id)
+        await coordinator.mergeChanges(into: store)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil)
+    }
+
+    // MARK: - Unanchored windows and the empty-snapshot guard
+
+    @Test("an owed deletion survives a fallback tick that finds the table empty")
+    func aFallbackKeepsAnOwedDeletion() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "the only one")
+
+        coordinator.editing.hold(id)
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+        #expect(coordinator.handle.anchor.carryOver.deletions(for: "NoteModel") == [id], "the premise: a debt")
+
+        // The editor closes, and the next tick falls back. Its whole-table read
+        // is empty, so the empty-snapshot guard refuses to *infer* anything —
+        // but this deletion is not inferred, it is owed from a tombstone.
+        coordinator.editing.release(id)
+        coordinator.failNextHistoryScan = HistoryScanFailure.fetchFailed("transient")
+        await coordinator.mergeChanges(into: store)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "the hold vetoed the deletion instead of deferring it")
+
+        // What the veto costs: the user edits the row they can still see, which
+        // re-inserts it on disk.
+        if store.notes[id] != nil { store.send(.add(Note(id: id, title: "edited", pinned: false))) }
+        await coordinator.corePlugin.flush()
+        #expect(try await coordinator.fetchAll(of: Note.self, flushPending: false).isEmpty)
+    }
+
+    @Test("a transient fallback does not consume the tombstone of the last row")
+    func aFallbackKeepsTheLastRowsTombstone() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote(title: "the only one")
+
+        try await remoteWrite(coordinator, deletions: [id])
+        coordinator.failNextHistoryScan = HistoryScanFailure.fetchFailed("transient")
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id] != nil, "the premise: the guard refuses to read an empty table as deletion")
+
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "the fallback anchored past the tombstone that would have settled it")
+    }
+
+    @Test("the documented launch hydrate anchors, so the first tick can remove the last row")
+    func theLaunchHydrateAnchors() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let id = UUID()
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "the only one", pinned: false)])
+
+        // The launch sequence the guides show: hydrate a plain value, then build
+        // the store from it.
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        let store = makeNotesStore(coordinator, initialState: initial)
+
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil, "an unanchored first tick falls back, and the guard keeps the row")
+    }
+
+    @Test("hydrating a scratch value mid-session does not consume the live store's window")
+    func aScratchHydrateLeavesTheWatermarkAlone() async throws {
+        let (coordinator, store, id) = try await makeAnchoredNote()
+        let before = coordinator.handle.anchor.token
+
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "edited elsewhere", pinned: true)])
+        // An export or a preview: rows read into a value the store never sees.
+        var scratch = NotesState()
+        await coordinator.hydrate(into: &scratch)
+        #expect(scratch.notes[id]?.title == "edited elsewhere")
+        #expect(coordinator.handle.anchor.token == before, "the scratch read moved the live watermark")
+
+        await coordinator.mergeChanges(into: store)
+        #expect(store.notes[id]?.title == "edited elsewhere", "the live store never sees the remote edit")
+    }
+
+    @Test("a re-hydration after a container rebuild anchors, so the first tick can remove the last row")
+    func anUnanchoredRehydrateAnchors() async throws {
+        let container = try makeNotesContainer()
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+        let id = UUID()
+        try await remoteWrite(coordinator, writes: [Note(id: id, title: "the only one", pinned: false)])
+        let store = makeNotesStore(coordinator)
+        await coordinator.hydrate(into: store)
+
+        // What a sync toggle does: rebuild over the same store file, which
+        // discards the anchor, then re-hydrate additively.
+        coordinator.handle.db = EntityDB(modelContainer: container)
+        await coordinator.rehydrate(into: store, policy: .preferRemoteAdditive)
+
+        try await remoteWrite(coordinator, deletions: [id])
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[id] == nil)
+    }
+
+    @Test("an additive re-hydration that left an absence undecided does not anchor past it")
+    func anUndecidedRehydrateDoesNotAnchor() async throws {
+        let container = try makeNotesContainer()
+        let coordinator = try makeNotesCoordinator(container: container, debounce: .seconds(30))
+        let (kept, gone) = (UUID(), UUID())
+        try await remoteWrite(
+            coordinator,
+            writes: [Note(id: kept, title: "kept", pinned: false), Note(id: gone, title: "gone", pinned: false)])
+        let store = makeNotesStore(coordinator)
+        await coordinator.hydrate(into: store)
+
+        // Deleted elsewhere just before the rebuild, and never merged. The
+        // additive read may not conclude anything from its absence — so it must
+        // not anchor past the tombstone either, or nothing ever will.
+        try await remoteWrite(coordinator, deletions: [gone])
+        coordinator.handle.db = EntityDB(modelContainer: container)
+        await coordinator.rehydrate(into: store, policy: .preferRemoteAdditive)
+        #expect(store.notes[gone] != nil, "the premise: an additive read removes nothing")
+
+        await coordinator.mergeChanges(into: store)
+
+        #expect(store.notes[gone] == nil)
+        #expect(store.notes[kept] != nil)
+    }
+
     @Test("an edit withheld by an editing hold is applied once the hold lifts")
     func withheldEditIsReOfferedAfterTheHoldLifts() async throws {
         let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
@@ -632,9 +853,12 @@ struct HistoryWatermarkTests {
             onDiagnostic: onDiagnostic)
         let store = makeNotesStore(coordinator)
 
+        // Two transactions: the older one is prunable, the newer one is what
+        // hydration anchors on, and is kept whatever its age.
         try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+        try seedNotes(container, [Note(id: UUID(), title: "newer news", pinned: false)])
         #expect(
-            try await coordinator.database.historyTransactionCount() > 0,
+            try await coordinator.database.historyTransactionCount() == 2,
             "there must be something to prune, or the test proves nothing")
 
         await coordinator.hydrate(into: store)
@@ -642,8 +866,52 @@ struct HistoryWatermarkTests {
         // for it rather than assuming it already ran.
         try await poll(until: { log.contains(.historyPruned) })
 
-        #expect(try await coordinator.database.historyTransactionCount() == 0)
+        #expect(try await coordinator.database.historyTransactionCount() == 1)
         #expect(log.contains(.historyPruned))
+    }
+
+    @Test("the documented launch hydrate prunes too")
+    func theLaunchHydratePrunes() async throws {
+        let container = try makeNotesContainer()
+        let (log, onDiagnostic) = diagnosticLog()
+        let coordinator = try makeNotesCoordinator(
+            container: container, debounce: .seconds(30), historyRetention: .seconds(-60),
+            onDiagnostic: onDiagnostic)
+        try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+        try seedNotes(container, [Note(id: UUID(), title: "newer news", pinned: false)])
+
+        // Hydrating a plain value before the store exists is what both guides
+        // show, so it is the launch path nearly every app takes.
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        try await poll(until: { log.contains(.historyPruned) })
+
+        #expect(log.contains(.historyPruned), "retention was inert for every app following the guides")
+        #expect(try await coordinator.database.historyTransactionCount() == 1, "all but the anchor")
+    }
+
+    @Test("pruning a quiet store keeps the anchor, so the first tick still narrows")
+    func pruningKeepsTheAnchorsTransaction() async throws {
+        let container = try makeNotesContainer()
+        let (log, onDiagnostic) = diagnosticLog()
+        // Every transaction is older than the retention window: a store nobody
+        // has written to for longer than that.
+        let coordinator = try makeNotesCoordinator(
+            container: container, debounce: .seconds(30), historyRetention: .seconds(-60),
+            onDiagnostic: onDiagnostic)
+        let id = UUID()
+        try seedNotes(container, [Note(id: id, title: "the only one", pinned: false)])
+        var initial = NotesState()
+        await coordinator.hydrate(into: &initial)
+        try await poll(until: { log.contains(.historyPruned) })
+        let store = makeNotesStore(coordinator, initialState: initial)
+        log.clear()
+
+        try await EntityDB(modelContainer: container).delete(id: id, as: NoteModel.self)
+        await coordinator.mergeChanges(into: store)
+
+        #expect(!log.contains(.historyUnavailable), "\(log.fallbackReasons)")
+        #expect(store.notes[id] == nil, "the prune expired the anchor, and the fallback kept the last row")
     }
 
     @Test("history is pruned once per session, not on every hydration")
@@ -656,8 +924,10 @@ struct HistoryWatermarkTests {
         let store = makeNotesStore(coordinator)
 
         try seedNotes(container, [Note(id: UUID(), title: "old news", pinned: false)])
+        try seedNotes(container, [Note(id: UUID(), title: "the anchor", pinned: false)])
         await coordinator.hydrate(into: store)
         try await poll(until: { log.contains(.historyPruned) })
+        #expect(log.contains(.historyPruned), "the premise: the first hydration pruned")
         log.clear()
 
         try seedNotes(container, [Note(id: UUID(), title: "newer", pinned: false)])

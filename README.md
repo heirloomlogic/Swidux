@@ -107,10 +107,10 @@ plugins.register(ParentalGatePlugin(state: \.parentalGate, action: AppAction.par
 
 ### Paywall
 
-Manage paywall presentation, entitlement observation, and purchase restoration. The plugin is purchase-agnostic — it doesn't know about products or prices. You implement a `PaywallService` against StoreKit, RevenueCat, or a custom backend; the plugin handles state. For RevenueCat, drop in the ready-made adapter from [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — it ships `RevenueCatPaywallService` and a SwiftUI sheet built on RevenueCatUI. Check `store.paywall.isGateSatisfied` before running a pro feature. See [Add a Paywall](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddapaywall).
+Manage paywall presentation, entitlement observation, and purchase restoration. The plugin is purchase-agnostic — it doesn't know about products or prices. You implement a `PaywallService` against StoreKit, RevenueCat, or a custom backend; the plugin handles state. For RevenueCat, drop in the ready-made adapter from [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — it ships `RevenueCatPaywallService` and a SwiftUI sheet built on RevenueCatUI. Wrap the service in `ResilientPaywallService`, backed by `KeychainKeyValueStore`, so a transient read failure never gates a paid user as free. Check `store.paywall.isGateSatisfied` before running a pro feature. See [Add a Paywall](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddapaywall).
 
 ```swift
-plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extractAction: { if case .paywall(let a) = $0 { return a }; return nil }, service: RevenueCatPaywallService()))
+plugins.register(PaywallPlugin(state: \.paywall, action: AppAction.paywall, extractAction: { if case .paywall(let a) = $0 { return a }; return nil }, service: ResilientPaywallService(base: RevenueCatPaywallService(entitlementID: "pro"), store: KeychainKeyValueStore(service: "com.example.myapp"))))
 ```
 
 ### Dev paywall UI
@@ -134,7 +134,7 @@ plugins.register(AnalyticsPlugin(state: \.analytics, action: AppAction.analytics
 Typed feature flags, A/B variants, and remote-tunable scalar values from a single JSON config fetched through a provider-agnostic `FeatureFlagsService`. Bucketing is pure FNV-1a — the same input always lands in the same bucket, with no network round-trip per read — keyed on a Keychain-backed `deviceID` so it stays stable across reinstall and is shared with analytics. Local overrides give QA a one-action toggle that wins over remote evaluation, and a `FlagDescriptor` manifest plus one `FlagGovernance` test keeps stale "forever flags" out of the codebase. See [Add Feature Flags](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddfeatureflags).
 
 ```swift
-store.register(plugin: FeatureFlagsPlugin(state: \.featureFlags, action: AppAction.featureFlags, extractAction: { if case .featureFlags(let a) = $0 { return a }; return nil }, service: HTTPFeatureFlagsService(url: configURL), deviceIDKeyPath: \.deviceID, keyValueStore: kv))
+plugins.register(FeatureFlagsPlugin(state: \.featureFlags, action: AppAction.featureFlags, extractAction: { if case .featureFlags(let a) = $0 { return a }; return nil }, service: HTTPFeatureFlagsService(url: configURL), deviceIDKeyPath: \.deviceID, keyValueStore: kv))
 ```
 
 ### Persistence (SwiftData)
@@ -189,7 +189,7 @@ Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swid
 
 - **I want to learn** — [Build Your First Swidux App](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingyourfirstapp)
 - **I want to add a paywall / killswitch / parental gate / analytics / feature flags / persistence** — the per-plugin how-tos linked above
-- **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Middleware Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [KeyValueStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/keyvaluestoreguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
+- **I want the API** — [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference), [EntityStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/entitystoreguide), [Persistence Plugin Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/persistencemiddlewareguide), [KeyValueStore Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/keyvaluestoreguide), [Undo / Redo](https://heirloomlogic.github.io/Swidux/documentation/swidux/undoredo)
 - **I want to understand the design** — [Architecture Guide](https://heirloomlogic.github.io/Swidux/documentation/swidux/architectureguide), [Plugin Architecture](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginarchitecture), [Design Principles](https://heirloomlogic.github.io/Swidux/documentation/swidux/designprinciples)
 - **I want to write my own plugin** — [Building a Domain Plugin](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingadomainplugin)
 - **Something isn't working** — [Troubleshooting](https://heirloomlogic.github.io/Swidux/documentation/swidux/troubleshooting)

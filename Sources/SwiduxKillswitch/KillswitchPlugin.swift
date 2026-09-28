@@ -7,6 +7,7 @@
 
 import Foundation
 import Swidux
+import Synchronization
 
 #if canImport(UIKit)
 import UIKit
@@ -90,49 +91,48 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
     ) -> Effect<KillswitchAction>? {
         switch action {
         case .fetch:
-            let service = self.service
-            let appVersion = self.appVersion()
-            let lastFetch = state.lastFetch
-            return Effect { send in
-                // A negative age means the wall clock moved backward past the
-                // last fetch; treat the cache as expired rather than letting a
-                // clock change pin this install to a stale verdict.
-                let cacheAge = lastFetch.map { Date().timeIntervalSince($0) }
-                if let cacheAge, cacheAge >= 0, cacheAge < service.cacheLifetime,
-                    let cached = service.loadCached()
-                {
-                    let verdict = KillswitchVerdict.evaluate(
-                        cached, against: appVersion
-                    )
-                    await send(.verdictReceived(verdict, fromNetwork: false))
-                    return
-                }
-                await Self.fetchFromNetwork(
-                    service: service, appVersion: appVersion, send: send
-                )
+            guard !state.isFetching else { return nil }
+            // A negative age means the wall clock moved backward past the
+            // last fetch; treat the cache as expired rather than letting a
+            // clock change pin this install to a stale verdict.
+            let cacheAge = state.lastFetch.map { Date().timeIntervalSince($0) }
+            // Expired, or fresh with nothing on disk (the write failed): go to
+            // the network.
+            guard let cacheAge, cacheAge >= 0, cacheAge < service.cacheLifetime,
+                let cached = service.loadCached()
+            else {
+                return startNetworkFetch(state: &state)
             }
+            // Read and applied here rather than by an effect's later action.
+            // A read in flight isn't covered by the in-flight guard, so a
+            // `.forceFetch` dispatched just after could land its newer network
+            // verdict first and then be overwritten by this older one. The
+            // read is one small local file. A cache-served verdict leaves
+            // `lastFetch` alone, as `.verdictReceived(_, fromNetwork: false)`
+            // does.
+            state.verdict = KillswitchVerdict.evaluate(cached, against: appVersion())
+            state.fetchError = nil
 
         case .forceFetch:
-            let service = self.service
-            let appVersion = self.appVersion()
-            return Effect { send in
-                await Self.fetchFromNetwork(
-                    service: service, appVersion: appVersion, send: send
-                )
-            }
+            guard !state.isFetching else { return nil }
+            return startNetworkFetch(state: &state)
 
         case .verdictReceived(let verdict, let fromNetwork):
             state.verdict = verdict
             state.fetchError = nil
             // Only a live fetch refreshes the freshness window. A cache-served
             // verdict re-stamping `lastFetch` would slide the window forever
-            // and starve the network path for the rest of the session.
+            // and starve the network path for the rest of the session. Nor
+            // does it end a fetch: the cold-launch preview lands while the
+            // request is still in flight.
             if fromNetwork {
                 state.lastFetch = Date()
+                state.isFetching = false
             }
 
         case .fetchFailed(let message):
             state.fetchError = message
+            state.isFetching = false
 
         case .openUpdateURL:
             guard let url = state.verdict.openableUpdateURL else { return nil }
@@ -142,20 +142,52 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
         return nil
     }
 
+    /// Marks a network fetch in flight and returns it. The fetch ends in
+    /// exactly one of `.verdictReceived(_, fromNetwork: true)` or
+    /// `.fetchFailed`, and each clears ``KillswitchState/isFetching``.
+    private func startNetworkFetch(
+        state: inout KillswitchState
+    ) -> Effect<KillswitchAction> {
+        state.isFetching = true
+        let service = self.service
+        let appVersion = self.appVersion()
+        // Nothing has decided the verdict yet: a cold launch. The device may
+        // already hold a config that blocks this build, so show it while the
+        // network answers rather than leave the build usable for the length
+        // of the request.
+        let previewsCache = state.verdict == .unknown
+        return Effect { send in
+            let preview = previewsCache ? service.loadCached() : nil
+            if let preview {
+                let verdict = KillswitchVerdict.evaluate(
+                    preview, against: appVersion
+                )
+                await send(.verdictReceived(verdict, fromNetwork: false))
+            }
+            await Self.fetchFromNetwork(
+                service: service, appVersion: appVersion,
+                fallsBackToCache: preview == nil, send: send
+            )
+        }
+    }
+
     nonisolated private static func fetchFromNetwork(
         service: KillswitchService,
         appVersion: String,
+        fallsBackToCache: Bool,
         send: @escaping Send<KillswitchAction>
     ) async {
         do {
-            let config = try await service.fetch()
+            let config = try await boundedFetch(from: service)
             service.saveCached(config)
             let verdict = KillswitchVerdict.evaluate(
                 config, against: appVersion
             )
             await send(.verdictReceived(verdict, fromNetwork: true))
         } catch {
-            if let cached = service.loadCached() {
+            // A previewed cache is already the verdict, and the in-flight
+            // guard means nothing has rewritten the file since.
+            if fallsBackToCache, let cached = service.loadCached() {
                 let verdict = KillswitchVerdict.evaluate(
                     cached, against: appVersion
                 )
@@ -163,5 +195,50 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             }
             await send(.fetchFailed(error.localizedDescription))
         }
+    }
+
+    /// Runs `service.fetch()` for at most `service.fetchTimeout`.
+    ///
+    /// Past the bound the fetch is abandoned, not awaited: a custom fetch
+    /// that ignores cancellation would otherwise hold ``KillswitchState/isFetching``,
+    /// and with it every later fetch, for as long as it runs. It is cancelled
+    /// and left to finish on its own; its result is discarded.
+    nonisolated private static func boundedFetch(
+        from service: KillswitchService
+    ) async throws -> KillswitchConfig {
+        guard let limit = BoundedResponse.deadline(forTimeout: service.fetchTimeout) else {
+            return try await service.fetch()
+        }
+        let work = Task { try await service.fetch() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let outcome = FirstOutcome(continuation)
+                let timer = Task {
+                    try await Task.sleep(for: limit)
+                    outcome.resume(with: .failure(URLError(.timedOut)))
+                    work.cancel()
+                }
+                Task {
+                    outcome.resume(with: await work.result)
+                    timer.cancel()
+                }
+            }
+        } onCancel: {
+            work.cancel()
+        }
+    }
+}
+
+/// Resumes a continuation with whichever result arrives first and drops the
+/// rest.
+private final class FirstOutcome<Value: Sendable>: Sendable {
+    private let continuation: Mutex<CheckedContinuation<Value, any Error>?>
+
+    init(_ continuation: CheckedContinuation<Value, any Error>) {
+        self.continuation = Mutex(continuation)
+    }
+
+    func resume(with result: Result<Value, any Error>) {
+        continuation.withLock { $0.take() }?.resume(with: result)
     }
 }

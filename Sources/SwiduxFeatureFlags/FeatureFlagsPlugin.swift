@@ -29,6 +29,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let refreshPolicy: RefreshPolicy
     private let keyValueStore: any KeyValueStore
     private let onExposure: (@Sendable (String, FlagValue) -> Void)?
+    private let fetchTimeout: Duration
 
     /// Creates the plugin and wires it into the host's root state and action types.
     ///
@@ -40,6 +41,12 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// used for bucketing when no `userIDKeyPath` resolves. Back it with a
     /// Keychain-minted value (see `KeyValueStore.deviceIdentity()`) so it
     /// survives reinstall.
+    ///
+    /// `fetchTimeout` bounds each `.refresh`: a `service.fetch()` still
+    /// running after it is cancelled and reported as `.refreshFailed`, so a
+    /// service that never returns can't hold `isFetching` for the session.
+    /// Keep it above the service's own timeout (``HTTPFeatureFlagsService``
+    /// defaults to 10 seconds) so the service's error is the one reported.
     public init(
         state: WritableKeyPath<RootState, FeatureFlagsState>,
         action toRootAction: @escaping @Sendable (FeatureFlagsAction) -> RootAction,
@@ -49,7 +56,8 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         userIDKeyPath: KeyPath<RootState, String?>? = nil,
         refreshPolicy: RefreshPolicy = .automatic,
         keyValueStore: any KeyValueStore,
-        onExposure: (@Sendable (String, FlagValue) -> Void)? = nil
+        onExposure: (@Sendable (String, FlagValue) -> Void)? = nil,
+        fetchTimeout: Duration = .seconds(30)
     ) {
         self.stateKeyPath = state
         self.toRootAction = toRootAction
@@ -60,6 +68,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.refreshPolicy = refreshPolicy
         self.keyValueStore = keyValueStore
         self.onExposure = onExposure
+        self.fetchTimeout = fetchTimeout
     }
 
     /// Routes feature-flags actions and returns effects for service fetches,
@@ -106,9 +115,10 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             state.isFetching = true
             let service = self.service
             let lift = self.toRootAction
+            let timeout = self.fetchTimeout
             return Effect { send in
                 do {
-                    let config = try await service.fetch()
+                    let config = try await Self.fetch(from: service, timeout: timeout)
                     await send(lift(.refreshSucceeded(config, fetchedAt: Date())))
                 } catch {
                     // Deliberately unfiltered, cancellation included:
@@ -151,27 +161,48 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             return nil
 
         case .recordExposure(let key):
-            guard !state.exposedKeys.contains(key) else { return nil }
-            guard let evaluation = evaluateForExposure(state: state, key: key) else {
-                return nil
-            }
-            state.exposedKeys.insert(key)
-            let callback = self.onExposure
-            return Effect { _ in
-                callback?(key, evaluation)
-            }
+            return fireExposure(key: key, value: evaluateUntyped(state: state, key: key), in: &state)
+
+        case .recordFlagExposure(let exposure):
+            let value = exposure.evaluate(
+                state.config,
+                state.localOverrides,
+                exposure.bucketingID ?? state.defaultBucketingID
+            )
+            return fireExposure(key: exposure.key, value: value, in: &state)
         }
     }
 
-    /// Resolves the value to record for an exposure. Returns `nil` if the
-    /// flag isn't present in the config (defensive — exposure for an unknown
-    /// flag is meaningless).
+    /// Fires `onExposure` unless `value` is `nil` (the read rendered its
+    /// default) or this flag already reported it this session: the first
+    /// exposure per (flag, value). Deduping on the value rather than the key
+    /// means a reassignment — sign-in switching the bucketing identity, a
+    /// refresh changing the rollout — is recorded instead of attributing the
+    /// user to the first treatment they saw; keeping every reported value,
+    /// not just the last, means views that alternate between values don't
+    /// re-record on each appearance.
+    private func fireExposure(
+        key: String,
+        value: FlagValue?,
+        in state: inout FeatureFlagsState
+    ) -> Effect<RootAction>? {
+        guard let value, state.exposedValues[key, default: []].insert(value).inserted else {
+            return nil
+        }
+        let callback = self.onExposure
+        return Effect { _ in
+            callback?(key, value)
+        }
+    }
+
+    /// Resolves the value to record for the deprecated key-only exposure.
+    /// Returns `nil` if the flag isn't present in the config.
     ///
-    /// Bucketing uses the same identity as default reads — the plugin-resolved
-    /// user ID when present, else the device ID — so the recorded exposure
-    /// matches what the user actually saw. Local overrides take precedence so
-    /// QA-toggled flags still record exposures.
-    private func evaluateForExposure(state: FeatureFlagsState, key: String) -> FlagValue? {
+    /// Without the flag's type this can't follow the read path: it records
+    /// any local override verbatim and a remote variant whether or not the
+    /// app can parse it, and it buckets by the default identity only.
+    /// ``FeatureFlagsAction/recordFlagExposure(_:)`` has none of these gaps.
+    private func evaluateUntyped(state: FeatureFlagsState, key: String) -> FlagValue? {
         if let override = state.localOverrides[key] { return override }
         guard let definition = state.config.flags[key] else { return nil }
         switch definition {
@@ -191,6 +222,40 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         }
     }
 
+    /// Awaits `service.fetch()` for at most `timeout`, then throws
+    /// ``FetchTimedOut``. `isFetching` clears only when the effect reports a
+    /// result, so an unbounded fetch — any custom service, not just the
+    /// deadline-bounded HTTP one — that never returns would block every later
+    /// `.refresh` for the session. The fetch runs in its own task because a
+    /// child task that ignores cancellation would hold a task group open; on
+    /// timeout (or cancellation of the effect) it is cancelled and its result,
+    /// if one ever arrives, is dropped.
+    private nonisolated static func fetch(
+        from service: any FeatureFlagsService,
+        timeout: Duration
+    ) async throws -> FeatureFlagsConfig {
+        let (outcomes, outcome) = AsyncStream<Result<FeatureFlagsConfig, any Error>>.makeStream()
+        let fetch = Task {
+            do {
+                outcome.yield(.success(try await service.fetch()))
+            } catch {
+                outcome.yield(.failure(error))
+            }
+        }
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            outcome.yield(.failure(FetchTimedOut(timeout: timeout)))
+        }
+        defer {
+            fetch.cancel()
+            timer.cancel()
+            outcome.finish()
+        }
+        var first = outcomes.makeAsyncIterator()
+        guard let result = await first.next() else { throw CancellationError() }
+        return try result.get()
+    }
+
     private func shouldDebounce(state: FeatureFlagsState) -> Bool {
         guard case .automatic(let minInterval) = refreshPolicy,
             let lastFetched = state.lastFetchedAt
@@ -202,4 +267,11 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         let elapsed = Date().timeIntervalSince(lastFetched)
         return elapsed >= 0 && elapsed < minInterval
     }
+}
+
+/// The plugin stopped waiting for a ``FeatureFlagsService/fetch()`` that ran
+/// past its `fetchTimeout`. Surfaces as `lastFetchError`.
+struct FetchTimedOut: Error, CustomStringConvertible {
+    let timeout: Duration
+    var description: String { "Feature-flags fetch timed out after \(timeout)" }
 }

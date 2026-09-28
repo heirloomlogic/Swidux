@@ -15,6 +15,9 @@ import Swidux
 /// want to gate the UI on first-load hydration or render a sync toggle.
 @Swidux
 public nonisolated struct PersistenceState: Sendable, Equatable {
+    /// `false`: undo and redo never roll this slice back; hydration and sync posture reflect storage, not the user's edits.
+    public static var restoresOnUndo: Bool { false }
+
     /// First-load hydration progress.
     public enum HydrationPhase: Sendable, Equatable {
         case loading

@@ -45,10 +45,10 @@ The plugin rejects unknown `version` values and falls back to the last-known-goo
 `bucket = FNV1a(bucketingID + ":" + flagKey) % 100`
 
 - **Stable per `(bucketingID, flagKey)` pair forever.** Same input always produces the same bucket.
-- **Per-flag.** A user isn't always in the "early" group across different flags.
+- **Per-flag.** A user isn't always in the "early" group across different flags. At 10–50% rollouts, membership in two flags' cohorts is effectively independent; at very small rollouts it is not — two flags canaried at 1% reach essentially disjoint sets of users, so no device runs both canaries at once.
 - **Identity resolution.** When a `userIDKeyPath` is configured *and* the current user ID is non-nil, that is used. Otherwise the **device ID** is used (the plugin's required `deviceIDKeyPath`). Anonymous users get a stable per-install identity; logged-in users get stable cross-device assignment. A user's variant *can* shift once at login — acceptable for nearly all real use cases.
 
-FNV-1a was chosen because it's simple, dependency-free, and matches GrowthBook's algorithm so apps migrating from GrowthBook get compatible buckets.
+FNV-1a was chosen because it's simple and dependency-free. It is not GrowthBook-compatible: GrowthBook hashes the ID and a seed with no separator, over UTF-16, into 1,000 (v1) or 10,000 (v2) buckets, so an app migrating from GrowthBook re-buckets about half of every 50/50 experiment.
 
 ### The device ID must be stable across reinstall
 
@@ -89,7 +89,7 @@ For each read, in priority:
 - **Device ID** is app-owned and minted once via `KeyValueStore.deviceIdentity()` (Keychain-backed). Seeded into the slice at `FeatureFlagsState.hydrated(from:deviceID:)` and kept in sync from `deviceIDKeyPath`. The plugin no longer mints its own bucketing identity.
 - **Last-known config** persisted after every successful refresh. Hydrates as fallback before first network success.
 - **Local overrides** *not* persisted by default. Restart = clean state.
-- **`exposedKeys`** *not* persisted. New session = fresh exposure events.
+- **`exposedValues`** *not* persisted. New session = fresh exposure events.
 
 ## Governance: no forever flags
 
@@ -120,7 +120,7 @@ When a flag passes its expiry, the test fails and the report names the flag, its
 A/B testing is only analytically valid if you know which users actually saw each variant — bucketing alone is insufficient because the code path branching on the flag might never execute.
 
 ```swift
-store.send(.featureFlags(.recordExposure(key: "checkout_layout")))
+store.send(.featureFlags(.recordExposure(of: .checkoutLayout)))
 ```
 
 Or via the SwiftUI sugar:
@@ -130,7 +130,15 @@ WizardView()
     .recordsExposure(of: .checkoutLayout, store: store, action: AppAction.featureFlags)
 ```
 
-The plugin dedupes per session and fires the optional `onExposure` callback (passed at plugin init). Wire that callback to your analytics plugin to forward exposures as events.
+Pass the typed flag, not its key. The plugin evaluates the exposure through the same path as the read, so the recorded value is the one the user saw:
+
+- A local override the read ignores (the wrong type for the flag) is ignored by the exposure too.
+- A remote variant your enum can't parse makes the read return the Swift default, and records **no** exposure. The user was assigned an arm they weren't shown — typically an arm added server-side before the app version that knows it — so counting them in either arm would skew the experiment.
+- If the read passed an explicit `bucketingID:`, pass the same one to `recordExposure(of:bucketingID:)` or the modifier.
+
+The plugin records the first exposure of each (flag, value) pair per session and fires the optional `onExposure` callback (passed at plugin init) for it. A reassignment — sign-in switching the bucketing identity, or a refresh changing the rollout — renders a value the flag hasn't reported yet, so it is recorded once and exposure analytics see the treatment the user now has. A value that comes back later in the session (an override toggled off and on, two views bucketing the same flag by different identities) isn't recorded again. Wire the callback to your analytics plugin to forward exposures as events.
+
+The key-only `recordExposure(key:)` is deprecated: without the flag's type it records overrides and remote variants verbatim and always buckets by the default identity.
 
 ## Refresh policy
 
@@ -152,6 +160,8 @@ public protocol FeatureFlagsService: Sendable {
 ```
 
 One method. Caching, hydration, evaluation all live in the plugin.
+
+The plugin bounds every fetch with its `fetchTimeout:` init parameter (default 30 seconds). A fetch still running at the deadline is cancelled and reported as `.refreshFailed`, and its result is dropped if it arrives later. That keeps a custom service that never returns from holding `isFetching`, which would otherwise block every later `.refresh` for the session. Keep the value above your service's own timeout so the service's error is the one reported.
 
 ### Built-in: `HTTPFeatureFlagsService`
 
@@ -177,8 +187,8 @@ state.variant(of: .checkoutLayout)
 state.value(of: .maxFreeUploads)
 ```
 
-Reads are pure synchronous functions. Per-property observation works as it does for any other state slice — views re-render only when the flag they read changes.
+Reads are pure synchronous functions. Observation is per *property* of the slice, not per flag: every read depends on `config` and `localOverrides` (and bucketed reads on the resolved identity), so a view that reads any flag re-renders whenever the config changes — even if the flag it reads is unchanged. A refresh that returns an identical config doesn't notify, because the assignment is equality-checked.
 
 ## Action semantics (selected)
 
-`refreshSucceeded(FeatureFlagsConfig, fetchedAt:)` is dispatched on every `.refresh` (including debounced refreshes that return an unchanged config). Consume config transitions by observing `FeatureFlagsState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
+`refreshSucceeded(FeatureFlagsConfig, fetchedAt:)` is dispatched for every fetch that succeeds, including one that returns an unchanged config. A `.refresh` that is debounced by `RefreshPolicy.automatic`, or that arrives while a fetch is already in flight, does not fetch and dispatches nothing. Consume config transitions by observing `FeatureFlagsState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.

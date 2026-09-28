@@ -47,7 +47,23 @@ public struct PersistedEntity<State> {
     /// tick re-reads everything and offers the change again. A caller driving off
     /// a history watermark cannot — for it, evidence is consumed once, so a
     /// deferral it doesn't carry forward becomes a permanent loss.
-    typealias MergeApply = @MainActor (inout State, MergeContext) -> Withheld
+    typealias MergeApply = @MainActor (inout State, MergeContext) -> MergeOutcome
+
+    /// What one entity's merge fold left behind.
+    struct MergeOutcome {
+        /// The rows it declined to act on. See ``MergeApply``.
+        var withheld = Withheld()
+
+        /// Whether memory still holds a row the snapshot lacks that nothing
+        /// local accounts for — an absence this read could not turn into a
+        /// verdict, because the empty-snapshot guard or the policy forbade
+        /// inferring deletion from it.
+        ///
+        /// Only a whole-table read can leave one. It matters to whoever anchors
+        /// the read: a watermark taken before it would step over the tombstone
+        /// that could still settle the question.
+        var leftAbsenceUndecided = false
+    }
 
     /// A fetched merge, plus whether the fetch actually happened.
     ///
@@ -58,8 +74,27 @@ public struct PersistedEntity<State> {
         /// Whether every fetch behind `apply` completed.
         let succeeded: Bool
 
+        /// Removes from state the rows a registered collapse deleted from disk
+        /// during this read, or `nil` when it deleted none. `apply` does the
+        /// same as part of the merge; this is for a caller that discards the
+        /// merge, because the deletions on disk are not discarded with it.
+        var collapsedAway: Apply? = nil
+
         /// The fold to apply. A no-op when `succeeded` is `false`.
         let apply: MergeApply
+    }
+
+    /// A fetched hydration, plus whether the fetch actually happened.
+    ///
+    /// `succeeded == false` means the read threw and `apply` is a no-op, which
+    /// leaves the store as it was. Hydration anchors the merge watermark, and
+    /// must not anchor past rows it never read.
+    struct HydrateRead {
+        /// Whether every fetch behind `apply` completed.
+        let succeeded: Bool
+
+        /// The fold to apply. A no-op when `succeeded` is `false`.
+        let apply: Apply
     }
 
     let makeWriter: @MainActor (DatabaseHandle, PersistenceObservers) -> StateWriter<State>
@@ -72,7 +107,7 @@ public struct PersistedEntity<State> {
     let unpersisted: UnpersistedIDs
 
     /// Phase 1 of first-load hydration: reads the database, touches no state.
-    let readForHydrate: @MainActor (DatabaseHandle, PersistenceObservers) async -> Apply
+    let readForHydrate: @MainActor (DatabaseHandle, PersistenceObservers) async -> HydrateRead
 
     /// Phase 1 of re-hydration: reads the database, touches no state.
     let readForMerge: @MainActor (DatabaseHandle, PersistenceObservers) async -> MergeRead
@@ -136,26 +171,48 @@ public struct PersistedEntity<State> {
         /// Reports any duplicates it collapsed on the way past. A registered
         /// resolver does not make them go away — rows sharing a *surviving* ID
         /// are converged, not deleted — so both branches have something to say.
+        /// Rows it could not decode are reported and returned, not thrown: one
+        /// row a newer app version wrote must not hide every row of the entity.
         @MainActor
         func loadRows(
             _ handle: DatabaseHandle,
             _ observers: PersistenceObservers
-        ) async throws -> (rows: [E], removedIDs: Set<UUID>) {
+        ) async throws -> (rows: [E], removedIDs: Set<UUID>, undecodable: Set<UUID>) {
             let rows: [E]
             let removedIDs: Set<UUID>
             let duplicates: Int
+            let undecodable: UndecodableRows
             if let collapse {
-                let outcome = try await handle.db.collapseDuplicates(
+                let collapsed = try await handle.db.collapsingDuplicates(
                     as: E.Model.self, using: collapse)
-                (rows, removedIDs, duplicates) = (
-                    outcome.survivors, outcome.removedIDs, outcome.duplicateRowCount
+                (rows, removedIDs, duplicates, undecodable) = (
+                    collapsed.outcome.survivors, collapsed.outcome.removedIDs,
+                    collapsed.outcome.duplicateRowCount, collapsed.undecodable
                 )
             } else {
                 let fetched = try await handle.db.fetchAllCollapsing(E.Model.self)
-                (rows, removedIDs, duplicates) = (fetched.domains, [], fetched.duplicatesCollapsed)
+                (rows, removedIDs, duplicates, undecodable) = (
+                    fetched.domains, [], fetched.duplicatesCollapsed, fetched.undecodable
+                )
             }
             reportDuplicates(duplicates, to: observers)
-            return (rows, removedIDs)
+            reportUndecodable(undecodable, to: observers)
+            // Unreadable means no row of the ID decoded. An ID that did load a
+            // value is merged like any other, even if a duplicate of it didn't.
+            let loadedIDs = Set(rows.lazy.map(\.id))
+            return (rows, removedIDs, undecodable.ids.filter { !loadedIDs.contains($0) })
+        }
+
+        /// Reports the rows a read found but could not decode, when there were
+        /// any — as a fetch failure naming them, since the app has lost sight of
+        /// those rows even though the read around them succeeded.
+        @MainActor
+        func reportUndecodable(_ undecodable: UndecodableRows, to observers: PersistenceObservers) {
+            guard let error = undecodable.firstError else { return }
+            observers.onFailure(
+                PersistenceFailure(
+                    operation: .fetch, entityType: entityTypeName, underlying: error,
+                    failedIDs: undecodable.ids))
         }
 
         /// Emits the duplicate-collapse diagnostic, when there was one.
@@ -178,6 +235,11 @@ public struct PersistedEntity<State> {
         /// from absence on the full path, declared outright on the partial one.
         /// It is the only thing the two paths disagree about here.
         ///
+        /// `unreadable` is what storage holds but this build could not decode.
+        /// Those rows are locally owned: storage said nothing this merge could
+        /// understand, so it neither overwrites them nor reads their absence
+        /// from the snapshot as a deletion.
+        ///
         /// `candidates` is every ID this merge could possibly act on. It exists
         /// so "in-memory wins" costs what the merge costs: `reconcile` consults
         /// the preserved set only for rows it is about to write or remove, so
@@ -192,6 +254,7 @@ public struct PersistedEntity<State> {
             current: EntityStore<E>,
             incoming: EntityStore<E>,
             candidates: some Sequence<UUID>,
+            unreadable: Set<UUID>,
             context: MergeContext,
             observers: PersistenceObservers,
             absenceRemoves: (UUID) -> Bool
@@ -200,10 +263,11 @@ public struct PersistedEntity<State> {
             // one primitive serves every policy. Candidates the store doesn't
             // hold are dropped: preserving one would block the insert that
             // additive merging is supposed to make.
-            let preserved =
+            var preserved =
                 context.policy.remoteWinsOnConflict
                 ? context.locallyOwnedIDs
                 : context.locallyOwnedIDs.union(candidates.lazy.filter(current.contains))
+            if !unreadable.isEmpty { preserved.formUnion(unreadable) }
             // Report only holds that actually cost something. The hold is in
             // force on every tick an open editor produces, so reporting one per
             // tick would drown the channel and say nothing about a leak.
@@ -224,7 +288,7 @@ public struct PersistedEntity<State> {
             for id in context.heldIDs {
                 guard let held = current[id] else { continue }
                 guard let stored = incoming[id] else {
-                    if absenceRemoves(id) { withheld.deleted.insert(id) }
+                    if !unreadable.contains(id), absenceRemoves(id) { withheld.deleted.insert(id) }
                     continue
                 }
                 if stored != held { withheld.changed.insert(id) }
@@ -244,10 +308,7 @@ public struct PersistedEntity<State> {
                         // before this was "we'll try again", and an app that
                         // wants to warn the user has been waiting for the
                         // difference.
-                        observers.onFailure(
-                            PersistenceFailure(
-                                operation: .save, entityType: entityTypeName, underlying: error,
-                                isFinal: true))
+                        observers.onFailure(.save(error, entityType: entityTypeName, isFinal: true))
                     }
                 ) { writes, deletions in
                     let touched = Set(writes.map(\.id)).union(deletions)
@@ -267,20 +328,25 @@ public struct PersistedEntity<State> {
                     do {
                         // One transaction per batch: a crash can't persist a
                         // partial flush, and a failure is reported, not eaten.
-                        try await handle.db.apply(writes: writes, deletions: deletions, as: E.Model.self)
+                        try await handle.db.applyFlush(writes: writes, deletions: deletions, as: E.Model.self)
                         await record { $0.markPersisted(touched) }
                     } catch {
+                        // A batch that failed only in part saved everything
+                        // else, and names the rows it could not.
+                        let failed = (error as? any PartialPersistFailure)?.failedIDs ?? touched
                         // Belt and braces alongside the writer putting the batch
-                        // back: this records memory ≠ storage even for the
-                        // window where the batch is mid-flight, and it is the
+                        // back: this records memory ≠ storage, and it is the
                         // only record a hand-written non-throwing persist
                         // closure could leave.
-                        await record { $0.markFailed(touched) }
-                        observers.onFailure(
-                            PersistenceFailure(operation: .save, entityType: entityTypeName, underlying: error))
-                        // Rethrow so the writer puts the batch back and the
-                        // plugin retries it. Swallowing here is what made a
-                        // failed save silent data loss.
+                        await record { ledger in
+                            // Both run: each moves a different part of the set.
+                            let cleared = ledger.markPersisted(touched.subtracting(failed))
+                            return ledger.markFailed(failed) || cleared
+                        }
+                        observers.onFailure(.save(error, entityType: entityTypeName))
+                        // Rethrow so the writer puts the failed rows back and
+                        // the plugin retries them. Swallowing here is what made
+                        // a failed save silent data loss.
                         throw error
                     }
                 }
@@ -291,49 +357,92 @@ public struct PersistedEntity<State> {
                 do {
                     // Removals are implicit here: the whole store is replaced
                     // by the survivors.
+                    // A row that would not decode is left out, and was
+                    // reported: hiding it beats hiding the whole entity, and the
+                    // stored payload is untouched for a build that can read it.
                     let loaded = try await loadRows(handle, observers)
-                    return { state in state[keyPath: keyPath] = EntityStore(loaded.rows) }
+                    return HydrateRead(succeeded: true) { state in
+                        // Recorded as arrivals from storage: a live store may
+                        // hold undo snapshots from before this read, and
+                        // restoring one must not delete what was loaded.
+                        state[keyPath: keyPath] = EntityStore(hydrating: loaded.rows)
+                    }
                 } catch {
                     // Leave the store untouched — an unreadable database must
                     // not present as "no data" (a later flush would then write
                     // an empty world view over whatever is recoverable).
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return { _ in }
+                    return HydrateRead(succeeded: false) { _ in }
                 }
             },
             readForMerge: { handle, observers in
                 do {
                     let loaded = try await loadRows(handle, observers)
                     let incoming = EntityStore(loaded.rows)
-                    return MergeRead(succeeded: true) { state, context in
+                    var collapsedAway: Apply?
+                    if !loaded.removedIDs.isEmpty {
+                        let removedIDs = loaded.removedIDs
+                        collapsedAway = { state in state[keyPath: keyPath].remove(ids: removedIDs) }
+                    }
+                    return MergeRead(succeeded: true, collapsedAway: collapsedAway) { state, context in
                         var current = state[keyPath: keyPath]
                         // A collapsed-away loser would otherwise linger as a
                         // zombie until relaunch. Recorded as a deletion so it
                         // also propagates to any peer that still holds it.
                         current.remove(ids: loaded.removedIDs)
+                        // Deletions the caller declared — owed from a tombstone
+                        // an earlier tick read — are evidence, not inference, and
+                        // the guard below does not apply to them.
+                        let declared =
+                            context.policy.removesMissingEntities ? context.deletedIDs : []
                         // An empty snapshot is indistinguishable from a store
                         // that is unreadable or mid-import, so refuse to read
                         // "everything was deleted" out of it — the same stance
                         // hydration takes on a failed fetch.
-                        let removes =
+                        let infers =
                             context.policy.removesMissingEntities
                             && !(incoming.isEmpty && !current.isEmpty)
                         // Every held ID is a candidate: a full merge can write or
                         // remove any row in the table.
                         let resolved = resolvePreserved(
                             current: current, incoming: incoming,
-                            candidates: current.values.lazy.map(\.id), context: context,
-                            observers: observers, absenceRemoves: { _ in removes })
-                        current.reconcile(
-                            with: incoming, preserving: resolved.preserved, removingMissing: removes)
+                            candidates: current.values.lazy.map(\.id), unreadable: loaded.undecodable,
+                            context: context, observers: observers,
+                            absenceRemoves: { infers || declared.contains($0) })
+                        if infers {
+                            current.reconcile(
+                                with: incoming, preserving: resolved.preserved, removingMissing: true)
+                        } else {
+                            current.reconcile(
+                                with: incoming, deleting: declared, preserving: resolved.preserved)
+                        }
+                        // Whatever is still here, absent from storage, and owned
+                        // by nothing local is a question this read declined.
+                        //
+                        // A held row counts too, where policy would have let a
+                        // deletion through: a hold defers a verdict, it does not
+                        // supply one. Exempting it would let the anchor step past
+                        // the tombstone that is the verdict, and the hold would
+                        // become a veto.
+                        let undecided =
+                            !infers
+                            && current.values.contains { row in
+                                guard !incoming.contains(row.id), !declared.contains(row.id),
+                                    !current.changes.upserts.contains(row.id)
+                                else { return false }
+                                if context.policy.removesMissingEntities, context.heldIDs.contains(row.id) {
+                                    return true
+                                }
+                                return !resolved.preserved.contains(row.id)
+                            }
                         state[keyPath: keyPath] = current
-                        return resolved.withheld
+                        return MergeOutcome(withheld: resolved.withheld, leftAbsenceUndecided: undecided)
                     }
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return MergeRead(succeeded: false) { _, _ in Withheld() }
+                    return MergeRead(succeeded: false) { _, _ in MergeOutcome() }
                 }
             },
             readForPartialMerge: { handle, observers, ids in
@@ -345,6 +454,8 @@ public struct PersistedEntity<State> {
                     // collapsed on read, and still reported.
                     let fetched = try await handle.db.fetchCollapsing(ids: ids, as: E.Model.self)
                     reportDuplicates(fetched.duplicatesCollapsed, to: observers)
+                    reportUndecodable(fetched.undecodable, to: observers)
+                    let unreadable = fetched.undecodable.ids
                     let incoming = EntityStore(fetched.domains)
                     return MergeRead(succeeded: true) { state, context in
                         var current = state[keyPath: keyPath]
@@ -359,17 +470,17 @@ public struct PersistedEntity<State> {
                         // and consults the preserved set for nothing else.
                         let resolved = resolvePreserved(
                             current: current, incoming: incoming,
-                            candidates: incoming.values.map(\.id) + deleting, context: context,
-                            observers: observers, absenceRemoves: { deleting.contains($0) })
+                            candidates: incoming.values.map(\.id) + deleting, unreadable: unreadable,
+                            context: context, observers: observers, absenceRemoves: { deleting.contains($0) })
                         current.reconcile(
                             with: incoming, deleting: deleting, preserving: resolved.preserved)
                         state[keyPath: keyPath] = current
-                        return resolved.withheld
+                        return MergeOutcome(withheld: resolved.withheld)
                     }
                 } catch {
                     observers.onFailure(
                         PersistenceFailure(operation: .fetch, entityType: entityTypeName, underlying: error))
-                    return MergeRead(succeeded: false) { _, _ in Withheld() }
+                    return MergeRead(succeeded: false) { _, _ in MergeOutcome() }
                 }
             },
             collapseOnDisk: { handle, observers in

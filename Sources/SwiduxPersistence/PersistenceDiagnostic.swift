@@ -103,10 +103,12 @@ public struct PersistenceDiagnostic: Sendable, Equatable, CustomStringConvertibl
         /// A tick could not narrow its work from persistent history and re-read
         /// every registered entity instead.
         ///
-        /// Expected once per launch, and after a container rebuild. Repeatedly,
-        /// it means something is preventing the watermark from advancing — a
-        /// leaked editing hold, a failing read, or a store recording no usable
-        /// history — and each of those has a different fix. See
+        /// Expected on the first tick of a session nothing anchored — hydration
+        /// and a re-hydration after a container rebuild both anchor one — and
+        /// after a transient history failure. Repeatedly, it means something
+        /// is preventing the watermark from advancing — a failing read, or a
+        /// store recording no usable history — and each of those has a
+        /// different fix. See
         /// ``PersistenceDiagnostic/fallbackReason``.
         public static let historyUnavailable = Kind(rawValue: "historyUnavailable")
 

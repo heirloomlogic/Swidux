@@ -43,9 +43,12 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
     ///   - url: The JSON config endpoint; must be HTTPS.
     ///   - session: The URL session to fetch with.
     ///   - decoder: The decoder for the wire-format config.
-    ///   - fetchTimeout: Per-request timeout in seconds. Flags are a small
-    ///     control channel; a hung request shouldn't wait the URLSession
-    ///     default 60 s to fall back to the cached config.
+    ///   - fetchTimeout: How long the whole fetch may take, in seconds —
+    ///     headers and body together, not just the gap between packets, so a
+    ///     response trickled in a byte at a time still fails on schedule.
+    ///     Flags are a small control channel; a stalled request shouldn't hold
+    ///     `isFetching` and keep every later refresh from running. A value
+    ///     that isn't finite and positive (`.infinity`, say) sets no deadline.
     public init(
         url: URL,
         session: URLSession = .shared,
@@ -73,7 +76,8 @@ public struct HTTPFeatureFlagsService: FeatureFlagsService {
         request.timeoutInterval = fetchTimeout
 
         let data = try await BoundedResponse.data(
-            for: request, session: session, limit: Self.maxResponseBytes
+            for: request, session: session, limit: Self.maxResponseBytes,
+            deadline: BoundedResponse.deadline(forTimeout: fetchTimeout)
         )
 
         return try decoder.decode(FeatureFlagsConfig.self, from: data)

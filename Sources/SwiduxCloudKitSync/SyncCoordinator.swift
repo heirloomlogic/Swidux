@@ -41,7 +41,9 @@ public final class SyncCoordinator<State, Action> {
     ///   - mode: The mode resolved at launch (see `resolveDesiredSyncMode`).
     ///   - preflight: iCloud availability probe.
     ///   - keyValue: Store for persisting the user's sync choice.
-    ///   - storeURL: Shared on-disk store URL for both modes.
+    ///   - storeURL: Shared on-disk store URL for both modes. Only needed when
+    ///     the running container isn't a single on-disk store; otherwise its
+    ///     URL is used, and a different one here is a programmer error.
     ///   - cloudKitContainerID: Explicit CloudKit container id, or `nil` for `.automatic`.
     ///   - makeContainer: Custom container builder. Defaults to `CloudContainerFactory`.
     ///   - logger: Logger for rebuild failures.
@@ -60,13 +62,31 @@ public final class SyncCoordinator<State, Action> {
         self.mode = mode
         self.preflight = preflight
         self.keyValue = keyValue
+        // Toggling keeps every row only because both modes open one file, so
+        // the rebuild follows the store the app is running on rather than
+        // trusting a second copy of its URL. A mismatch would fork the store:
+        // everything written after the toggle would be gone next launch.
+        let runningStore = Self.onDiskStoreURL(of: persistence.handle.db.modelContainer)
+        if let storeURL, let runningStore, storeURL.standardizedFileURL != runningStore.standardizedFileURL {
+            logger.fault("storeURL doesn't match the running store; rebuilding over the running store instead.")
+            assertionFailure("SwiduxCloudKitSync: storeURL \(storeURL) is not the running store \(runningStore).")
+        }
+        let rebuildURL = runningStore ?? storeURL
         self.makeContainer =
             makeContainer
             ?? { mode in
                 try CloudContainerFactory.makeContainer(
-                    models: models, mode: mode, url: storeURL, cloudKitContainerID: cloudKitContainerID)
+                    models: models, mode: mode, url: rebuildURL, cloudKitContainerID: cloudKitContainerID)
             }
         self.logger = logger
+    }
+
+    /// The file behind `container`, when it is exactly one on-disk store.
+    private static func onDiskStoreURL(of container: ModelContainer) -> URL? {
+        guard container.configurations.count == 1, let only = container.configurations.first,
+            !only.isStoredInMemoryOnly
+        else { return nil }
+        return only.url
     }
 
     /// Resolves the current runtime status without changing anything.
@@ -97,18 +117,26 @@ public final class SyncCoordinator<State, Action> {
         await persistence.corePlugin.flush()
         guard revision == toggleRevision else { return .superseded }
 
-        // 2. Resolve availability for the requested mode.
+        // 2. Resolve availability for the requested mode. An opt-out consults no
+        //    probe, so it never waits on a CloudKit round trip with the mirrored
+        //    container still live.
         let status = await preflight.resolve(desired: target)
         guard revision == toggleRevision else { return .superseded }
 
+        // Only a definitive signal gets here — the process's own entitlements,
+        // or CloudKit rejecting them — never a user's device settings.
         if status == .misconfiguredNoEntitlement {
             logger.error("iCloud sync requested but the app is not entitled; staying local-only.")
             assertionFailure("SwiduxCloudKitSync: iCloud requested but no iCloud entitlement is present.")
         }
 
-        // 3. Use CloudKit only when it is actually usable; otherwise local.
-        let effectiveMode: SyncMode = (target == .iCloud && status == .syncing) ? .iCloud : .localOnly
-        guard rebuildDatabase(mode: effectiveMode) else {
+        // 3. Attach the mirror for `.iCloud` unless the build can't have one —
+        //    the same container launch builds from the same preference. A
+        //    mirrored container tolerates a missing account and starts syncing
+        //    on sign-in; a local fallback would stay local until relaunch while
+        //    `currentStatus()` reported `.syncing` over it.
+        let mirrored = target == .iCloud && status != .misconfiguredNoEntitlement
+        guard rebuildDatabase(mode: mirrored ? .iCloud : .localOnly) else {
             // The old database stays active. Don't persist the choice or
             // report the preflight status — the toggle did not take effect.
             return .rebuildFailed
@@ -141,10 +169,11 @@ public final class SyncCoordinator<State, Action> {
 extension SyncCoordinator where State: SwiduxObservable {
     /// Turns iCloud sync on or off.
     ///
-    /// Flushes pending writes, rebuilds the container in the effective mode
-    /// (CloudKit only when actually available, else a local fallback), swaps the
-    /// active database, persists the preference, and re-hydrates via `merge`
-    /// (never replace). Returns the resolved ``SyncStatus``.
+    /// Flushes pending writes, rebuilds the container — CloudKit-mirrored for
+    /// `true` unless the build isn't entitled, so a signed-out user starts
+    /// syncing on sign-in without another toggle — swaps the active database,
+    /// persists the preference, and re-hydrates via `merge` (never replace).
+    /// Returns the resolved ``SyncStatus``.
     ///
     /// The flush, preflight, and rebuild all complete before any state is
     /// packed, so an edit made while the toggle is in flight survives it.

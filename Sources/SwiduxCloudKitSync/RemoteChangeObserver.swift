@@ -34,6 +34,7 @@ public final class RemoteChangeObserver {
     typealias StoreIdentity = @MainActor () -> Set<URL>
 
     private let debounce: Duration
+    private let maxWait: Duration
     private let onRemoteChange: @MainActor (RemoteChange) async -> Void
     private let ownedStoreURLs: StoreIdentity?
     private let logger: Logger
@@ -52,6 +53,10 @@ public final class RemoteChangeObserver {
     /// hand.
     private var burst: RemoteChange?
 
+    /// The latest the current burst may be delivered, however many
+    /// notifications keep re-arming the debounce. `nil` when no burst is owed.
+    private var burstDeadline: ContinuousClock.Instant?
+
     /// The designated initializer. `notificationCenter` is a test seam.
     ///
     /// `.NSPersistentStoreRemoteChange` is posted to the process-wide
@@ -61,12 +66,14 @@ public final class RemoteChangeObserver {
     /// shared center, so tests hand in one of their own.
     init(
         debounce: Duration = .seconds(2),
+        maxWait: Duration = .seconds(10),
         ownedStoreURLs: StoreIdentity? = nil,
         logger: Logger = Logger(subsystem: "swidux", category: "sync"),
         notificationCenter: NotificationCenter,
         onRemoteChange: @escaping @MainActor (RemoteChange) async -> Void
     ) {
         self.debounce = debounce
+        self.maxWait = maxWait
         self.ownedStoreURLs = ownedStoreURLs
         self.onRemoteChange = onRemoteChange
         self.logger = logger
@@ -78,6 +85,11 @@ public final class RemoteChangeObserver {
     /// - Parameters:
     ///   - debounce: How long to coalesce a burst of notifications before
     ///     calling the handler once.
+    ///   - maxWait: The longest a burst is held, measured from its first
+    ///     notification. Without it a steady stream — a long CloudKit import
+    ///     saving in batches, or the app's own saves while the user keeps
+    ///     editing — would re-arm the debounce indefinitely and hold back every
+    ///     remote change until the stream stopped.
     ///   - handle: The database whose stores this observer is responsible for.
     ///     Consulted per notification, so a sync toggle — which rebuilds the
     ///     container behind the same handle — is picked up without re-creating
@@ -88,6 +100,7 @@ public final class RemoteChangeObserver {
     ///     named.
     public convenience init(
         debounce: Duration = .seconds(2),
+        maxWait: Duration = .seconds(10),
         owning handle: DatabaseHandle? = nil,
         logger: Logger = Logger(subsystem: "swidux", category: "sync"),
         onRemoteChange: @escaping @MainActor (RemoteChange) async -> Void
@@ -96,6 +109,7 @@ public final class RemoteChangeObserver {
         if let handle { identity = { handle.storeURLs } }
         self.init(
             debounce: debounce,
+            maxWait: maxWait,
             ownedStoreURLs: identity,
             logger: logger,
             notificationCenter: .default,
@@ -135,6 +149,7 @@ public final class RemoteChangeObserver {
         // would fold stores observed before a container rebuild into the first
         // burst after one.
         burst = nil
+        burstDeadline = nil
     }
 
     /// Gives the registration back if the owner dropped this observer without
@@ -146,8 +161,9 @@ public final class RemoteChangeObserver {
     /// per appearance would accumulate one per cycle. Deinit is the only place
     /// that can be sure no one else is going to.
     ///
-    /// Only the token: `pending` holds `[weak self]` and dies on its own, and
-    /// there is nothing left to cancel it for.
+    /// Only the token: `pending` holds `self` weakly across its sleep, so it
+    /// neither keeps a dropped observer alive nor finds one to fire when it
+    /// wakes, and there is nothing left to cancel it for.
     deinit {
         if let observerToken {
             notificationCenter.removeObserver(observerToken)
@@ -169,7 +185,10 @@ public final class RemoteChangeObserver {
         // Mutated through the optional rather than copied out and back, so the
         // accumulated sets stay uniquely referenced instead of reallocating on
         // every notification.
-        if burst == nil { burst = RemoteChange() }
+        if burst == nil {
+            burst = RemoteChange()
+            burstDeadline = .now + maxWait
+        }
         burst?.notificationCount += 1
         if let storeURL {
             burst?.storeURLs.insert(storeURL)
@@ -196,10 +215,14 @@ public final class RemoteChangeObserver {
     private func scheduleMerge() {
         armedMergeCount += 1
         pending?.cancel()
+        let quiet = ContinuousClock.now + debounce
+        let deadline = burstDeadline.map { min(quiet, $0) } ?? quiet
+        // Weak across the sleep: a strong capture here would keep a dropped
+        // observer alive, and its still-registered block would re-arm it on the
+        // next notification — merging alongside its replacement indefinitely.
         pending = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: self.debounce)
-            guard !Task.isCancelled else { return }
+            try? await Task.sleep(until: deadline, clock: .continuous)
+            guard !Task.isCancelled, let self else { return }
             await self.fire()
         }
     }
@@ -208,6 +231,7 @@ public final class RemoteChangeObserver {
     private func fire() async {
         guard let burst else { return }
         self.burst = nil
+        burstDeadline = nil
         await onRemoteChange(burst)
     }
 

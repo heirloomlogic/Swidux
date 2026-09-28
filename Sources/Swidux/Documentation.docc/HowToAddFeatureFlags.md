@@ -69,8 +69,6 @@ let initial = AppState(
     deviceID: deviceID
 )
 
-let store = Store(initialState: initial, reducer: AppReducer())
-
 // With the Examples/ConfigWorker setup this is the shared portfolio URL:
 // "https://<host>/<appID>/flags". Any URL returning FeatureFlagsConfig works.
 let configURL = URL(static: "https://<host>/<appID>/flags")
@@ -83,8 +81,23 @@ let flags = FeatureFlagsPlugin<AppState, AppAction>(
     deviceIDKeyPath: \.deviceID,
     keyValueStore: kv
 )
-store.register(plugin: flags)
+
+let plugins = PluginHost<AppState, AppAction>()
+// … register persistence and other plugins first
+plugins.register(flags)
+
+let reducer = AppReducer()
+let environment = AppEnvironment.live()
+let store = Store(
+    initialState: initial,
+    reducer: { state, action in
+        reducer.reduce(state: &state, action: action, environment: environment)
+    },
+    plugins: plugins
+)
 ```
+
+Plugins are registered on the `PluginHost` you pass to `Store.init`, as in the `Store.configured()` factory from <doc:GettingStarted> — `Store` itself has no registration method.
 
 ## Step 4: Declare typed flag keys
 

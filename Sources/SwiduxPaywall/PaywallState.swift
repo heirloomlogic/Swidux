@@ -11,6 +11,9 @@ import Swidux
 /// Hosted in the app's root state via `@Slice var paywall: PaywallState`.
 @Swidux
 public nonisolated struct PaywallState: Sendable, Equatable {
+    /// `false`: undo and redo never roll this slice back; entitlement and purchase progress reflect the store, not the user's edits.
+    public static var restoresOnUndo: Bool { false }
+
     /// `true` when the active entitlement grants pro access.
     public var isPro: Bool = false
     /// `true` when the user owns a permanent license.

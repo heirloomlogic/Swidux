@@ -46,6 +46,7 @@ public struct KillswitchState: Sendable, Equatable {
     public var verdict: KillswitchVerdict   // defaults to .unknown
     public var lastFetch: Date?             // nil until first successful fetch
     public var fetchError: String?          // localized description of last failure
+    public var isFetching: Bool             // true while a network fetch is in flight
 
     public var isBlocked: Bool              // delegates to verdict.isBlocked
     public var canOpenUpdateURL: Bool       // .blocked AND updateURL is non-nil
@@ -53,7 +54,8 @@ public struct KillswitchState: Sendable, Equatable {
     public init(
         verdict: KillswitchVerdict = .unknown,
         lastFetch: Date? = nil,
-        fetchError: String? = nil
+        fetchError: String? = nil,
+        isFetching: Bool = false
     )
 }
 ```
@@ -74,7 +76,7 @@ public enum KillswitchAction: Sendable {
 }
 ```
 
-`.fetch` is the launch-time entry point — it consults the cache and skips the network when the cached config is fresh. `.forceFetch` always hits the network, suitable for pull-to-refresh or post-update health checks.
+`.fetch` is the launch-time entry point — it consults the cache and skips the network when the cached config is fresh. `.forceFetch` always hits the network, suitable for pull-to-refresh or post-update health checks. Neither starts a second request while one is in flight.
 
 ### KillswitchService
 
@@ -86,12 +88,14 @@ public struct KillswitchService: Sendable {
     public var loadCached: @Sendable () -> KillswitchConfig?
     public var saveCached: @Sendable (KillswitchConfig) -> Void
     public let cacheLifetime: TimeInterval
+    public let fetchTimeout: TimeInterval
 
     public init(
         fetch: @escaping @Sendable () async throws -> KillswitchConfig,
         loadCached: @escaping @Sendable () -> KillswitchConfig?,
         saveCached: @escaping @Sendable (KillswitchConfig) -> Void,
-        cacheLifetime: TimeInterval
+        cacheLifetime: TimeInterval,
+        fetchTimeout: TimeInterval = 30
     )
 
     public static func live(
@@ -111,7 +115,9 @@ public struct KillswitchService: Sendable {
 
 `live(endpoint:)` decodes JSON from `endpoint` with a `reloadIgnoringLocalCacheData` policy and persists the result to `swidux-killswitch.json` in a **bundle-scoped subdirectory** of the user's caches directory. The stored payload records the endpoint it came from, and a cache written for a different endpoint reads as absent — the cached config produces a verdict with the same authority a fetched one does, so it is scoped and checked rather than trusted. See <doc:SecurityPosture> §6a. `mock(result:cached:)` keeps an in-memory cache and lets a test inject a closure that returns or throws.
 
-The endpoint must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure) — the killswitch is a remote control channel and must not be tamperable in transit. Non-2xx responses and payloads over 1 MB are treated as fetch failures, which fall back to the cache (and ultimately fail open).
+`fetchTimeout` is the plugin's own bound on `fetch`, whatever the service does inside it. Only one network fetch runs at a time, so a custom `fetch` that never returned would otherwise hold `isFetching`, and every later `.fetch` and `.forceFetch`, for the session. Past the bound the plugin abandons the call, even one that ignores cancellation, and handles it as a failure (`URLError.timedOut`): cache fallback plus `.fetchFailed`. It defaults to 30 seconds for a custom service; `live` uses its own `fetchTimeout`. A value that isn't finite and positive means no bound.
+
+The endpoint must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure) — the killswitch is a remote control channel and must not be tamperable in transit. Non-2xx responses, payloads over 1 MB, and fetches that run past `fetchTimeout` are treated as fetch failures, which fall back to the cache (and ultimately fail open). `fetchTimeout` bounds the whole fetch, headers and body together; it is not just an idle timeout, so a response trickled in a byte at a time still fails on schedule.
 
 ### KillswitchConfig
 
@@ -211,17 +217,17 @@ Both initializers fail and return `nil` if the lower bound is not strictly less 
 
 | Action | Effect on state | Returned effect |
 |---|---|---|
-| `.fetch` | none | if the cache is fresh (`Date() - lastFetch < cacheLifetime` AND `loadCached()` is non-nil), evaluates the cached config and dispatches `.verdictReceived(...)` without hitting the network; otherwise behaves like `.forceFetch` |
-| `.forceFetch` | none | calls `service.fetch()`, persists the result via `service.saveCached(_:)`, dispatches `.verdictReceived(...)`. On thrown error, falls back to `service.loadCached()` if available — dispatching `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)` so the UI can surface the error while keeping a usable verdict |
-| `.verdictReceived(verdict, fromNetwork:)` | sets `verdict`, clears `fetchError`; sets `lastFetch = Date()` **only when `fromNetwork` is true** — a cache-served verdict must not slide the freshness window, or a session polling `.fetch` inside `cacheLifetime` would never consult the network again | none |
-| `.fetchFailed(message)` | sets `fetchError = message` (does not clear `verdict` or `lastFetch`) | none |
+| `.fetch` | ignored while `isFetching`. If the window is fresh (`0 <= Date() - lastFetch < cacheLifetime`) and `loadCached()` returns a config, sets `verdict` from it and clears `fetchError` right there in the reducer, leaving `lastFetch` alone; otherwise sets `isFetching` | none for a fresh-window cache hit — the verdict is already applied, so no later action can land after, and overwrite, a newer network verdict. Otherwise behaves like `.forceFetch`. `lastFetch` is session state, so every cold launch goes to the network |
+| `.forceFetch` | ignored while `isFetching`; otherwise sets `isFetching` | if `verdict` is still `.unknown` (a cold launch) and a cached config exists, first dispatches its verdict with `fromNetwork: false`, so a build the device already knows is blocked is blocked before the network answers. Then calls `service.fetch()`, persists the result via `service.saveCached(_:)`, and dispatches `.verdictReceived(..., fromNetwork: true)`. On thrown error, falls back to `service.loadCached()` if it wasn't already shown — dispatching `.verdictReceived(...)` from the cache **and** `.fetchFailed(message)` so the UI can surface the error while keeping a usable verdict |
+| `.verdictReceived(verdict, fromNetwork:)` | sets `verdict`, clears `fetchError`; sets `lastFetch = Date()` and clears `isFetching` **only when `fromNetwork` is true** — a cache-served verdict must not slide the freshness window, or a session polling `.fetch` inside `cacheLifetime` would never consult the network again, and the cold-launch preview arrives while the request is still in flight | none |
+| `.fetchFailed(message)` | sets `fetchError = message`, clears `isFetching` (does not clear `verdict` or `lastFetch`) | none |
 | `.openUpdateURL` | none | if `verdict` is `.blocked` with a non-nil `updateURL` whose scheme is `https`, `itms-apps`, or `macappstore`, calls the plugin's `openURL` closure; otherwise no effect (the URL comes from remote config, so arbitrary schemes are never opened) |
 
 The plugin only handles its own actions. Any action that `extractAction` returns `nil` for is ignored — the plugin's `reduce(...)` returns `nil` immediately.
 
 The combination of `.forceFetch`'s cached-fallback behavior and `.fetch`'s cache-freshness gate is the basis for the plugin's offline tolerance: a launch on a flaky network still yields a verdict (cached) and an error indicator (`fetchError`), without leaving the UI stuck on `.unknown`.
 
-> Note: `.verdictReceived` is dispatched on every `.fetch`/`.forceFetch` (cache hit or network), usually with an unchanged verdict. Consume verdict transitions by observing `KillswitchState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
+> Note: `.verdictReceived` is dispatched on every network fetch (and its cold-launch preview or cache fallback), usually with an unchanged verdict; a fresh-window `.fetch` applies its cached verdict without one. Consume verdict transitions by observing `KillswitchState` or a value derived from it — not by mapping this action. See <doc:PluginArchitecture#Service-Result-Actions-and-Transition-Observation>.
 
 ## Verdict evaluation rules
 
@@ -234,6 +240,8 @@ The combination of `.forceFetch`'s cached-fallback behavior and `.fetch`'s cache
 5. **Otherwise** return `.allowed`.
 
 A blocked verdict carries the config's `blockedTitle`, `blockedMessage`, and `updateURL` (parsed via `URL(string:)`) regardless of which check matched.
+
+Config-side versions parse strictly: `"2.0"`, `"v2.0.0"`, and `" 2.0.0"` (stray whitespace from a dashboard paste) are all rejected, as are ranges with spaces around `..<` or a lower bound that isn't below the upper. A rejected rule never matches, so it fails open. Every evaluation logs each rejected rule at error level to the `swidux` subsystem, `killswitch` category, with the offending string public — check Console after publishing an incident config, because the endpoint will happily serve a rule no client can apply.
 
 ## Remote config JSON shape
 
@@ -279,6 +287,8 @@ extension View {
 ```
 
 Both overloads apply `.disabled(verdict.isBlocked)` to the modified content, so the underlying view tree stops responding to touches while blocked. The blocker layer is rendered as an overlay; supply your own to match the host app's design system.
+
+The modifier is view-local. It covers only the view it is applied to, and the plugin does not gate dispatch while blocked: other scenes, presentations already on screen (drawn above the overlay), menu commands, keyboard shortcuts, App Intents, and URL handlers all keep working unless you gate them. Apply the modifier to every scene's root, dismiss presentations when `isBlocked` becomes true, and disable commands on `isBlocked`. See <doc:HowToAddAVersionKillswitch#What-the-blocker-covers>.
 
 ## See Also
 

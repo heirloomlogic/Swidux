@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Synchronization
 import Testing
 
 @testable import SwiduxKillswitch
@@ -69,6 +70,41 @@ struct KillswitchServiceLiveTests {
             _ = try await service.fetch()
         }
         #expect(error?.code == .dataLengthExceedsMaximum)
+    }
+
+    @Test("an infinite fetchTimeout fetches without a deadline instead of trapping")
+    func infiniteFetchTimeoutDoesNotTrap() async throws {
+        let url = URL(static: "https://example.test/killswitch.json")
+        let session = StubURLSession.with(data: Data("{}".utf8), response: .ok(url: url))
+        let service = KillswitchService.live(endpoint: url, fetchTimeout: .infinity, session: session)
+
+        #expect(try await service.fetch() == KillswitchConfig())
+    }
+
+    @Test("a trickling response is abandoned at fetchTimeout, not kept alive by each byte")
+    func tricklingResponseTimesOut() async throws {
+        let url = URL(static: "https://example.test/killswitch.json")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [TrickleProtocolStub.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let service = KillswitchService.live(endpoint: url, fetchTimeout: 0.5, session: session)
+
+        // `timeoutInterval` is an idle timeout: a byte every 50 ms resets it
+        // forever. Only a wall-clock deadline ends this transfer, and it has to,
+        // or the plugin never reaches the `catch` that serves the cached block.
+        let clock = ContinuousClock()
+        let started = clock.now
+        let fetch = Task { try await service.fetch() }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(5))
+            fetch.cancel()
+        }
+        let result = await fetch.result
+        watchdog.cancel()
+
+        #expect(clock.now - started < .seconds(5), "still in flight until the watchdog cancelled it")
+        #expect(throws: URLError(.timedOut)) { try result.get() }
     }
 
     // MARK: - Cache
@@ -192,4 +228,32 @@ private final class URLProtocolStub: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+/// Answers 200, then sends one byte every 50 ms until the loader stops it —
+/// a response that never goes idle long enough for `timeoutInterval` to fire.
+private final class TrickleProtocolStub: URLProtocol {
+    private let stopped = Mutex(false)
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse.ok(url: url), cacheStoragePolicy: .notAllowed)
+        trickle()
+    }
+    override func stopLoading() {
+        stopped.withLock { $0 = true }
+    }
+
+    private func trickle() {
+        // URLProtocol opts out of Sendable; `stopped` is the only state the
+        // timer touches, and it is behind a lock.
+        nonisolated(unsafe) let stub = self
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(50)) {
+            guard !stub.stopped.withLock({ $0 }) else { return }
+            stub.client?.urlProtocol(stub, didLoad: Data(" ".utf8))
+            stub.trickle()
+        }
+    }
 }

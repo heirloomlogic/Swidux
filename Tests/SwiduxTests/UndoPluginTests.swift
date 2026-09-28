@@ -285,6 +285,55 @@ struct UndoPluginTests {
         #expect(undo.undo(current: s0) != nil)
     }
 
+    @MainActor
+    @Test("A non-undoable action ends a coalescing run")
+    func nonUndoableActionEndsCoalescing() {
+        let undo = UndoPlugin<TestState, TestAction>(
+            isUndoable: {
+                if case .noOp = $0 { return false }
+                return true
+            },
+            coalescing: {
+                if case .rename = $0 { return true }
+                return false
+            }
+        )
+        let s0 = TestState()
+
+        undo.willReduce(state: s0, action: .rename(UUID(), "a2"))  // typing into A
+        undo.willReduce(state: s0, action: .noOp)  // e.g. selecting B
+        undo.willReduce(state: s0, action: .rename(UUID(), "b2"))  // typing into B
+
+        #expect(undo.undo(current: s0) != nil)
+        #expect(undo.undo(current: s0) != nil, "the two renames must be separate undo steps")
+    }
+
+    @MainActor
+    @Test("A non-undoable action the coalescing predicate matches does not end the run")
+    func nonUndoableCoalescingActionKeepsRun() {
+        let undo = UndoPlugin<TestState, TestAction>(
+            isUndoable: {
+                if case .effectAction = $0 { return false }
+                return true
+            },
+            coalescing: {
+                switch $0 {
+                case .rename, .effectAction: true
+                default: false
+                }
+            }
+        )
+        let s0 = TestState()
+        let id = UUID()
+
+        undo.willReduce(state: s0, action: .rename(id, "a"))
+        undo.willReduce(state: s0, action: .effectAction("validated"))  // an effect's echo of each keystroke
+        undo.willReduce(state: s0, action: .rename(id, "ab"))
+
+        #expect(undo.undo(current: s0) != nil)
+        #expect(undo.undo(current: s0) == nil)
+    }
+
     // MARK: - isUndoable Predicate
 
     @MainActor

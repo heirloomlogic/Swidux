@@ -4,7 +4,7 @@ Layer opt-in, cross-device iCloud sync on top of `SwiduxPersistence` with the `S
 
 ## Overview
 
-`SwiduxCloudKitSync` adds CloudKit mirroring to the persistence stack from <doc:HowToAddPersistence>. The same generated `@Persisted` models and the same `PersistenceCoordinator` are reused; this works precisely because `@Persisted` generates **CloudKit-safe** models — every non-optional attribute carries a default and every relationship is optional, so the schema validates when SwiftData builds the container with `cloudKitDatabase` set (see <doc:HowToAddPersistence> for the default/optionality rules and their diagnostics). Sync only changes how the `ModelContainer` is built (`cloudKitDatabase` set vs `.none`) and adds three things:
+`SwiduxCloudKitSync` adds CloudKit mirroring to the persistence stack from <doc:HowToAddPersistence>. The same generated `@Persisted` models and the same `PersistenceCoordinator` are reused; this works precisely because `@Persisted` generates **CloudKit-safe** models — every non-optional attribute carries a default and every relationship is optional, so the schema validates when SwiftData builds the container with `cloudKitDatabase` set (see <doc:HowToAddPersistence> for the default/optionality rules and their diagnostics). The exception is the current `@Relation` implementation: it generates a one-sided relationship, CloudKit mirroring requires an inverse on every relationship, and a CloudKit container over such a model fails to load its store. A synced app composes owned values with `@Inline`, or registers the child as its own entity with a `@ForeignKey` to its parent. Sync only changes how the `ModelContainer` is built (`cloudKitDatabase` set vs `.none`) and adds three things:
 
 - a **runtime sync toggle** (`SyncCoordinator`) — because SwiftData fixes `cloudKitDatabase` at container creation, toggling rebuilds the container and swaps the active database behind the coordinator's handle, never moving local rows;
 - **entitlement & account detection** (`SyncPreflightService` → `SyncStatus`) — degrade to local-only and surface a status rather than crash;
@@ -30,7 +30,7 @@ The resulting entitlements your built app must carry:
 | `com.apple.developer.icloud-services` | `[CloudKit]` |
 | `aps-environment` | `development` in dev builds, `production` in release archives |
 
-> Important: an **empty** `icloud-container-identifiers` array paired with a `CloudKit` services line is misconfiguration, not sync — `SyncPreflightService` will report the app as unavailable. The container id in the portal, the entitlement, and the `cloudKitContainerID` you pass in code must all match.
+> Important: an **empty** `icloud-container-identifiers` array paired with a `CloudKit` services line is misconfiguration, not sync. The container id in the portal, the entitlement, and the `cloudKitContainerID` you pass in code must all match. On macOS `SyncPreflightService.live` reads the app's own entitlements and reports an empty or non-matching list as `.misconfiguredNoEntitlement`. iOS has no public API for an app to read its own entitlements, so there a container CloudKit rejects is reported the same way from the account probe's `CKError.badContainer` — but an app with no iCloud entitlement at all makes CloudKit raise an exception the first time a container is created, so catch it in development.
 
 ## Step 2: Add the capabilities in Xcode
 
@@ -66,11 +66,19 @@ import SwiduxCloudKitSync
 let containerID = "iCloud.com.yourcompany.yourapp"
 let mode = resolveDesiredSyncMode(from: env.keyValue)   // default .iCloud (opt-out)
 
-let container = try CloudContainerFactory.makeContainer(
-    models: [CardModel.self],
-    mode: mode,
-    cloudKitContainerID: containerID
-)
+let container: ModelContainer
+do {
+    container = try CloudContainerFactory.makeContainer(
+        models: [CardModel.self],
+        mode: mode,
+        cloudKitContainerID: containerID
+    )
+} catch let error as CloudKitIncompatibleSchema {
+    // A model CloudKit can't mirror — a build bug, not a user one. Its message
+    // names the relationships. Run local-only rather than not at all.
+    assertionFailure(error.localizedDescription)
+    container = try CloudContainerFactory.makeContainer(models: [CardModel.self], mode: .localOnly)
+}
 
 let persistence = PersistenceCoordinator<AppState, AppAction>(
     entities: [.entity(\.cards)],
@@ -79,6 +87,10 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
 plugins.register(persistence.corePlugin)
 await persistence.hydrate(into: &initial)
 ```
+
+`CloudContainerFactory` throws `CloudKitIncompatibleSchema` when asked to mirror a model that declares a `@Relation`: CloudKit requires an inverse on every relationship, and a `@Relation` has none. Without the check SwiftData fails to load the store (Core Data error 134060) and some hosts abort. The same models build local-only, which is the fallback above; to sync them, see <doc:HowToAddPersistence>.
+
+The planned association model supports independently identified children with parent ownership, direct child edits, and grouped parent/child changes; see [issue #102](https://github.com/heirloomlogic/Swidux/issues/102). It requires generated storage inverses and a save contract that preserves newer child edits the parent editing session did not modify. This is follow-up work, not functionality provided by the current macro. The runtime schema guard and current alternatives remain applicable until that support is implemented.
 
 `resolveDesiredSyncMode(from:)` reads the persisted `KVKey.syncMode`. The default is **sync-on with opt-out** (`.iCloud`) for any app that links this product; pass `default: .localOnly` to make sync strictly opt-in instead.
 
@@ -104,13 +116,17 @@ let status = await sync.setSyncEnabled(isOn, into: store)
 store.send(.syncSettingsChanged(mode: sync.mode, status: status))
 ```
 
-`setSyncEnabled` flushes pending writes, resolves availability, rebuilds the container in the *effective* mode (CloudKit only when actually usable, else a local fallback), swaps the active database behind the coordinator's handle, persists the user's choice, and re-hydrates via `merge` (never replace). It returns the resolved `SyncStatus`.
+`setSyncEnabled` flushes pending writes, resolves availability, rebuilds the container, swaps the active database behind the coordinator's handle, persists the user's choice, and re-hydrates via `merge` (never replace). It returns the resolved `SyncStatus`. Turning sync on builds the CloudKit-mirrored container whatever the account's state — the same container launch builds from the same preference — so a user who enables sync while signed out starts syncing when they sign in; only a build that isn't entitled stays local-only. Turning sync off consults no probe at all.
+
+The rebuilt container opens the same file as the one the app is running on, which is what keeps every row across a toggle. `SyncCoordinator` reads that URL from the running container, so there is no need to repeat it as `storeURL:`; pass one only when the running container isn't a single on-disk store.
 
 It takes the store rather than `inout State` because all of that is asynchronous. Every one of those `await`s is a window in which the user can keep editing, and a caller holding a state snapshot across them would overwrite whatever landed. Here the flush, preflight, and rebuild all complete first; only then does one suspension-free step pack a fresh snapshot, merge, and unpack. Nothing can interleave between that pack and the follow-up `send` either — the main actor can only be re-entered at a suspension point, and there is none.
 
 ## Step 6: Detect availability and degrade gracefully
 
-`SyncPreflightService` probes `FileManager.ubiquityIdentityToken` and `CKContainer.accountStatus`; `SyncStatus.resolve(desired:entitled:account:)` maps the result to a verdict-in-state enum:
+`SyncPreflightService` checks that the app is entitled to CloudKit, then probes `CKContainer.accountStatus`; `SyncStatus.resolve(desired:entitled:account:)` maps the result to a verdict-in-state enum. It consults neither probe for `.localOnly`, and never the account for a build that isn't entitled — creating a `CKContainer` in such a process raises an exception rather than returning an error.
+
+The entitlement check is not the iCloud Drive identity (`FileManager.ubiquityIdentityToken`), which is `nil` whenever the user has iCloud Drive switched off, even though CloudKit works for them. On macOS `.live` reads the process's own entitlements, which is definitive. On iOS, tvOS, watchOS, and visionOS no public API can, so the build is trusted — those platforms refuse to launch a binary claiming entitlements its profile doesn't grant, so a running build lacks CloudKit only if its entitlements file never asked for it. Pass `.live(containerID:isEntitled:)` your own check if you have a better signal.
 
 | `SyncStatus` | Meaning | Response |
 |---|---|---|
@@ -118,13 +134,14 @@ It takes the store rather than `inout State` because all of that is asynchronous
 | `.syncing` | Entitled, signed in, active | Healthy. |
 | `.unavailableNotSignedIn` | Entitled, no iCloud account | Show a gentle "Sign in to iCloud" banner; never assert. |
 | `.unavailableRestricted` | MDM/parental restriction | Inform; run local-only. |
-| `.misconfiguredNoEntitlement` | Sync requested but **not entitled** — a build/signing bug | Degrade to local-only; `assertionFailure` in **DEBUG only**, never crash release. |
+| `.unavailableRebuildFailed` | A toggle's container rebuild threw — for example `CloudKitIncompatibleSchema` over a `@Relation` model | Nothing changed: the previous database stays active and the choice isn't saved. The log names the cause; a schema error is a build bug. |
+| `.misconfiguredNoEntitlement` | Sync requested but **not entitled**, or CloudKit rejected the build's container — a build/signing bug | Degrade to local-only; turning sync on hits an `assertionFailure` in **DEBUG only**, never crashes release. |
 
-Run the probe at launch and on `scenePhase → .active`, and disable the Settings toggle when the status isn't actionable by the user:
+Run the probe at launch and on `scenePhase → .active`, and disable the Settings toggle when the status isn't actionable by the user. Record the result with a dispatch, as in Step 5 — never by writing into a state snapshot taken before the `await`:
 
 ```swift
 let status = await sync.currentStatus()
-state.persistence.syncStatus = status
+store.send(.syncStatusChanged(status))
 ```
 
 The Keychain `−34018` condition (from `KeychainKeyValueStore`, used for analytics device-id) is a separate, always-present capability — it stays detected where it is and is not folded into the sync preflight.
@@ -142,6 +159,8 @@ observer.start()
 ```
 
 Capture the store **weakly**: the observer usually outlives the view layer, and is typically held by the same object that holds the store.
+
+The debounce coalesces a burst into one callback, but never holds one longer than `maxWait` (10 seconds by default) from its first notification. A long first CloudKit import, or the app's own saves while the user keeps editing, would otherwise re-arm the debounce indefinitely and hold back every remote change until the stream stopped.
 
 `owning:` is optional but worth passing. `.NSPersistentStoreRemoteChange` is posted for every store in the process, so without it the observer merges on notifications from stores the app has nothing to do with. Given the handle it drops those. It re-reads the handle per notification, so a sync toggle that rebuilds the container needs no new observer.
 
@@ -163,7 +182,7 @@ A tick may read a row and decline to apply it — an editing hold is the one exe
 
 Calling `rehydrate(into:)` from the observer instead still works and is still correct — it is just O(N) per tick.
 
-`.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Feeding the app its own writes is a no-op: the rows it reads back are the ones it just wrote, and anything still pending is exempt from the merge, so the rule-#8 data-loss trap is neutralized by construction. Call `observer.stop()` before a sync toggle (the coordinator rebuilds the container).
+`.NSPersistentStoreRemoteChange` also fires for the app's *own* local saves. Feeding the app its own writes is a no-op: the rows it reads back are the ones it just wrote, and anything still pending is exempt from the merge, so the rule-#8 data-loss trap is neutralized by construction. Leave the observer running across a sync toggle: it re-reads the handle per notification, and a merge that was in flight when the container was swapped is discarded by the coordinator rather than applied.
 
 > Warning: Do not hand-roll this by snapshotting state around the `await`:
 >
@@ -179,7 +198,7 @@ By default (`MergePolicy.preferRemote`) remote creations, edits, **and** deletio
 
 Three things are worth knowing:
 
-- **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing. This applies to the whole-table read, where absence is the only evidence there is. `mergeChanges(into:)` reads deletions from history tombstones, which *are* evidence, so it needs no such guard and can remove the last surviving row.
+- **An empty snapshot never removes anything.** Zero rows is indistinguishable from a store that is rebuilt, mid-import, or unreadable, so absence is only treated as deletion when the snapshot is non-empty. Toggling sync uses `.preferRemoteAdditive` for the same reason: the rebuilt container is a *different* store, so what it lacks proves nothing. This applies to the whole-table read, where absence is the only evidence there is. `mergeChanges(into:)` reads deletions from history tombstones, which *are* evidence, so it can remove the last surviving row — even on a tick that falls back to the whole-table read. The guard stops only inference: every tombstone the tick read is applied as a declared deletion, and a fallback that couldn't read history at all keeps its watermark, so the next tick reads them.
 - **An edit that hasn't been dispatched yet is invisible.** A value still sitting in a view's local `@State` is unknown to the store, so a remote value can land underneath it. Declare it with an editing hold — see below.
 - **Undo can't resurrect a remote deletion.** Once a deletion made elsewhere surfaces, `restore(from:)` skips that ID — otherwise an older undo snapshot would write the row back as a *creation* and re-seed every peer. The ID becomes undoable again if the user recreates it or the row returns to disk. See <doc:UndoRedo>.
 
@@ -198,7 +217,9 @@ TextEditor(text: $draft)
 
 The hold is taken when the editor appears and given back when it goes away, so there is no release to forget. Pass `nil` to hold nothing, and a `@FocusState`-driven id arms and disarms the hold as focus moves. `persistence.editing.hold(_:)` and `release(_:)` are there for an editing session that isn't a view's lifetime; they refcount, so two views editing one entity compose rather than cancel.
 
-A hold **defers a remote change, it does not veto one.** Release it and the next merge applies whatever storage holds, deletions included, so the worst a leaked hold can do is strand one row at a stale value. It won't do that quietly either: a merge that actually withheld a differing value reports `.mergeWithheld` on the diagnostic channel.
+A hold **defers a remote change, it does not veto one.** Release it and the next merge applies whatever storage holds, deletions included — provided nothing writes the row first. Committing a draft for a row a peer deleted re-creates it, because a live row outranks the tombstone; check `persistence.isRemotelyDeleted(id)` before committing when that isn't what you want. It answers from the merges that ran while the hold was in force. The worst a leaked hold can do is strand one row at a stale value. It won't do that quietly either: a merge that actually withheld a differing value reports `.mergeWithheld` on the diagnostic channel.
+
+The one way to turn a deferred deletion into a veto is to write the row back. An editor that commits its draft when it disappears modifies a row a peer may have deleted while it was held, and that write re-creates the row on every device. Before committing, ask `persistence.isRemotelyDeleted(note.id)`; when it returns `true`, discard the draft or ask the user whether to keep it.
 
 A hold that outlives its edit shows up on the other diagnostic too. The deferred row is carried forward and re-offered on every later tick, so `.remoteChangesMerged` keeps arriving with `carriedOverCount == mergedCount` — the tick merged nothing but what it already owed. Once is a hold doing its job; unchanging, tick after tick, it is a hold nobody gave back.
 
@@ -250,7 +271,7 @@ Example UI copy: *"By default your data is stored only on this device. If you tu
 
 ## Testing
 
-The pure parts are unit-testable without entitlements: `SyncStatus.resolve(desired:entitled:account:)` (truth table), `SyncPreflightService.mock(ubiquityToken:account:)`, the `KVKey.syncMode` round-trip, and the opt-out toggle path against an in-memory container. Real two-device CloudKit mirroring requires entitlements and a signed-in device, so cover it with a manual smoke test: two-device sync, opt-out keeps data local, opt-in merges, signed-out iCloud degrades with a banner, and a build missing the entitlement trips the DEBUG assertion.
+The pure parts are unit-testable without entitlements: `SyncStatus.resolve(desired:entitled:account:)` (truth table), `SyncPreflightService.mock(entitled:account:)`, the `KVKey.syncMode` round-trip, and the toggle paths against an in-memory container. Real two-device CloudKit mirroring requires entitlements and a signed-in device, so cover it with a manual smoke test: two-device sync, opt-out keeps data local, opt-in merges, signed-out iCloud shows the banner and starts syncing after sign-in without another toggle, and a device with iCloud Drive switched off still syncs. A macOS build missing the entitlement reports `.misconfiguredNoEntitlement` and trips the DEBUG assertion when sync is turned on; on iOS the same build crashes inside CloudKit on the first `.iCloud` probe.
 
 ## See Also
 

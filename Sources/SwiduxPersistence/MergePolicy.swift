@@ -107,10 +107,13 @@ struct MergeContext {
 ///
 /// `StateWriter` now puts a failed batch back into its pending buffers, so
 /// `pendingIDs` covers the same IDs for as long as the retry is outstanding.
-/// This ledger is kept alongside it for two reasons: it also covers the window
-/// while a batch is mid-flight, and it is the only record a hand-written
-/// *non-throwing* persist closure — one that swallows its own error, so the
-/// writer never learns to re-buffer — can leave behind.
+/// This ledger is kept alongside it because it is the only record a
+/// hand-written *non-throwing* persist closure — one that swallows its own
+/// error, so the writer never learns to re-buffer — can leave behind.
+///
+/// It says nothing about a batch still in flight: an ID is added only once its
+/// save has failed. The merge covers the in-flight window with
+/// ``Swidux/StateWriter/recordFlushes()`` instead.
 ///
 /// > Note: The write itself is retried by ``Swidux/PersistencePlugin`` on a
 /// > bounded backoff. When that budget is spent the app is told via a

@@ -64,6 +64,31 @@ public nonisolated struct EntityStore<
     /// first-load hydration replaces the store outright.
     public private(set) var remotelyRemovedIDs: Set<UUID> = []
 
+    /// Rows storage inserted — a creation made on another device, or a row
+    /// fetched from a server — each tagged with a token for that particular
+    /// arrival. The mirror of ``remotelyRemovedIDs``.
+    ///
+    /// ``restore(from:)`` refuses to delete a row that arrived *after* the
+    /// snapshot it restores. The snapshot has never seen the row, so diffing
+    /// against it would record a deletion, and that deletion would sync out
+    /// and remove another device's creation everywhere.
+    ///
+    /// "After" is read off the snapshot's own copy of this map — every
+    /// snapshot is an `EntityStore` too — which is why it holds tokens rather
+    /// than being a set, and why a local delete doesn't clear an entry. A
+    /// snapshot taken after the user deleted a remote row still carries that
+    /// row's token, so redoing their delete still deletes it; one taken before
+    /// the row arrived carries no token, so no undo can delete it, however
+    /// often the user deletes and restores it in between. A row storage hands
+    /// back again is a new arrival with a new token.
+    ///
+    /// An entry is dropped when storage removes the row again. One for a row
+    /// the local user deleted stays — redoing that delete depends on it — so
+    /// the map holds the rows present plus remote rows deleted locally this
+    /// session. Survives ``resetChanges()`` for the same reason the removal
+    /// record does, and a hydration replaces it outright.
+    private(set) var remoteArrivals: [UUID: UUID] = [:]
+
     // MARK: - Init
 
     /// Creates an empty store.
@@ -100,6 +125,24 @@ public nonisolated struct EntityStore<
             positions[entity.id] = entities.count
             entities.append(entity)
         }
+    }
+
+    /// Creates a store from rows read out of storage, recording each one as an
+    /// arrival from storage — hydration into a *live* store.
+    ///
+    /// Like ``init(_:)`` it records no changes, and it collapses duplicate IDs
+    /// the same way. The difference is undo: a hydration that lands after an
+    /// undo snapshot was taken replaces the store wholesale, so a plain
+    /// ``init(_:)`` would leave ``restore(from:)`` treating every row as one
+    /// the local user created since — and an undo would record, flush, and sync
+    /// a deletion of all of them. Rows created here are ones storage handed
+    /// over, which no undo deletes. `PersistenceCoordinator` hydrates through
+    /// this; use it for any hand-written hydration that replaces a store.
+    public init(hydrating rows: [Entity]) {
+        self.init(rows)
+        // One token serves the whole read: each ID arrives in it once.
+        let arrival = UUID()
+        remoteArrivals = Dictionary(uniqueKeysWithValues: entities.lazy.map { ($0.id, arrival) })
     }
 
     // MARK: - Access
@@ -262,6 +305,13 @@ public nonisolated struct EntityStore<
             }
         case .remote:
             remotelyRemovedIDs.formUnion(removedIDs)
+            // The removal record now keeps undo from bringing the row back,
+            // and a later re-arrival gets a new token anyway, so the arrival
+            // entry has nothing left to decide. Checked first so a tick that
+            // removes nothing ever inserted remotely doesn't copy the map.
+            for id in removedIDs where remoteArrivals[id] != nil {
+                remoteArrivals[id] = nil
+            }
         }
     }
 
@@ -284,9 +334,9 @@ public nonisolated struct EntityStore<
     /// Clears the changelog.
     ///
     /// Called by `StateWriter` after draining. Deliberately leaves
-    /// ``remotelyRemovedIDs`` alone: a drain ends the life of a pending *write*,
-    /// while a remote deletion has to outlive every undo snapshot taken before
-    /// it.
+    /// ``remotelyRemovedIDs`` and the remote-arrival record alone: a drain ends
+    /// the life of a pending *write*, while a remote deletion or creation has
+    /// to outlive every undo snapshot taken before it.
     public mutating func resetChanges() {
         changes = ChangeSet()
     }
@@ -338,6 +388,7 @@ public nonisolated struct EntityStore<
                 entities.append(entity)
                 // Storage still holds the row, so it was never deleted.
                 clearRemoteRemoval(of: entity.id)
+                remoteArrivals[entity.id] = UUID()
             }
             // else: locally deleted but not yet flushed — do not resurrect.
         }
@@ -448,6 +499,7 @@ public nonisolated struct EntityStore<
             } else {
                 positions[entity.id] = entities.count
                 entities.append(entity)
+                remoteArrivals[entity.id] = UUID()
             }
             // Storage holds the row, so any earlier remote deletion of this ID
             // has itself been undone elsewhere. The ID is live again.
@@ -462,22 +514,33 @@ public nonisolated struct EntityStore<
     /// differences as changes for persistence tracking.
     ///
     /// Use this when restoring a previous state snapshot (e.g. undo/redo)
-    /// so the persistence middleware can persist the restored state.
+    /// so `PersistencePlugin` can persist the restored state.
     ///
     /// Unlike `merge(from:)` (which is a hydration operation that records
     /// no changes), `restore` records every difference so that
     /// `PersistencePlugin` picks them up via normal `afterReduce()` draining.
     ///
     /// Entities in ``remotelyRemovedIDs`` are dropped from `source` first — see
-    /// that property for why undo doesn't own them. A store with no remote
-    /// deletions, which is every app that doesn't sync, takes an identical path
-    /// to before.
+    /// that property for why undo doesn't own them. Likewise rows storage
+    /// inserted after `source` was taken are kept, after its entities, rather
+    /// than deleted. A store with no remote deletions or insertions, which is
+    /// every app that doesn't sync, takes an identical path to before.
     public mutating func restore(from source: EntityStore) {
-        guard !remotelyRemovedIDs.isEmpty else {
+        // Rows that arrived since the snapshot: it holds neither the row nor
+        // this arrival's token. The record itself is left as it is — it
+        // describes the live timeline, which undo doesn't rewind.
+        var arrived: [Entity] = []
+        if !remoteArrivals.isEmpty {
+            arrived = entities.filter { entity in
+                guard let token = remoteArrivals[entity.id] else { return false }
+                return source.positions[entity.id] == nil && source.remoteArrivals[entity.id] != token
+            }
+        }
+        guard !remotelyRemovedIDs.isEmpty || !arrived.isEmpty else {
             return restore(entities: source.entities, positions: source.positions)
         }
         // The initializer already pairs an entity array with its index.
-        let kept = EntityStore(source.entities.filter { !remotelyRemovedIDs.contains($0.id) })
+        let kept = EntityStore(source.entities.filter { !remotelyRemovedIDs.contains($0.id) } + arrived)
         restore(entities: kept.entities, positions: kept.positions)
     }
 
@@ -514,8 +577,8 @@ public nonisolated struct EntityStore<
 
     /// Two stores are equal when they contain the same entities in the same order.
     ///
-    /// Changes and remotely removed IDs are excluded — they're transient
-    /// metadata, not semantic state.
+    /// Changes and the remote removal and arrival records are excluded —
+    /// they're transient metadata, not semantic state.
     public static func == (lhs: EntityStore, rhs: EntityStore) -> Bool {
         lhs.entities == rhs.entities
     }

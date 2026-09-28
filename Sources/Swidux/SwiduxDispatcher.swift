@@ -9,15 +9,15 @@ import Foundation
 
 /// A type that can dispatch actions into the Swidux data flow.
 ///
-/// Conforming types (typically your `AppStore`) provide the single
+/// Conforming types (``Store``, which an `AppStore` usually aliases) provide the single
 /// entry point for all state changes. Views call `send(_:)` to
-/// trigger the reducer → middleware → effect cycle.
+/// trigger the plugin → reducer → effect cycle.
 ///
 /// ```swift
 /// @Observable
 /// final class AppStore: SwiduxDispatcher {
 ///     func send(_ action: AppAction) {
-///         // reducer + middleware + effect
+///         // plugins + reducer + effects
 ///     }
 /// }
 /// ```

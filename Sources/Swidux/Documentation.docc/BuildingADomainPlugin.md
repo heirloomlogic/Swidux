@@ -117,6 +117,9 @@ public struct AnnouncementPlugin<RootState, RootAction>: SwiduxPlugin {
     ) -> Effect<AnnouncementAction>? {
         switch action {
         case .fetch:
+            // One request at a time: two in flight would apply in the order
+            // they *finish*, so a slow, stale answer could overwrite a newer one.
+            guard !state.isLoading else { return nil }
             state.isLoading = true
             let service = self.service
             return Effect { send in
@@ -147,7 +150,9 @@ public struct AnnouncementPlugin<RootState, RootAction>: SwiduxPlugin {
 
 The public `reduce` method follows a fixed pattern: guard-extract the local action, delegate to a private `reduceLocal`, and lift any returned effect. The private `reduceLocal` is where feature logic lives — it looks like any standard Swidux reducer.
 
-> Important: Domain plugins implement only `reduce`. The `willReduce` and `afterReduce` hooks are reserved for action-agnostic infrastructure like undo and persistence. See <doc:PluginArchitecture> for the full distinction.
+`isLoading` doubles as the in-flight guard. It is cleared only by the fetch's own outcome, `.messageReceived` or `.fetchFailed`, and the effect sends one of the two on every path — including cancellation, which a URLSession-backed service reports by throwing — so the flag can't latch. Give the service a bounded timeout, too: a request that never returns holds the guard for as long as it runs.
+
+> Important: A domain plugin's own actions go through `reduce`. Leave `willReduce` to infrastructure like undo, which must see state before any reducer runs. Implement `afterReduce` only when the plugin has to react to *every* dispatch rather than its own actions: `AnalyticsPlugin` runs its event mapper and auto-identify there, and `FeatureFlagsPlugin` keeps its bucketing identity in sync. See <doc:PluginArchitecture> for the full distinction.
 
 ## Step 5: Wire Into the Host App
 
@@ -156,9 +161,9 @@ The public `reduce` method follows a fixed pattern: guard-extract the local acti
 ```swift
 @Swidux
 struct AppState: Equatable, Sendable {
-    var items = EntityStore<Item>()
+    var items: EntityStore<Item> = .init()
     // ...
-    var announcements = AnnouncementState()
+    var announcements: AnnouncementState = .init()
 }
 
 enum AppAction: Sendable {

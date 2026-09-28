@@ -560,4 +560,107 @@ struct PersistencePluginTests {
 
         #expect(reports.value == [3, 3])
     }
+
+    @Test("A steady edit rate under the threshold per interval is not reported as a loop")
+    func steadyEditsAreNotALoop() async throws {
+        let reports = SendableBox<[Int]>([])
+        let plugin = makeLoopPlugin(threshold: 30, debounce: .milliseconds(100)) { count in
+            reports.withValue { $0.append(count) }
+        }
+        var state = TestState()
+        let entity = TestEntity(name: "0")
+        state.items[entity.id] = entity
+
+        // One edit every 25 ms for ~1 s: about 4 per debounce interval, 40 in all.
+        for index in 1...40 {
+            state.items.modify(entity.id) { $0.name = "\(index)" }
+            plugin.drainAndScheduleFlush(&state)
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(reports.value.isEmpty, "the threshold is per debounce interval, not per quiet period")
+    }
+
+    // MARK: - Max wait
+
+    @Test("A steady stream of edits cannot postpone the flush indefinitely")
+    func steadyEditsStillFlush() async throws {
+        let flushes = SendableBox(0)
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in flushes.withValue { $0 += 1 } }
+        let plugin = PersistencePlugin<TestState, TestAction>(writers: [writer], debounce: .milliseconds(100))
+        var state = TestState()
+        let entity = TestEntity(name: "0")
+        state.items[entity.id] = entity
+
+        // Keep editing faster than the debounce until something is written, or
+        // for 3 s — three times the default max wait of 1 s.
+        let clock = ContinuousClock()
+        let start = clock.now
+        var index = 0
+        while flushes.value == 0, clock.now - start < .seconds(3) {
+            index += 1
+            state.items.modify(entity.id) { $0.name = "\(index)" }
+            plugin.afterReduce(state: &state, action: .noOp)
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(flushes.value > 0, "a slider drag or a streaming effect kept every edit off disk")
+        await plugin.flush()
+    }
+
+    @Test("maxWait bounds how long edits stay pending")
+    func explicitMaxWait() async throws {
+        let flushes = SendableBox(0)
+        let writer = StateWriter<TestState>(keyPath: \.items) { _, _ in flushes.withValue { $0 += 1 } }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer], debounce: .milliseconds(100), maxWait: .milliseconds(200))
+        var state = TestState()
+        let entity = TestEntity(name: "0")
+        state.items[entity.id] = entity
+
+        for index in 1...40 {
+            state.items.modify(entity.id) { $0.name = "\(index)" }
+            plugin.afterReduce(state: &state, action: .noOp)
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(flushes.value >= 2, "~1 s of edits against a 200 ms max wait")
+        await plugin.flush()
+    }
+
+    @Test("Edits do not postpone the retry of a failed flush")
+    func editsDoNotPostponeRetry() async throws {
+        let attempts = SendableBox(0)
+        let failed = TestEntity(name: "failed once")
+        let persistedFailed = SendableBox(false)
+        let writer = StateWriter<TestState>(keyPath: \.items) { writes, _ in
+            attempts.withValue { $0 += 1 }
+            if attempts.value == 1 { throw TestPersistError() }
+            if writes.contains(where: { $0.id == failed.id }) { persistedFailed.value = true }
+        }
+        let plugin = PersistencePlugin<TestState, TestAction>(
+            writers: [writer], debounce: .milliseconds(200), maxWait: .seconds(30), retry: Self.fastRetry)
+        var state = TestState()
+        state.items[failed.id] = failed
+        plugin.afterReduce(state: &state, action: .noOp)
+        try await poll(until: { attempts.value == 1 }, timeout: .seconds(5))
+
+        // Keep editing another entity faster than the debounce. The retry is
+        // due within tens of milliseconds; the max wait is pushed out of reach
+        // so it can't be what flushes the failed row.
+        let other = TestEntity(name: "0")
+        state.items[other.id] = other
+        let clock = ContinuousClock()
+        let start = clock.now
+        var index = 0
+        while !persistedFailed.value, clock.now - start < .seconds(5) {
+            index += 1
+            state.items.modify(other.id) { $0.name = "\(index)" }
+            plugin.afterReduce(state: &state, action: .noOp)
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(persistedFailed.value, "each drain cancelled the scheduled retry")
+        await plugin.flush()
+    }
 }

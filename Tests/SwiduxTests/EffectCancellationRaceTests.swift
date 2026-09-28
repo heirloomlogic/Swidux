@@ -174,3 +174,389 @@ extension EffectCancellationRaceTests {
         #expect(ran.value)
     }
 }
+
+// MARK: - Reporting cancellation
+
+/// A keyed scope's sends are dropped once it is cancelled — that is what keeps
+/// a stale result out — so its `catch` block can't report the cancellation the
+/// way a plain effect's can. `onCancel:` is how it reports instead.
+extension EffectCancellationRaceTests {
+    /// A store whose `.noOp` starts a keyed search that parks until cancelled,
+    /// and whose `.effectAction` appends to `log`.
+    private func makeSearchStore(
+        log: SendableBox<[String]>,
+        started: AsyncStream<Void>.Continuation,
+        cancelInFlight: Bool = false
+    ) -> Store<TestState, TestAction> {
+        Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                return cancellable(id: "search", cancelInFlight: cancelInFlight, onCancel: .effectAction("cancelled")) {
+                    send in
+                    started.yield()
+                    do {
+                        try await Task.sleep(for: .seconds(60))
+                    } catch {
+                        await send(.effectAction("caught"))  // stale by construction: dropped
+                        throw error
+                    }
+                }
+            case .delete:
+                return cancel(id: "search")
+            case .effectAction(let entry):
+                log.value.append(entry)
+                return nil
+            default:
+                return nil
+            }
+        }
+    }
+
+    @Test("Store.cancel(id:) from view code dispatches the scope's onCancel")
+    func imperativeCancelReports() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancel(id: "search")  // `.onDisappear`, where no reducer runs
+
+        #expect(log.value == ["cancelled"], "the in-flight flag would stay set forever")
+        while store.hasInFlightEffects { await Task.yield() }
+        #expect(log.value == ["cancelled"], "the catch-block send is still suppressed")
+    }
+
+    @Test("A cancel(id:) effect dispatches onCancel after the action that returned it")
+    func cancelEffectReports() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.send(.delete(UUID()))
+
+        #expect(log.value == ["cancelled"])
+    }
+
+    @Test("cancelEffects() dispatches onCancel; the store stays usable")
+    func cancelEffectsReports() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancelEffects()
+
+        #expect(log.value == ["cancelled"])
+    }
+
+    @Test("A cancelInFlight replacement does not dispatch the replaced scope's onCancel")
+    func replacementDoesNotReport() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started, cancelInFlight: true)
+        var starts = startedStream.makeAsyncIterator()
+        store.send(.noOp)
+        await starts.next()
+
+        store.send(.noOp)  // the new search is still in flight; its reducer owns the flag
+        await starts.next()
+        #expect(log.value.isEmpty)
+
+        store.cancel(id: "search")
+        #expect(log.value == ["cancelled"], "reported once, for the scope actually cancelled")
+    }
+
+    @Test("onCancel is dispatched once, and not for a scope that already finished")
+    func onCancelOnlyForLiveScopes() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = makeSearchStore(log: log, started: started)
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancel(id: "search")
+        store.cancel(id: "search")
+        #expect(log.value == ["cancelled"])
+
+        while store.hasInFlightEffects { await Task.yield() }
+        store.cancel(id: "search")
+        #expect(log.value == ["cancelled"])
+    }
+
+    @Test("Mapping an effect preserves onCancel")
+    func mappedOnCancelIsPreserved() async {
+        let log = SendableBox<[String]>([])
+        let (startedStream, started) = AsyncStream<Void>.makeStream()
+        let store = Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                let effect: Effect<String> = cancellable(id: "mapped", onCancel: "cancelled") { _ in
+                    started.yield()
+                    try await Task.sleep(for: .seconds(60))
+                }
+                return effect.map { .effectAction($0) }
+            case .effectAction(let entry):
+                log.value.append(entry)
+                return nil
+            default:
+                return nil
+            }
+        }
+        store.send(.noOp)
+        for await _ in startedStream { break }
+
+        store.cancel(id: "mapped")
+
+        #expect(log.value == ["cancelled"])
+    }
+}
+
+// MARK: - Nested scopes
+
+/// A scope invoked inside another effect is its own cancellable unit: cancelling
+/// its id cancels it, not the effect hosting it or that effect's other scopes.
+extension EffectCancellationRaceTests {
+    /// A store that appends every `.effectAction` to `log` and runs `effect` on `.noOp`.
+    private func makeHostStore(
+        log: SendableBox<[String]>,
+        effect: @escaping @Sendable () -> Effect<TestAction>
+    ) -> Store<TestState, TestAction> {
+        Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                return effect()
+            case .effectAction(let entry):
+                log.value.append(entry)
+                return nil
+            default:
+                return nil
+            }
+        }
+    }
+
+    @Test("Cancelling a nested scope does not end the effect hosting it")
+    func nestedCancelSparesHost() async throws {
+        let (events, feed) = AsyncStream<Int>.makeStream()
+        let fetchStarted = AsyncStream<Void>.makeStream()
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { send in
+                for await value in events {
+                    let fetch: Effect<TestAction> = cancellable(
+                        id: "fetch", cancelInFlight: true, onCancel: .effectAction("fetch \(value) cancelled")
+                    ) { send in
+                        fetchStarted.continuation.yield()
+                        try await Task.sleep(for: .milliseconds(value == 1 ? 60_000 : 1))
+                        await send(.effectAction("fetched \(value)"))
+                    }
+                    try? await fetch(send)
+                }
+            }
+        }
+        store.send(.noOp)
+        feed.yield(1)
+        for await _ in fetchStarted.stream { break }
+
+        store.cancel(id: "fetch")  // abandon only the slow fetch
+        #expect(log.value == ["fetch 1 cancelled"])
+
+        feed.yield(2)  // the listener keeps handling events
+        try await poll(until: { log.value.contains("fetched 2") })
+        #expect(log.value == ["fetch 1 cancelled", "fetched 2"], "the listener died with its nested fetch")
+        store.cancelEffects()
+    }
+
+    @Test("Cancelling a nested scope leaves a sibling scope in the same effect running")
+    func nestedCancelSparesSibling() async throws {
+        let started = AsyncStream<String>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let siblingCancelled = SendableBox<Bool?>(nil)
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { send in
+                let slow: Effect<TestAction> = cancellable(id: "slow") { _ in
+                    started.continuation.yield("slow")
+                    try await Task.sleep(for: .seconds(60))
+                }
+                let sibling: Effect<TestAction> = cancellable(id: "sibling") { send in
+                    started.continuation.yield("sibling")
+                    for await _ in release.stream { break }
+                    siblingCancelled.value = Task.isCancelled
+                    await send(.effectAction("sibling done"))
+                }
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { try? await slow(send) }
+                    group.addTask { try? await sibling(send) }
+                }
+            }
+        }
+        store.send(.noOp)
+        var starts = started.stream.makeAsyncIterator()
+        _ = await starts.next()
+        _ = await starts.next()
+
+        store.cancel(id: "slow")
+        release.continuation.yield()
+        try await poll(until: { siblingCancelled.value != nil })
+
+        #expect(siblingCancelled.value == false, "distinct ids are independent")
+        #expect(log.value == ["sibling done"])
+        store.cancelEffects()
+    }
+
+    @Test("cancelInFlight replaces a concurrent nested scope in the same effect")
+    func nestedCancelInFlightDedupesSiblings() async throws {
+        let firstStarted = AsyncStream<Void>.makeStream()
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            Effect { send in
+                let first: Effect<TestAction> = cancellable(id: "latest", cancelInFlight: true) { send in
+                    firstStarted.continuation.yield()
+                    try await Task.sleep(for: .seconds(60))
+                    await send(.effectAction("stale"))
+                }
+                let second: Effect<TestAction> = cancellable(id: "latest", cancelInFlight: true) { send in
+                    await send(.effectAction("latest"))
+                }
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { try? await first(send) }
+                    for await _ in firstStarted.stream { break }
+                    group.addTask { try? await second(send) }
+                }
+                await send(.effectAction("host done"))
+            }
+        }
+        store.send(.noOp)
+
+        try await poll(until: { log.value.contains("host done") })
+        #expect(log.value == ["latest", "host done"], "the first scope was never replaced")
+        store.cancelEffects()
+    }
+
+    @Test("A nested cancelInFlight scope does not cancel the scope enclosing it")
+    func nestedCancelInFlightSparesEnclosingScope() async throws {
+        let log = SendableBox<[String]>([])
+        let store = makeHostStore(log: log) {
+            cancellable(id: "scope") { send in
+                let inner: Effect<TestAction> = cancellable(id: "scope", cancelInFlight: true) { _ in }
+                try await inner(send)
+                await send(.effectAction("outer survived"))
+            }
+        }
+        store.send(.noOp)
+
+        try await poll(until: { !store.hasInFlightEffects })
+        #expect(log.value == ["outer survived"])
+    }
+}
+
+// MARK: - Reporting from nested scopes
+
+/// Every cancelled scope reports its own `onCancel:`, however the cancellation
+/// reached it — including through an enclosing scope that has none.
+extension EffectCancellationRaceTests {
+    /// A keyed host scope running a nested keyed search that parks until
+    /// cancelled. The host carries an `onCancel:` only when `hostReports`.
+    private func makeNestedReportStore(
+        log: SendableBox<[String]>,
+        started: AsyncStream<Void>.Continuation,
+        hostReports: Bool
+    ) -> Store<TestState, TestAction> {
+        makeHostStore(log: log) {
+            let host: @Sendable (@escaping Send<TestAction>) async throws -> Void = { send in
+                let search: Effect<TestAction> = cancellable(
+                    id: "search", onCancel: .effectAction("search cancelled")
+                ) { _ in
+                    started.yield()
+                    try await Task.sleep(for: .seconds(60))
+                }
+                try await search(send)
+            }
+            return hostReports
+                ? cancellable(id: "screen", onCancel: .effectAction("screen cancelled"), host)
+                : cancellable(id: "screen", host)
+        }
+    }
+
+    @Test("cancelEffects() reports a nested scope under a keyed host without onCancel")
+    func nestedReportUnderSilentHostCancelEffects() async throws {
+        let log = SendableBox<[String]>([])
+        let started = AsyncStream<Void>.makeStream()
+        let store = makeNestedReportStore(log: log, started: started.continuation, hostReports: false)
+        store.send(.noOp)
+        for await _ in started.stream { break }
+
+        store.cancelEffects()
+
+        #expect(log.value == ["search cancelled"], "isSearching would stay true forever")
+    }
+
+    @Test("cancel(id:) of a host without onCancel reports the scope nested in it")
+    func nestedReportUnderSilentHostCancelID() async throws {
+        let log = SendableBox<[String]>([])
+        let started = AsyncStream<Void>.makeStream()
+        let store = makeNestedReportStore(log: log, started: started.continuation, hostReports: false)
+        store.send(.noOp)
+        for await _ in started.stream { break }
+
+        store.cancel(id: "screen")
+
+        #expect(log.value == ["search cancelled"], "isSearching would stay true forever")
+        try await poll(until: { !store.hasInFlightEffects })
+        #expect(log.value == ["search cancelled"])
+    }
+
+    @Test("onCancel is not dispatched for a scope whose operation already returned")
+    func noReportAfterOperationReturned() async throws {
+        let log = SendableBox<[String]>([])
+        let returned = SendableBox(false)
+        let (delivered, deliveredIn) = AsyncStream<Void>.makeStream()
+        let store = Store<TestState, TestAction>(initialState: .init()) { _, action in
+            switch action {
+            case .noOp:
+                return cancellable(id: "upload", onCancel: .effectAction("upload cancelled")) { send in
+                    await send(.effectAction("upload succeeded"))
+                    returned.value = true
+                }
+            case .effectAction(let entry):
+                log.value.append(entry)
+                deliveredIn.yield()
+                return nil
+            default:
+                return nil
+            }
+        }
+        store.send(.noOp)
+        for await _ in delivered { break }
+
+        // Hold the main actor from here on, so the scope's unregistering hop
+        // can't run: the cancel below lands after the operation returned but
+        // while the registry still lists the scope — the window a Cancel tap
+        // arriving with the result falls into.
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while !returned.value, clock.now < deadline {}
+        let settle = clock.now + .milliseconds(50)
+        while clock.now < settle {}
+        store.cancel(id: "upload")
+
+        #expect(log.value == ["upload succeeded"], "a finished upload reported as cancelled")
+    }
+
+    @Test("cancelling a host with onCancel reports it and the scope nested in it, outermost first")
+    func nestedAndHostBothReport() async throws {
+        let log = SendableBox<[String]>([])
+        let started = AsyncStream<Void>.makeStream()
+        let store = makeNestedReportStore(log: log, started: started.continuation, hostReports: true)
+        store.send(.noOp)
+        for await _ in started.stream { break }
+
+        store.cancel(id: "screen")
+
+        #expect(log.value == ["screen cancelled", "search cancelled"])
+    }
+}

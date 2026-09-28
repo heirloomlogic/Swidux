@@ -83,6 +83,25 @@ plugins.register(parentalGatePlugin)
 
 Domain plugins use only the `reduce` hook, so registration order relative to other domain plugins rarely matters.
 
+After three wrong answers in a row (`attemptLimit:`) the gate refuses every answer for 30 seconds (`cooldown:`). As wired above, that limit lives in memory, so it is **per process**: a child who force-quits the app from the switcher gets a fresh set of guesses on relaunch. To make it survive, give the plugin a `KeyValueStore` and hydrate the slice from the same store:
+
+```swift
+// AppStore.swift
+let kv = UserDefaultsKeyValueStore()
+let parentalGatePlugin = ParentalGatePlugin<AppState, AppAction>(
+    state: \.parentalGate,
+    action: AppAction.parentalGate,
+    extractAction: { if case .parentalGate(let a) = $0 { return a }; return nil },
+    challengeSource: .standard,
+    keyValueStore: kv
+)
+
+var initialState = AppState()
+initialState.parentalGate = .hydrated(from: kv)
+```
+
+Only the attempt count and the cooldown deadline are stored; `passedReasons` still resets every launch.
+
 ## Step 4: Gate an action
 
 Pick a stable reason key per gated action (for example `"purchase"`, `"settings"`, `"exit-kid-mode"`). In a view or feature reducer, check `passedReasons` before performing the work:
@@ -148,6 +167,11 @@ struct ParentalGateSheet: View {
                 TextField("Answer", text: $answer)
                     .keyboardType(.numberPad)
 
+                if let until = store.parentalGate.cooldownUntil {
+                    Text("Too many wrong answers. Try again in \(Text(until, style: .timer)).")
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack {
                     Button("New question") {
                         store.send(.parentalGate(.regenerateChallenge))
@@ -159,6 +183,7 @@ struct ParentalGateSheet: View {
                         }
                         answer = ""
                     }
+                    .disabled(store.parentalGate.cooldownUntil != nil)
                 }
             }
         }
@@ -168,6 +193,8 @@ struct ParentalGateSheet: View {
 ```
 
 When the user submits a wrong answer, the plugin increments `attempts` and regenerates the challenge automatically, so the sheet just re-renders with the new operands.
+
+At the attempt limit the plugin sets `cooldownUntil` and refuses every answer, correct ones included, until it dispatches `.cooldownExpired` and clears it. Disabling Submit while `cooldownUntil` is non-`nil` makes that visible instead of silently swallowing the answer. It can't strand the sheet: the plugin arms the expiry when the limit is reached and re-arms it on every `.request` during a cooldown, so dismissing and reopening the gate always brings `.cooldownExpired` — including after a relaunch that hydrated a cooldown, or after the scene's effects were cancelled. The expiry follows the monotonic clock, so if the user changes the device clock the countdown text can read early or late, but the cooldown itself neither ends early nor runs long.
 
 ## Reasons that should be passed once vs. always re-challenged
 
@@ -206,8 +233,9 @@ For deterministic tests, swap the standard generator for `ParentalChallengeSourc
     state.parentalGate.pendingReason = "settings"
     state.parentalGate.challenge = challenge
 
-    let effect = plugin.reduce(state: &state, action: .parentalGate(.submitAnswer(5)))
-    let effect = try #require(effect)
+    let effect = try #require(
+        plugin.reduce(state: &state, action: .parentalGate(.submitAnswer(5)))
+    )
 
     var dispatched: [AppAction] = []
     try await effect { dispatched.append($0) }

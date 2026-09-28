@@ -29,5 +29,19 @@ public enum FeatureFlagsAction: Sendable, Equatable {
 
     /// Record that a flag was applied to the user (variant shown).
     /// Plugin dedupes per session and fires the optional `onExposure` callback.
+    ///
+    /// Knows only the key, so it records the remote assignment whether or
+    /// not the app could render it, and always buckets by the default
+    /// identity.
+    @available(
+        *, deprecated,
+        message: "Records values the user may not have seen. Use recordExposure(of:) with the typed flag."
+    )
     case recordExposure(key: String)
+
+    /// Record that the user was shown the value a typed read rendered.
+    /// Build it with a `recordExposure(of:)` factory. The plugin fires the
+    /// optional `onExposure` callback once per session for each distinct
+    /// value a flag renders.
+    case recordFlagExposure(FlagExposure)
 }

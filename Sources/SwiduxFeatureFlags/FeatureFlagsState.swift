@@ -11,6 +11,9 @@ import Swidux
 /// Hosted in the app's root state via `@Slice var featureFlags: FeatureFlagsState`.
 @Swidux
 public nonisolated struct FeatureFlagsState: Equatable, Sendable {
+    /// `false`: undo and redo never roll this slice back; restoring it would latch an in-flight refresh or discard newer config.
+    public static var restoresOnUndo: Bool { false }
+
     /// Last successfully fetched (or hydrated) config.
     public var config: FeatureFlagsConfig = .empty
 
@@ -26,9 +29,12 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
     /// Local overrides — beat remote evaluation.
     public var localOverrides: [String: FlagValue] = [:]
 
-    /// Session-scoped set of flags whose exposure has already been recorded.
-    /// Reset on every app launch.
-    public var exposedKeys: Set<String> = []
+    /// Session-scoped record of every value each flag's exposures have
+    /// reported. An exposure is recorded only for a value not already here,
+    /// so a reassignment (sign-in, a config change) is recorded once and a
+    /// value that comes back is not recorded again. Bounded by the handful of
+    /// values a flag can render. Reset on every app launch.
+    public var exposedValues: [String: Set<FlagValue>] = [:]
 
     /// Stable per-install identity used for bucketing when no `userIDKeyPath`
     /// resolves to a non-nil value.
@@ -54,7 +60,7 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         lastFetchError: String? = nil,
         isFetching: Bool = false,
         localOverrides: [String: FlagValue] = [:],
-        exposedKeys: Set<String> = [],
+        exposedValues: [String: Set<FlagValue>] = [:],
         resolvedDeviceID: String = "",
         resolvedUserID: String? = nil
     ) {
@@ -63,7 +69,7 @@ public nonisolated struct FeatureFlagsState: Equatable, Sendable {
         self.lastFetchError = lastFetchError
         self.isFetching = isFetching
         self.localOverrides = localOverrides
-        self.exposedKeys = exposedKeys
+        self.exposedValues = exposedValues
         self.resolvedDeviceID = resolvedDeviceID
         self.resolvedUserID = resolvedUserID
     }
@@ -97,20 +103,19 @@ extension KVKey where Value == FeatureFlagsConfig {
 
 // MARK: - Read API (shared evaluation)
 
-/// Internal evaluator shared by ``FeatureFlagsState`` and
-/// ``FeatureFlagsStateObserver``. Pure functions over the relevant fields.
+/// Internal evaluator shared by the reads on ``FeatureFlagsState`` and
+/// ``FeatureFlagsStateObserver`` and by exposure recording, so an exposure
+/// always reports what the read rendered. Pure functions over the relevant
+/// fields; `nil` means the read falls back to the Swift-side default.
 enum FlagEvaluator {
     static func isEnabled(
         _ flag: BoolFlag,
         config: FeatureFlagsConfig,
         localOverrides: [String: FlagValue],
-        bucketingID: String,
-        default defaultValue: Bool
-    ) -> Bool {
+        bucketingID: String
+    ) -> Bool? {
         if case .bool(let v) = localOverrides[flag.key] { return v }
-        guard case .boolean(let rollout) = config.flags[flag.key] else {
-            return defaultValue
-        }
+        guard case .boolean(let rollout) = config.flags[flag.key] else { return nil }
         if rollout >= 100 { return true }
         if rollout <= 0 { return false }
         return Bucketing.bucket(id: bucketingID, flagKey: flag.key) < rollout
@@ -121,18 +126,67 @@ enum FlagEvaluator {
         config: FeatureFlagsConfig,
         localOverrides: [String: FlagValue],
         bucketingID: String
-    ) -> Variant where Variant: RawRepresentable & Sendable, Variant.RawValue == String {
+    ) -> Variant? where Variant: RawRepresentable & Sendable, Variant.RawValue == String {
         if case .string(let raw) = localOverrides[flag.key],
             let parsed = Variant(rawValue: raw)
         {
             return parsed
         }
         guard case .variant(let variants) = config.flags[flag.key], !variants.isEmpty else {
-            return flag.defaultValue
+            return nil
         }
         let bucket = Bucketing.bucket(id: bucketingID, flagKey: flag.key)
         let index = Bucketing.variantIndex(bucket: bucket, weights: variants.map(\.weight))
-        return Variant(rawValue: variants[index].value) ?? flag.defaultValue
+        return Variant(rawValue: variants[index].value)
+    }
+
+    static func value(
+        of flag: ValueFlag<Bool>,
+        config: FeatureFlagsConfig,
+        localOverrides: [String: FlagValue]
+    ) -> Bool? {
+        if case .bool(let v) = localOverrides[flag.key] { return v }
+        if case .value(.bool(let v)) = config.flags[flag.key] { return v }
+        return nil
+    }
+
+    static func value(
+        of flag: ValueFlag<Int>,
+        config: FeatureFlagsConfig,
+        localOverrides: [String: FlagValue]
+    ) -> Int? {
+        if case .int(let v) = localOverrides[flag.key] { return v }
+        if case .value(.int(let v)) = config.flags[flag.key] { return v }
+        return nil
+    }
+
+    static func value(
+        of flag: ValueFlag<Double>,
+        config: FeatureFlagsConfig,
+        localOverrides: [String: FlagValue]
+    ) -> Double? {
+        // `FlagValue` decodes any whole number — `2.0` included — as `.int`,
+        // so a Double read that matched only `.double` would ignore it.
+        switch localOverrides[flag.key] {
+        case .double(let v): return v
+        case .int(let v): return Double(v)
+        default: break
+        }
+        switch config.flags[flag.key] {
+        case .value(.double(let v)): return v
+        case .value(.int(let v)): return Double(v)
+        default: return nil
+        }
+    }
+
+    static func value(
+        of flag: ValueFlag<String>,
+        config: FeatureFlagsConfig,
+        localOverrides: [String: FlagValue]
+    ) -> String? {
+        if case .string(let v) = localOverrides[flag.key] { return v }
+        if case .value(.string(let v)) = config.flags[flag.key] { return v }
+        return nil
     }
 }
 
@@ -162,9 +216,8 @@ extension FeatureFlagsState {
             flag,
             config: config,
             localOverrides: localOverrides,
-            bucketingID: bucketingID ?? defaultBucketingID,
-            default: defaultValue
-        )
+            bucketingID: bucketingID ?? defaultBucketingID
+        ) ?? defaultValue
     }
 
     /// Reads a variant flag.
@@ -184,35 +237,32 @@ extension FeatureFlagsState {
             config: config,
             localOverrides: localOverrides,
             bucketingID: bucketingID ?? defaultBucketingID
-        )
+        ) ?? flag.defaultValue
     }
 
     /// Reads a value flag (`Bool`).
     public func value(of flag: ValueFlag<Bool>) -> Bool {
-        if case .bool(let v) = localOverrides[flag.key] { return v }
-        if case .value(.bool(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 
     /// Reads a value flag (`Int`).
     public func value(of flag: ValueFlag<Int>) -> Int {
-        if case .int(let v) = localOverrides[flag.key] { return v }
-        if case .value(.int(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 
-    /// Reads a value flag (`Double`).
+    /// Reads a value flag (`Double`). A whole-number remote value or override
+    /// (`.int`) reads as the equivalent `Double`.
     public func value(of flag: ValueFlag<Double>) -> Double {
-        if case .double(let v) = localOverrides[flag.key] { return v }
-        if case .value(.double(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 
     /// Reads a value flag (`String`).
     public func value(of flag: ValueFlag<String>) -> String {
-        if case .string(let v) = localOverrides[flag.key] { return v }
-        if case .value(.string(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 }
 
@@ -220,8 +270,9 @@ extension FeatureFlagsState {
 //
 // Mirrors the struct API so SwiftUI views can call `store.featureFlags.isEnabled(.x)`
 // through Swidux's `@dynamicMemberLookup`, which forwards to the observer class.
-// Granular observation is preserved because each method reads only the observer
-// fields needed for that flag's evaluation.
+// Each method reads only the observer fields evaluation needs (`config`,
+// `localOverrides`, and the bucketing identity), so a view re-renders when one of
+// those changes — any config change, not just one to the flag it reads.
 
 extension FeatureFlagsStateObserver {
     /// The identity used for bucketing when the caller doesn't pass one:
@@ -238,9 +289,8 @@ extension FeatureFlagsStateObserver {
             flag,
             config: config,
             localOverrides: localOverrides,
-            bucketingID: bucketingID ?? defaultBucketingID,
-            default: defaultValue
-        )
+            bucketingID: bucketingID ?? defaultBucketingID
+        ) ?? defaultValue
     }
 
     /// Reads a variant flag against the observer's current state.
@@ -253,34 +303,31 @@ extension FeatureFlagsStateObserver {
             config: config,
             localOverrides: localOverrides,
             bucketingID: bucketingID ?? defaultBucketingID
-        )
+        ) ?? flag.defaultValue
     }
 
     /// Reads a value flag (`Bool`) against the observer's current state.
     public func value(of flag: ValueFlag<Bool>) -> Bool {
-        if case .bool(let v) = localOverrides[flag.key] { return v }
-        if case .value(.bool(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 
     /// Reads a value flag (`Int`) against the observer's current state.
     public func value(of flag: ValueFlag<Int>) -> Int {
-        if case .int(let v) = localOverrides[flag.key] { return v }
-        if case .value(.int(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 
     /// Reads a value flag (`Double`) against the observer's current state.
+    /// A whole-number remote value or override (`.int`) reads as a `Double`.
     public func value(of flag: ValueFlag<Double>) -> Double {
-        if case .double(let v) = localOverrides[flag.key] { return v }
-        if case .value(.double(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 
     /// Reads a value flag (`String`) against the observer's current state.
     public func value(of flag: ValueFlag<String>) -> String {
-        if case .string(let v) = localOverrides[flag.key] { return v }
-        if case .value(.string(let v)) = config.flags[flag.key] { return v }
-        return flag.defaultValue
+        FlagEvaluator.value(of: flag, config: config, localOverrides: localOverrides)
+            ?? flag.defaultValue
     }
 }

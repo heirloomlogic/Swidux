@@ -6,6 +6,15 @@
 //  in the `SwiduxMacros` compiler-plugin target.
 //
 
+// A macro expansion resolves names against the imports of the file it expands
+// in, and `@Persisted` expands to `@Model`, `FetchDescriptor` and `#Predicate`.
+// Re-exporting SwiftData makes `import SwiduxPersistence` — all the how-to
+// shows — enough; without it that file gets a wall of "unknown attribute
+// 'Model'" errors reported against generated code. This module's public API
+// already exposes SwiftData types (`ModelContainer`, `PersistentModel`), so a
+// client can't use it without SwiftData in the first place.
+@_exported import SwiftData
+
 /// Delete rule for an `@Relation`. Mirrors SwiftData's
 /// `Schema.Relationship.DeleteRule` case names so the generated
 /// `@Relationship(deleteRule:)` resolves in the model's SwiftData context.
@@ -23,18 +32,35 @@ public enum SwiduxDeleteRule: Sendable {
 /// `Identifiable & Equatable & Sendable` with `ID == UUID`. By default every
 /// stored property is mirrored onto the model (SwiftData persists scalars and
 /// `Codable` composites natively); use the marker macros to override:
-/// ``Relation(deleteRule:inverse:)``, ``ForeignKey()``, ``Inline()``, ``Ignored()``.
+/// ``Relation(deleteRule:)``, ``ForeignKey()``, ``Inline()``, ``Ignored()``.
 @attached(peer, names: suffixed(Model))
 @attached(extension, conformances: PersistableEntity, names: arbitrary)
 public macro Persisted() = #externalMacro(module: "SwiduxMacros", type: "PersistedMacro")
 
 /// Marks a property as a SwiftData relationship to another `@Persisted` entity.
-/// The property's type must reference the related *domain* type (`[Card]`,
-/// `Card?`, or `Card`); the generated model substitutes the `…Model` shadow.
-/// `inverse` is supplied as a key path on the generated model type, e.g.
-/// `\CardModel.deck`.
+/// The property's type must reference the related *domain* type (`[Card]` or
+/// `Card?`); the generated model substitutes the `…Model` shadow.
+///
+/// The current implementation embeds child values in the parent and reconciles
+/// them when the parent is saved. Its converters do not support back-references
+/// or bidirectional relationships. Give the child a ``ForeignKey()`` `UUID` if
+/// it needs to name its parent; this marker adds no referential constraint.
+/// Independently addressable associations with generated storage inverses are
+/// planned in Swidux issue #102, but are not implemented by this macro.
+///
+/// That also makes the relationship **local-only**. CloudKit mirroring requires
+/// an inverse on every relationship, so a model that declares a `@Relation`
+/// can't be synced: ``ContainerFactory`` refuses to build a mirrored container
+/// over it and throws ``CloudKitIncompatibleSchema``. In a synced app, store an
+/// owned value with ``Inline()``, or register the child as an entity of its own
+/// with a ``ForeignKey()`` to its parent.
+///
+/// A to-many relation is **unordered**: SwiftData stores it as a set, so the
+/// array comes back from storage in no particular order, and a change that only
+/// reorders it is not saved. Sort in the domain (or store an explicit position)
+/// when order matters.
 @attached(peer)
-public macro Relation(deleteRule: SwiduxDeleteRule, inverse: AnyKeyPath? = nil) =
+public macro Relation(deleteRule: SwiduxDeleteRule) =
     #externalMacro(module: "SwiduxMacros", type: "MarkerMacro")
 
 /// Marks a `UUID` property as a scalar parent reference. Intent/documentation

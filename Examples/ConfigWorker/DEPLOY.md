@@ -62,10 +62,7 @@ means "no rules yet."
 3. Save. Mirror it back into `seeds/<appID>/killswitch.json` and commit so the
    repo stays the source of truth.
 
-**Propagation = max(edge cache, client `cacheLifetime`).** Edge cache for
-`killswitch` is `max-age=60`; the *client* default is 3600s and dominates. For
-a real emergency lever, ship apps with `cacheLifetime` ~300–900s and a
-`.killswitch(.forceFetch)` on foreground (see README "Freshness").
+**Propagation is bounded by the client's `cacheLifetime`, not by an edge cache — Cloudflare's CDN does not cache Worker responses, so every request re-reads KV and gets the value you just saved.** The `Cache-Control: max-age=60` on `killswitch` is a hint the *client* may or may not honor; the client default (`cacheLifetime`) is 3600s and dominates regardless. For a real emergency lever, ship apps with `cacheLifetime` ~300–900s and a `.killswitch(.forceFetch)` on foreground (see README "Freshness").
 
 ## What this Worker deliberately is not
 

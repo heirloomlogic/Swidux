@@ -20,7 +20,24 @@ cards.sort { $0.sortIndex < $1.sortIndex } // Only marks moved entities
 cards.removeAll { $0.isArchived }          // Rebuilds index in one pass
 ```
 
-Every mutation is tracked in a ``ChangeSet`` that the middleware drains after each reducer call.
+Every mutation is tracked in a ``ChangeSet`` that the persistence plugin drains after each reducer call.
+
+## Identity Is Stable
+
+The subscript and `modify` both enforce that an entity's ID never drifts from the key you accessed it under. Assigning a value under a different key, or changing the ID inside `modify`'s transform, corrupts the index and the change tracking that persistence and undo rely on — so both are `precondition` failures, not silently ignored:
+
+```swift
+cards[card.id] = card                        // OK — value.id matches the key
+cards[otherCard.id] = card                    // Fails a precondition: IDs differ
+cards.modify(card.id) { $0.id = UUID() }      // Fails a precondition: ID changed in place
+```
+
+This is a process-terminating crash in both Debug and Release — it's a programmer error, not a recoverable condition. If you need to replace an entity's identity (for example, swapping a locally-generated UUID for a server-issued one once a create request completes), delete the old ID and insert the new value instead of trying to mutate the ID in place:
+
+```swift
+cards[localID] = nil
+cards[serverID] = card   // card.id == serverID
+```
 
 ## Bulk Deletion
 
@@ -97,5 +114,9 @@ An ID leaves the set as soon as it becomes local again — an explicit `store[id
 // "3 items were deleted on another device."
 cards.remotelyRemovedIDs.count
 ```
+
+### Remote creations are not undoable either
+
+The mirror case: a row that `merge` or `reconcile` inserted *after* an undo snapshot was taken is kept when that snapshot is restored, rather than recorded as a deletion — which would sync out and delete another device's creation everywhere. The store remembers each such arrival internally, and every snapshot carries its own copy of that record, so `restore` can tell a row that arrived after the snapshot from one the local user deleted before it. The row is otherwise the user's like any other: undo and redo of their own edits to it, and of their own deletion of it, work as usual.
 
 Stores that never sync never populate it, and `restore` takes exactly the path it did before.

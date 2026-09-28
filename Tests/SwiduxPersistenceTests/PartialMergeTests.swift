@@ -599,9 +599,13 @@ struct PartialMergeTests {
             "identities resolved against one store say nothing about another")
     }
 
-    @Test("rehydrate still records nothing")
+    @Test("an anchored rehydrate still records nothing")
     func rehydrateLeavesTheDebtAlone() async throws {
         let (coordinator, store, held) = try await makeHeldNote()
+        // Anchored first. An unanchored rehydrate is the read the next tick
+        // anchors on, so it records what it owes along with the token.
+        await coordinator.mergeChanges(into: store)
+        #expect(coordinator.handle.anchor.token != nil)
 
         try await remoteWrite(coordinator, writes: [Note(id: held, title: "edited elsewhere", pinned: true)])
         await coordinator.mergeRemote(into: store, ids: [held])

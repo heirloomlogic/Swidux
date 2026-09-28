@@ -79,10 +79,10 @@ Add the [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxReven
 ```swift
 import SwiduxRevenueCatPaywall
 
-let service = RevenueCatPaywallService()
+let service = RevenueCatPaywallService(entitlementID: "pro")
 ```
 
-The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI that hands purchase results back through the plugin. See its [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) for configuration (API key, entitlement identifiers).
+`entitlementID` is the RevenueCat entitlement identifier that grants pro; pass `permanentLicenseEntitlementID:` too if you sell a lifetime unlock. The companion package also ships `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI. The sheet only dispatches presentation actions (`.dismiss`, `.dismissCustomerCenter`); a completed purchase reaches the plugin through `customerInfoStream()`, which is why you start `.observeCustomerInfo` in Step 5. See its [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) for configuration (API key, entitlement identifiers).
 
 ### Path B: StoreKit or custom backend
 
@@ -134,25 +134,21 @@ let paywallPlugin = PaywallPlugin<AppState, AppAction>(
     state: \.paywall,
     action: AppAction.paywall,
     extractAction: { if case .paywall(let a) = $0 { return a }; return nil },
-    service: RevenueCatPaywallService()
+    service: RevenueCatPaywallService(entitlementID: "pro")
 )
 plugins.register(paywallPlugin)
 ```
 
-> Tip: In production, wrap the service in `ResilientPaywallService` so a
-> transient entitlement-read failure at cold launch never gates a paid user as
-> free. Back its cache with `KeychainKeyValueStore` (not `UserDefaults`, whose
-> plist a user can edit to spoof entitlements):
+> Tip: In production, wrap the service in `ResilientPaywallService` so a transient entitlement-read failure at cold launch never gates a paid user as free. Back its cache with `KeychainKeyValueStore` (not `UserDefaults`, whose plist a user can edit to spoof entitlements):
 >
 > ```swift
 > service: ResilientPaywallService(
->     base: RevenueCatPaywallService(),
+>     base: RevenueCatPaywallService(entitlementID: "pro"),
 >     store: KeychainKeyValueStore(service: "com.example.myapp")
 > )
 > ```
 >
-> See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the
-> staleness policy and threat model.
+> The cache is not scoped to an account: if your app signs users in and out, call `clearCache()` on the resilient service at sign-out and account switch. See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the staleness policy, threat model, and sign-out sequence.
 
 ## Step 5: Observe customer info on launch
 
@@ -215,7 +211,7 @@ Button("Restore Purchases") {
 .disabled(store.paywall.isLoading)
 ```
 
-On success, the resulting snapshot flows through `.customerInfoUpdated` and updates the gate. On failure, `store.paywall.error` is set.
+On success, the resulting snapshot flows through `.customerInfoUpdated` and updates the gate. On failure, `store.paywall.error` is set. Either outcome lands even if the user closes the sheet while the restore is still running: the refresh that `.dismiss` dispatches cannot supersede a restore. Only a live stream update that arrives mid-restore outranks the restore's snapshot, because the provider's feed is at least as new. `isLoading` stays `true` until the restore finishes or a newer snapshot lands, so a restore the provider never completes cannot hold the spinner once a refresh succeeds.
 
 ## Step 9: Manage subscriptions
 

@@ -13,7 +13,11 @@ func generatePersistedModelClass(
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
 
     let memberLines = properties.compactMap {
-        modelMemberLines(for: $0, accessPrefix: accessPrefix, modelName: modelName)
+        modelMemberLines(
+            for: $0,
+            accessPrefix: memberAccessPrefix(structAccess: accessLevel, member: $0.accessLevel),
+            modelName: modelName
+        )
     }
     .joined(separator: "\n")
     // Shared codec for @Inline blob columns, allocated once per model type
@@ -69,14 +73,18 @@ func generatePersistedModelClass(
 }
 
 /// Generates `extension <Struct>: PersistableEntity { typealias Model = <Struct>Model }`.
+///
+/// `typeName` is the extended type as the compiler names it — qualified when the
+/// struct is nested (`Library.Book`) — and the model peer, declared beside the
+/// struct, is named by appending `Model` to it (`Library.BookModel`).
 func generatePersistableEntityExtension(
-    structName: String,
+    typeName: String,
     accessLevel: String?
 ) -> ExtensionDeclSyntax {
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
     let source = """
-        extension \(structName): PersistableEntity {
-            \(accessPrefix)typealias Model = \(structName)Model
+        extension \(typeName): PersistableEntity {
+            \(accessPrefix)typealias Model = \(typeName)Model
         }
         """
     let sourceFile = Parser.parse(source: source)
@@ -146,11 +154,12 @@ private func identityAttribute(for prop: PersistedProperty) -> String {
     prop.isIdentity ? "@Attribute(.preserveValueOnDeletion) " : ""
 }
 
-private func relationshipAttribute(deleteRule: String?, inverse: String?) -> String {
-    var parts: [String] = []
-    if let deleteRule { parts.append("deleteRule: \(deleteRule)") }
-    if let inverse { parts.append("inverse: \(inverse)") }
-    return parts.isEmpty ? "@Relationship" : "@Relationship(\(parts.joined(separator: ", ")))"
+/// The current nested-value converters do not support inverse relationships,
+/// so this generator emits none. Adding a storage-only inverse requires the
+/// association identity and save contract tracked in Swidux issue #102; merely
+/// including the parent in child conversion would cause recursive traversal.
+private func relationshipAttribute(deleteRule: String?) -> String {
+    deleteRule.map { "@Relationship(deleteRule: \($0))" } ?? "@Relationship"
 }
 
 private func modelMemberLines(
@@ -182,8 +191,8 @@ private func modelMemberLines(
                     get throws { \(getter) }
                 }
             """
-    case .relation(let rule, let inverse, let cardinality, let element):
-        let attr = relationshipAttribute(deleteRule: rule, inverse: inverse)
+    case .relation(let rule, let cardinality, let element):
+        let attr = relationshipAttribute(deleteRule: rule)
         let modelType = relationModelType(cardinality: cardinality, element: element)
         return "    \(attr) \(accessPrefix)var \(prop.name): \(modelType) = nil"
     case .ignored:
@@ -197,7 +206,7 @@ private func initLine(for prop: PersistedProperty) -> String? {
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
         return "        self.\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
-    case .relation(_, _, let cardinality, let element):
+    case .relation(_, let cardinality, let element):
         switch cardinality {
         case .toMany, .toOneOptional:
             return "        self.\(prop.name) = try domain.\(prop.name).map { try \(element)Model(from: $0) }"
@@ -215,7 +224,7 @@ private func toDomainArgument(for prop: PersistedProperty) -> String {
         return "            \(prop.name): \(prop.name)"
     case .inlineBlob:
         return "            \(prop.name): try \(prop.name)"
-    case .relation(_, _, let cardinality, _):
+    case .relation(_, let cardinality, _):
         // The model stores relationships optionally (CloudKit requirement), so
         // reconstruct the domain shape from the optional.
         switch cardinality {

@@ -76,6 +76,29 @@ struct PersistenceWriteThroughTests {
             "the resurrected row would have synced out as a creation, re-seeding every peer"
         )
     }
+
+    @MainActor
+    @Test("undoing an action dispatched before a live hydration does not delete the hydrated rows")
+    func undoAcrossLiveHydrationKeepsRows() async throws {
+        let container = try makeNotesContainer()
+        let onDisk = Note(id: UUID(), title: "years of notes", pinned: false)
+        _ = try seedNotes(container, [onDisk])
+        let coordinator = try makeNotesCoordinator(container: container)
+        let store = makeNotesStore(coordinator, undo: UndoPlugin<NotesState, NotesAction>())
+
+        // Any action before the hydration lands — an `.onAppear`, a restored
+        // search field — snapshots the still-empty store.
+        store.send(.setSearchText(""))
+        await coordinator.hydrate(into: store)
+        #expect(store.notes[onDisk.id] == onDisk)
+
+        store.undo()
+        await store.flush()
+
+        #expect(store.notes[onDisk.id] == onDisk, "undo removed a row it never created")
+        let rows = try rawNoteRows(container)
+        #expect(rows.contains { $0.id == onDisk.id }, "undo deleted the stored row from disk")
+    }
 }
 
 @Suite("SyncStatus properties")

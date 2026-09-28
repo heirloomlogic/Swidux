@@ -322,6 +322,41 @@ struct ResilientPaywallServiceTests {
         #expect(snapshot.isPro == true)
     }
 
+    // MARK: clearCache
+
+    @Test("clearing the cache forgets the previous account's entitlement")
+    func clearCacheForgetsPreviousAccount() async throws {
+        let store = InMemoryKeyValueStore()
+        store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: true), for: .lastKnownEntitlement)
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 1)
+
+        #expect(service.clearCache())
+
+        #expect(store.value(.lastKnownEntitlement) == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await service.customerInfo()
+        }
+        #expect(await collect(service.customerInfoStream()).isEmpty)
+    }
+
+    @Test("a locked keychain reads as a cache miss and leaves the stored entitlement intact")
+    func lockedStoreIsAMissNotAnOverwrite() async throws {
+        let store = LockableKeyValueStore()
+        store.setValue(CachedEntitlement(isPro: true, hasPermanentLicense: false), for: .lastKnownEntitlement)
+        let base = FlakyPaywallService(failuresBeforeSuccess: .max)
+        let service = ResilientPaywallService(base: base, store: store, maxAttempts: 1)
+
+        store.isLocked = true
+        await #expect(throws: (any Error).self) {
+            _ = try await service.customerInfo()
+        }
+        #expect(await collect(service.customerInfoStream()).isEmpty)
+
+        store.isLocked = false
+        #expect(try await service.customerInfo().isPro)
+    }
+
     // MARK: restorePurchases
 
     @Test("a successful restore persists the snapshot")
@@ -402,6 +437,36 @@ private final class FlakyPaywallService: PaywallService {
     func restorePurchases() async throws -> EntitlementSnapshot {
         if restoreShouldFail { throw TestError.boom }
         return success
+    }
+}
+
+/// Mimics `KeychainKeyValueStore` before first unlock: while locked, reads
+/// return `nil` (as `errSecInteractionNotAllowed` does) and writes fail.
+private final class LockableKeyValueStore: KeyValueStore {
+    private let backing = InMemoryKeyValueStore()
+    private let locked = Mutex(false)
+
+    var isLocked: Bool {
+        get { locked.withLock { $0 } }
+        set { locked.withLock { $0 = newValue } }
+    }
+
+    func value<Value>(_ key: KVKey<Value>) -> Value? {
+        isLocked ? nil : backing.value(key)
+    }
+
+    @discardableResult
+    func setValue<Value>(_ value: Value?, for key: KVKey<Value>) -> Bool {
+        isLocked ? false : backing.setValue(value, for: key)
+    }
+
+    @discardableResult
+    func removeValue<Value>(for key: KVKey<Value>) -> Bool {
+        isLocked ? false : backing.removeValue(for: key)
+    }
+
+    func contains<Value>(_ key: KVKey<Value>) -> Bool {
+        isLocked ? false : backing.contains(key)
     }
 }
 

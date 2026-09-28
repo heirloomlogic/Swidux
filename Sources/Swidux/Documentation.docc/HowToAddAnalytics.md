@@ -116,6 +116,8 @@ struct MyAnalyticsService: AnalyticsService {
 
 Translate `AnalyticsValue` cases (`.string`, `.int`, `.double`, `.bool`, `.date`, `.array`, `.dict`, `.null`) into whatever your SDK takes. The mapping is mechanical: each case has an obvious target type.
 
+Return promptly from each method. The plugin calls the service one call at a time, in dispatch order, so a `track` that awaits an HTTP request holds back every event behind it for the length of the request — and keeps them in memory while it does. If you're writing a custom backend, append to a queue and upload from a background task instead of awaiting the network in `track`.
+
 ### Previews and tests
 
 Use the built-in `MockAnalyticsService` for backend-agnostic previews:
@@ -172,20 +174,36 @@ let identity = AnalyticsIdentity<AppState>(
 
 ## Step 6: Wire the plugin
 
-Construct and register `AnalyticsPlugin` inside your `Store.configured()` factory:
+Construct `AnalyticsPlugin` where the app can keep a reference to it, and register it on the `PluginHost` inside your `Store.configured()` factory. `Store` has no typed accessor for a registered plugin, and Step 10 needs the plugin itself to flush with a deadline:
 
 ```swift
 import SwiduxAnalytics
 
-let analyticsPlugin = AnalyticsPlugin<AppState, AppAction>(
-    state: \.analytics,
-    action: AppAction.analytics,
-    extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
-    service: MixpanelAnalyticsService(token: "..."),
-    mapper: mapper,
-    identity: identity
-)
-plugins.register(analyticsPlugin)
+typealias AppAnalytics = AnalyticsPlugin<AppState, AppAction>
+
+extension AnalyticsPlugin where RootState == AppState, RootAction == AppAction {
+    static func configured(
+        service: any AnalyticsService = MixpanelAnalyticsService(token: "...")
+    ) -> AppAnalytics {
+        AnalyticsPlugin(
+            state: \.analytics,
+            action: AppAction.analytics,
+            extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
+            service: service,
+            mapper: mapper,        // Step 4
+            identity: identity     // Step 5
+        )
+    }
+}
+
+extension Store where State == AppState, Action == AppAction {
+    static func configured(analytics: AppAnalytics = .configured()) -> AppStore {
+        let plugins = PluginHost<AppState, AppAction>()
+        // … register persistence and other plugins first
+        plugins.register(analytics)
+        return Store(initialState: AppState(), reducer: { … }, plugins: plugins)
+    }
+}
 ```
 
 ## Step 7: Track screen views
@@ -254,13 +272,20 @@ The hook fires for either value, and on opt-out it runs before `service.reset()`
 
 ## Step 10: Flush on app shutdown
 
-Call `flush()` when the app moves to the background or terminates so in-flight events aren't lost:
+Flush the plugin when the app moves to the background or terminates so queued events aren't lost. Use the reference you kept in Step 6 and give the flush a deadline:
 
 ```swift
 @main
 struct MyApp: App {
-    @State private var store = AppStore.configured()
+    private let analytics: AppAnalytics
+    @State private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        let analytics = AppAnalytics.configured()
+        self.analytics = analytics
+        _store = State(initialValue: AppStore.configured(analytics: analytics))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -269,14 +294,14 @@ struct MyApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
-                Task { await store.analyticsPlugin.flush() }
+                Task { await analytics.flush(timeout: .seconds(2)) }
             }
         }
     }
 }
 ```
 
-`flush()` awaits any pending fire-and-forget service calls the plugin spawned, then calls `service.flush()` to drain the SDK's own buffers.
+`flush(timeout:)` waits for the service calls the plugin has queued, then calls `service.flush()` to drain the SDK's own buffers, and gives up once the deadline passes — nothing is cancelled, the caller just stops waiting. The no-argument `flush()`, and `store.flush()`, which flushes every registered plugin, wait without bound: one hung service call holds them until the OS watchdog steps in.
 
 ## Testing
 
@@ -297,10 +322,10 @@ actor RecordingAnalyticsService: AnalyticsService {
 
 @Test func incrementTracks() async {
     let service = RecordingAnalyticsService()
-    let store = AppStore.configured(analyticsService: service)
+    let store = AppStore.configured(analytics: .configured(service: service))
 
     store.send(.counter(.increment(5)))
-    await store.analyticsPlugin.flush()
+    await store.flush()
 
     let events = await service.events
     #expect(events.first?.name == "counter_added")
@@ -308,9 +333,9 @@ actor RecordingAnalyticsService: AnalyticsService {
 }
 ```
 
-`flush()` is the deterministic sync point — it awaits all pending tracking tasks before returning, so post-flush assertions are stable.
+`store.flush()` is the deterministic sync point — it flushes every registered plugin, and the analytics plugin waits for every queued service call before returning, so post-flush assertions are stable. Its unbounded wait is what a test wants.
 
-Plumb the service through a parameter on your `Store.configured()` factory so previews and tests can override it without touching the live SDK.
+Plumb the service through the plugin factory from Step 6 so previews and tests can override it without touching the live SDK.
 
 ## See Also
 

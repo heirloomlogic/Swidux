@@ -86,6 +86,207 @@ final class PersistedMacroTests: XCTestCase {
         )
     }
 
+    // An observed property is still stored, so it must be mirrored; a static one
+    // is not instance state, so it must not be.
+    func testObservedPropertyIsMirroredAndStaticIsSkipped() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            struct Note: Identifiable, Equatable, Sendable {
+                var id: UUID
+                var rating: Int = 0 {
+                    didSet { rating = min(rating, 5) }
+                }
+                nonisolated(unsafe) static var schemaVersion: Int = 1
+                static let kind: String = "note"
+            }
+            """,
+            expandedSource: """
+                struct Note: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                    var rating: Int = 0 {
+                        didSet { rating = min(rating, 5) }
+                    }
+                    nonisolated(unsafe) static var schemaVersion: Int = 1
+                    static let kind: String = "note"
+                }
+
+                @Model
+                final class NoteModel: PersistableModel {
+                    typealias Domain = Note
+
+                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+                    var rating: Int = 0
+
+                    init(from domain: Note) throws {
+                        self.id = domain.id
+                        self.rating = domain.rating
+                    }
+
+                    func toDomain() throws -> Note {
+                        Note(
+                            id: id,
+                            rating: rating
+                        )
+                    }
+
+                    func update(from domain: Note) throws {
+                        self.rating = domain.rating
+                    }
+
+                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<NoteModel> {
+                        FetchDescriptor<NoteModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+
+                    static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<NoteModel> {
+                        FetchDescriptor<NoteModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
+                }
+
+                extension Note: PersistableEntity {
+                    typealias Model = NoteModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    // The extension names the struct as the compiler does — `Library.Book` — and
+    // so the model beside it, `Library.BookModel`.
+    func testNestedStructExtendsQualifiedName() throws {
+        assertMacroExpansion(
+            """
+            enum Library {
+                @Persisted
+                struct Book: Identifiable, Equatable, Sendable {
+                    var id: UUID
+                }
+            }
+            """,
+            expandedSource: """
+                enum Library {
+                    struct Book: Identifiable, Equatable, Sendable {
+                        var id: UUID
+                    }
+
+                    @Model
+                    final class BookModel: PersistableModel {
+                        typealias Domain = Book
+
+                        @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
+
+                        init(from domain: Book) throws {
+                            self.id = domain.id
+                        }
+
+                        func toDomain() throws -> Book {
+                            Book(
+                                id: id
+                            )
+                        }
+
+                        func update(from domain: Book) throws {
+
+                        }
+
+                        static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<BookModel> {
+                            FetchDescriptor<BookModel>(predicate: #Predicate {
+                                    ids.contains($0.id)
+                                })
+                        }
+
+                        static func swiduxBatchFetchDescriptor(
+                            persistentIDs: [PersistentIdentifier]
+                        ) -> FetchDescriptor<BookModel> {
+                            FetchDescriptor<BookModel>(predicate: #Predicate {
+                                persistentIDs.contains($0.persistentModelID)
+                            })
+                        }
+                    }
+                }
+
+                extension Library.Book: PersistableEntity {
+                    typealias Model = Library.BookModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
+    // The model never republishes a member wider than the domain declares it.
+    func testModelMemberAccessIsNeverWidened() throws {
+        assertMacroExpansion(
+            """
+            @Persisted
+            public struct Account: Identifiable, Equatable, Sendable {
+                public var id: UUID
+                var internalNote: String = ""
+                fileprivate var localFlag: Bool = false
+            }
+            """,
+            expandedSource: """
+                public struct Account: Identifiable, Equatable, Sendable {
+                    public var id: UUID
+                    var internalNote: String = ""
+                    fileprivate var localFlag: Bool = false
+                }
+
+                @Model
+                public final class AccountModel: PersistableModel {
+                    public typealias Domain = Account
+
+                    @Attribute(.preserveValueOnDeletion) public var id: UUID = UUID()
+                    var internalNote: String = ""
+                    fileprivate var localFlag: Bool = false
+
+                    public init(from domain: Account) throws {
+                        self.id = domain.id
+                        self.internalNote = domain.internalNote
+                        self.localFlag = domain.localFlag
+                    }
+
+                    public func toDomain() throws -> Account {
+                        Account(
+                            id: id,
+                            internalNote: internalNote,
+                            localFlag: localFlag
+                        )
+                    }
+
+                    public func update(from domain: Account) throws {
+                        self.internalNote = domain.internalNote
+                        self.localFlag = domain.localFlag
+                    }
+
+                    public static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<AccountModel> {
+                        FetchDescriptor<AccountModel>(predicate: #Predicate {
+                                ids.contains($0.id)
+                            })
+                    }
+
+                    public static func swiduxBatchFetchDescriptor(
+                        persistentIDs: [PersistentIdentifier]
+                    ) -> FetchDescriptor<AccountModel> {
+                        FetchDescriptor<AccountModel>(predicate: #Predicate {
+                            persistentIDs.contains($0.persistentModelID)
+                        })
+                    }
+                }
+
+                extension Account: PersistableEntity {
+                    public typealias Model = AccountModel
+                }
+                """,
+            macros: macros
+        )
+    }
+
     func testInlineForeignKeyAndIgnored() throws {
         assertMacroExpansion(
             """
@@ -171,7 +372,7 @@ final class PersistedMacroTests: XCTestCase {
             struct Deck: Identifiable, Equatable, Sendable {
                 var id: UUID
                 var title: String
-                @Relation(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [Card]
+                @Relation(deleteRule: .cascade) var cards: [Card]
             }
             """,
             expandedSource: """
@@ -187,7 +388,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var title: String = ""
-                    @Relationship(deleteRule: .cascade, inverse: \\CardModel.deck) var cards: [CardModel]? = nil
+                    @Relationship(deleteRule: .cascade) var cards: [CardModel]? = nil
 
                     init(from domain: Deck) throws {
                         self.id = domain.id
@@ -301,8 +502,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "@Relation to-one properties must be optional (T?) or to-many to be CloudKit-safe; CloudKit forbids non-optional relationships",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 41
                 )
             ],
             macros: macros
@@ -471,13 +672,13 @@ final class PersistedMacroTests: XCTestCase {
             @Persisted
             struct Note: Identifiable, Equatable, Sendable {
                 var id: UUID
-                let pinned = false
+                var pinned = false
             }
             """,
             expandedSource: """
                 struct Note: Identifiable, Equatable, Sendable {
                     var id: UUID
-                    let pinned = false
+                    var pinned = false
                 }
 
                 @Model
@@ -590,8 +791,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "@Ignored properties must be optional so they can be reconstructed as nil when loading from storage",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 18
                 )
             ],
             macros: macros
@@ -788,8 +989,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "Persisted properties of a non-primitive type must provide a default value (= …), be optional, or be marked @Inline to be CloudKit-safe",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 9
                 )
             ],
             macros: macros
@@ -866,8 +1067,8 @@ final class PersistedMacroTests: XCTestCase {
                 DiagnosticSpec(
                     message:
                         "Non-optional @Inline properties must provide a default value (= …) or be optional, so a missing or undecodable blob can be recovered instead of crashing",
-                    line: 1,
-                    column: 1
+                    line: 4,
+                    column: 17
                 )
             ],
             macros: macros
@@ -1015,7 +1216,7 @@ final class PersistedMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Kind' must be written with its qualified name 'Entry.Kind'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Kind' must be written with its qualified name 'Entry.Kind'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 15
                 )
@@ -1165,10 +1366,18 @@ final class PersistedMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 27
-                )
+                ),
+                // The default is copied into the getter's fallback, outside the
+                // struct, so the bare name fails there too.
+                DiagnosticSpec(
+                    message:
+                        "Nested type 'Settings' must be written with its qualified name 'Profile.Settings'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
+                    line: 7,
+                    column: 38
+                ),
             ],
             macros: macros
         )
@@ -1247,7 +1456,7 @@ final class PersistedMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message:
-                        "Nested type 'Card' must be written with its qualified name 'Deck.Card'; the generated model class is emitted as a peer at file scope, where the bare name doesn't resolve",
+                        "Nested type 'Card' must be written with its qualified name 'Deck.Card'; the generated model class is emitted as a peer outside the struct, where the bare name doesn't resolve",
                     line: 7,
                     column: 27
                 )

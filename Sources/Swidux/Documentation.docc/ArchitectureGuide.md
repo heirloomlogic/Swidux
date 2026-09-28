@@ -22,7 +22,11 @@ The `@Swidux` macro generates the observer class tree and `SwiduxObservable` con
 
 ## Dispatch Loop Detection
 
-``PersistencePlugin`` warns if `afterReduce` is called more than 100 times per debounce interval. This usually means `send()` isn't using the snapshot pattern, causing cascading re-renders that trigger re-dispatches.
+``PersistencePlugin`` warns if more than 100 changes are drained within a single debounce interval (the `loopThreshold` parameter; 250 ms by default). It counts only dispatches that changed an ``EntityStore``, and it reports once per burst — the count starts over after a whole debounce interval with no drains. This usually means an effect or plugin dispatches an action on every state change, feeding the cycle it reacts to. A steady stream of edits, such as a slider drag, stays well under the threshold and is not reported.
+
+## Debounced Persistence
+
+Each drain restarts the flush's debounce timer, so a burst of edits is written once. The timer is never pushed further than `maxWait` past the oldest pending change (four debounce intervals, and at least a second, by default), so continuous edits still reach storage while they continue. A retry of a failed flush keeps its own schedule; a new edit postpones it only when the flush it schedules is due first and carries the failed batch anyway.
 
 ## Reducer Weight
 
