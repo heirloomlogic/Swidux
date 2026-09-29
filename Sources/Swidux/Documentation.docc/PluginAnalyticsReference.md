@@ -251,13 +251,13 @@ Opting out is enforced *plugin-side*: `track`, `screenView`, `identify`, `alias`
 
 That gate stops Swidux-dispatched events. It does not touch the vendor SDK's own consent switch — so an SDK configured to collect automatic events, or one still holding a queue of its own, can keep sending after the user opts out. `AnalyticsService` deliberately stays at five members (consent APIs differ too much between vendors to abstract, and only the app knows which one it is using), so the bridge is the `onConsentChange` closure.
 
-Semantics: it fires on every `.setOptedOut` dispatch with the new value, and on opt-out it runs **before** `service.reset()`, so the SDK's opt-out closes the tap before the reset hands it an identity change that is still eligible to be sent. Events already in flight are not retracted.
+Semantics: it fires on every `.setOptedOut` dispatch with the new value, and on opt-out it runs **before** `service.reset()`, so the SDK receives the withdrawal before the service reset. Queue and in-flight handling remains the adapter's responsibility.
 
 Treat this as required wiring for any vendor with a consent API, not an optional extra: without it, "opted out" means only that Swidux stopped sending. See <doc:HowToAddAnalytics> Step 9 for the wiring.
 
 Keep the user's choice in app storage. Before creating the store, seed `AnalyticsState(isOptedOut:)` from that choice. Then dispatch `.setOptedOut(storedValue)` once from the root view at launch. The dispatch applies the stored value to the vendor SDK even when it matches the plugin's initial state. This keeps the plugin and vendor in step when a vendor starts opted out by default.
 
-The consent hook cannot retract vendor work already in flight or purge a vendor queue. It stops the vendor from accepting work recorded after opt-out.
+The plugin stops scheduling vendor work after opt-out. The hook does not guarantee whether work already queued or in flight is delivered or discarded, and it is not a data-deletion API.
 
 ## Mapper semantics
 

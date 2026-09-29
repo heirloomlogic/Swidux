@@ -262,7 +262,13 @@ AnalyticsPlugin(
     action: AppAction.analytics,
     extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
     service: mixpanel,
-    onConsentChange: { await mixpanel.setOptedOut($0) }
+    onConsentChange: { optedOut in
+        if optedOut {
+            await mixpanel.optOutTracking()
+        } else {
+            await mixpanel.optInTracking()
+        }
+    }
 )
 ```
 
@@ -287,7 +293,7 @@ Then dispatch the same value once from the root view at launch. The dispatch inv
 .task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
 ```
 
-The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK stops accepting work recorded after opt-out before the reset can send another identity change. It does not retract work already in flight or purge the vendor's queue. This is the one place your app names the vendor, which the line constructing the service already does.
+The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK receives the withdrawal before the service reset. What happens to queued or in-flight work is adapter-specific; it may be sent, retained, or discarded as consent and reset take effect. Treat this hook as neither a delivery guarantee nor a data-deletion API. This is the one place your app names the vendor, which the line constructing the service already does.
 
 ## Step 10: Flush on app shutdown
 

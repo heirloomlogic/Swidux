@@ -36,7 +36,13 @@ import Swidux
 ///     action: AppAction.analytics,
 ///     extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
 ///     service: mixpanel,
-///     onConsentChange: { await mixpanel.setOptedOut($0) }
+///     onConsentChange: { optedOut in
+///         if optedOut {
+///             await mixpanel.optOutTracking()
+///         } else {
+///             await mixpanel.optInTracking()
+///         }
+///     }
 /// )
 /// ```
 ///
