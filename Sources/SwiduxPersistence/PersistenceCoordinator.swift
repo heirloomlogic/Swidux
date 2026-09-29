@@ -184,6 +184,7 @@ public final class PersistenceCoordinator<State, Action> {
     private struct MergeAttempt {
         let generation: Int
         let revision: UInt64
+        let anchorRevision: UInt64
         let groupRevision: UInt64
     }
 
@@ -193,8 +194,9 @@ public final class PersistenceCoordinator<State, Action> {
     }
 
     private func check(_ attempt: MergeAttempt) throws(MergeConflict) {
-        guard attempt.generation == handle.anchor.generation else { throw .replacedDatabase }
-        guard attempt.revision == mergeRevision,
+        let anchor = handle.anchor
+        guard attempt.generation == anchor.generation else { throw .replacedDatabase }
+        guard attempt.revision == mergeRevision, attempt.anchorRevision == anchor.revision,
             attempt.groupRevision == EntityPersistenceGate.forContainer(handle.db.modelContainer).groupRevision
         else { throw .newerCommit }
     }
@@ -208,7 +210,7 @@ public final class PersistenceCoordinator<State, Action> {
         let generation = handle.anchor.generation
         while generation == handle.anchor.generation {
             let attempt = MergeAttempt(
-                generation: generation, revision: mergeRevision,
+                generation: generation, revision: mergeRevision, anchorRevision: handle.anchor.revision,
                 groupRevision: EntityPersistenceGate.forContainer(handle.db.modelContainer).groupRevision)
             do {
                 try await operation(attempt)
@@ -430,7 +432,9 @@ public final class PersistenceCoordinator<State, Action> {
         let phase = await hydratePhase()
         for apply in phase.applies { apply(&state) }
         if let token, phase.allReadsSucceeded {
-            handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
+            handle.installAnchor(
+                watermark: token, carryOver: nil, ifGeneration: anchor.generation,
+                ifRevision: anchor.revision)
         }
         await pruneHistoryIfNeeded()
     }
@@ -720,7 +724,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         // was, and anchoring would have the next tick read only what changed
         // since, never the rows this read missed.
         if let token, phase.allReadsSucceeded {
-            handle.installAnchor(watermark: token, carryOver: nil, ifGeneration: anchor.generation)
+            handle.installAnchor(
+                watermark: token, carryOver: nil, ifGeneration: anchor.generation,
+                ifRevision: anchor.revision)
         }
         await pruneHistoryIfNeeded()
     }
@@ -828,7 +834,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
                 // the same, or the same window is rescanned on every future tick.
                 // Nothing was offered, so nothing can be settled either.
                 handle.installAnchor(
-                    watermark: newWatermark, carryOver: nil, ifGeneration: anchor.generation)
+                    watermark: newWatermark, carryOver: nil, ifGeneration: anchor.generation,
+                    ifRevision: anchor.revision)
                 mergeRevision &+= 1
             }
             // Otherwise nothing happened at all. Not even a flush is owed.
@@ -864,7 +871,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         into store: Store<State, Action>,
         policy: MergePolicy?,
         attempt: MergeAttempt,
-        anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int),
+        anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int, revision: UInt64),
         reason: any Error,
         declaring: AttributedIDs? = nil,
         window: DefaultHistoryToken? = nil
@@ -876,7 +883,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         if let window {
             token = window
         } else {
-            token = try? await handle.db.currentHistoryToken()
+            token = try? await handle.db.currentHistoryToken(after: anchor.token)
         }
         // Anchoring even though the read withheld something is what keeps one
         // held row from costing a full table scan on every tick until it is
@@ -1065,14 +1072,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         }
         mergeRevision &+= 1
         if recordAnchor, phase.allReadsSucceeded {
-            // A fresh read at the existing watermark can still settle debt.
-            // installAnchor deliberately rejects old/equal tokens, so present
-            // no new window when this operation only recomputed withholding.
-            let currentToken = handle.anchor.token
+            // The attempt's revision check protects against stale reads. An
+            // unchanged token can still accompany newly settled debt.
             var advancingToken = watermark
-            if let watermark, let currentToken, watermark <= currentToken {
-                advancingToken = nil
-            }
             if leftAbsenceUndecided {
                 switch ifAbsenceUndecided {
                 case .anchor: break
@@ -1081,7 +1083,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
                 }
             }
             handle.installAnchor(
-                watermark: advancingToken, carryOver: carryOver, ifGeneration: attempt.generation)
+                watermark: advancingToken, carryOver: carryOver, ifGeneration: attempt.generation,
+                ifRevision: attempt.anchorRevision)
         } else if recordAnchor, watermark == nil {
             // A caller-fed merge consumes no window, so if an entity's read
             // threw, nothing will re-offer what that entity was handed — the
@@ -1095,7 +1098,9 @@ extension PersistenceCoordinator where State: SwiduxObservable {
                 owed.insert(changed: scope.reading(for: entityName).subtracting(deleted), for: entityName)
                 owed.insert(deleted: deleted, for: entityName)
             }
-            handle.installAnchor(watermark: nil, carryOver: owed, ifGeneration: attempt.generation)
+            handle.installAnchor(
+                watermark: nil, carryOver: owed, ifGeneration: attempt.generation,
+                ifRevision: attempt.anchorRevision)
         }
         return phase.allReadsSucceeded
     }

@@ -401,7 +401,7 @@ extension EffectCancellationRaceTests {
 
         store.cancel(id: "slow")
         release.continuation.yield()
-        try await poll(until: { siblingCancelled.value != nil })
+        try await poll(until: { log.value == ["sibling done"] })
 
         #expect(siblingCancelled.value == false, "distinct ids are independent")
         #expect(log.value == ["sibling done"])

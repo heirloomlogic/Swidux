@@ -535,9 +535,11 @@ struct PartialMergeTests {
         // Move the watermark past the window that recorded the edit, as any
         // later tick would. History will never name this row again, so the debt
         // is now the only thing that still knows about it.
-        let generation = coordinator.handle.anchor.generation
+        let anchor = coordinator.handle.anchor
         let spent = try #require(await coordinator.database.currentHistoryToken())
-        coordinator.handle.installAnchor(watermark: spent, carryOver: nil, ifGeneration: generation)
+        coordinator.handle.installAnchor(
+            watermark: spent, carryOver: nil, ifGeneration: anchor.generation,
+            ifRevision: anchor.revision)
 
         coordinator.editing.release(held)
         await coordinator.mergeChanges(into: store)

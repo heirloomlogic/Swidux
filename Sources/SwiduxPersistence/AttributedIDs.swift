@@ -7,7 +7,6 @@
 //
 
 import Foundation
-import SwiftData
 
 /// Identities keyed by the entity that owns them, split by what a merge should
 /// do with each: read the row back, or remove it.
@@ -161,11 +160,14 @@ struct Withheld: Sendable {
 
 /// A transaction stamp distinguishes a grouped deletion acknowledged by this state from another state's deletion.
 struct DeletionEvidence: Sendable {
-    var historyToken: DefaultHistoryToken?
+    var storeIdentifier: String?
+    var transactionIdentifier: Int64?
     var transaction: UUID?
 
     func merging(_ other: Self) -> Self {
-        guard let historyToken, let otherToken = other.historyToken else { return Self() }
-        return otherToken > historyToken ? other : self
+        guard let storeIdentifier, storeIdentifier == other.storeIdentifier,
+            let transactionIdentifier, let otherIdentifier = other.transactionIdentifier
+        else { return Self() }
+        return otherIdentifier > transactionIdentifier ? other : self
     }
 }

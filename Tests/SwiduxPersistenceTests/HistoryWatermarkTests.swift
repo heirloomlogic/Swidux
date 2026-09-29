@@ -83,6 +83,202 @@ private let scanFailures: [any Error] = [
 @Suite("PersistenceCoordinator.mergeChanges")
 @MainActor
 struct HistoryWatermarkTests {
+    @Test("anchors and scanned windows advance to the newest of many transactions")
+    func anchorsFollowTransactionOrder() async throws {
+        let container = try makeNotesContainer()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let row = try NoteModel(from: Note(id: UUID(), title: "seed", pinned: false))
+        context.insert(row)
+        for index in 0..<64 {
+            row.title = "write \(index)"
+            try context.save()
+        }
+        let db = EntityDB(modelContainer: container)
+        let transactions = try await db.transactions(since: nil)
+        #expect(transactions.count == 64)
+        let newest = try #require(transactions.max { $0.transactionIdentifier < $1.transactionIdentifier })
+        let anchor = try await db.currentHistoryToken(recentCutoff: .distantFuture)
+        let recentAnchor = try await db.currentHistoryToken(recentCutoff: .distantPast)
+        let scan = try await db.changes(since: nil, readers: [])
+        #expect(anchor == newest.token)
+        #expect(recentAnchor == newest.token)
+        #expect(scan.newWatermark == newest.token)
+        #expect(try await db.transactions(since: anchor).isEmpty)
+
+        var merged = DeletionEvidence()
+        let stamp = UUID()
+        for (index, transaction) in transactions.enumerated() {
+            let next = DeletionEvidence(
+                storeIdentifier: transaction.storeIdentifier, transactionIdentifier: transaction.transactionIdentifier,
+                transaction: transaction.token == newest.token ? stamp : UUID())
+            merged = index == 0 ? next : merged.merging(next)
+        }
+        #expect(merged.transaction == stamp)
+    }
+
+    @Test("successive history merges install each chronological anchor")
+    func successiveMergesInstallChronologicalAnchors() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let store = makeNotesStore(coordinator)
+        let id = UUID()
+        for index in 0..<64 {
+            try await remoteWrite(coordinator, writes: [Note(id: id, title: "write \(index)", pinned: false)])
+            await coordinator.mergeChanges(into: store)
+            let transactions = try await coordinator.database.transactions(since: nil)
+            let latest = try #require(transactions.last)
+            #expect(coordinator.handle.anchor.token == latest.token, "merge \(index) did not consume its window")
+            #expect(store.notes[id]?.title == "write \(index)")
+        }
+    }
+
+    @Test("a handle installs chronological tokens without comparing their opaque values")
+    func handleInstallsChronologicalAnchors() async throws {
+        let container = try makeNotesContainer()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let row = try NoteModel(from: Note(id: UUID(), title: "seed", pinned: false))
+        context.insert(row)
+        for index in 0..<64 {
+            row.title = "write \(index)"
+            try context.save()
+        }
+        let handle = DatabaseHandle(EntityDB(modelContainer: container))
+        let transactions = try await handle.db.transactions(since: nil)
+        #expect(transactions.count == 64)
+        for transaction in transactions {
+            let anchor = handle.anchor
+            #expect(
+                handle.installAnchor(
+                    watermark: transaction.token, carryOver: nil, ifGeneration: anchor.generation,
+                    ifRevision: anchor.revision))
+            #expect(handle.anchor.token == transaction.token)
+        }
+    }
+
+    @Test("a timestamp window is completed with later transactions it omitted")
+    func recentWindowIncludesTransactionsBeyondItsCandidate() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "candidate", pinned: false)], deletions: [], as: NoteModel.self)
+        let recent = try await coordinator.database.transactions(since: nil)
+        #expect(recent.count == 1)
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "omitted", pinned: false)], deletions: [], as: NoteModel.self)
+        // Supply the subset a timestamp predicate can return after the clock moves backward.
+        let completed = try await coordinator.database.historyToken(completing: recent)
+        let all = try await coordinator.database.transactions(since: nil)
+        #expect(all.count == 2)
+        #expect(completed == all.last?.token)
+        #expect(completed != recent.last?.token)
+        #expect(try await coordinator.database.transactions(since: completed).isEmpty)
+        #expect(try await coordinator.database.historyToken(completing: []) == nil)
+    }
+
+    @Test("deletion evidence keeps the newest stamp only within a known store")
+    func deletionEvidenceUsesStoreTransactionOrder() {
+        let first = DeletionEvidence(storeIdentifier: "store", transactionIdentifier: 10, transaction: UUID())
+        let next = DeletionEvidence(storeIdentifier: "store", transactionIdentifier: 11, transaction: UUID())
+        #expect(first.merging(next).transaction == next.transaction)
+        #expect(next.merging(first).transaction == next.transaction)
+        #expect(next.merging(next).transaction == next.transaction)
+        #expect(first.merging(DeletionEvidence()).transaction == nil)
+        #expect(DeletionEvidence().merging(first).transaction == nil)
+        let foreign = DeletionEvidence(storeIdentifier: "other", transactionIdentifier: 12, transaction: UUID())
+        #expect(first.merging(foreign).transaction == nil)
+        #expect(foreign.merging(first).transaction == nil)
+    }
+
+    @Test("an empty store has no history anchor")
+    func emptyStoreHasNoAnchor() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        #expect(try await coordinator.database.currentHistoryToken() == nil)
+    }
+
+    @Test("an expired watermark is replaced by the retained history anchor")
+    func expiredAnchorUsesRetainedHistory() async throws {
+        let container = try makeNotesContainer()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let row = try NoteModel(from: Note(id: UUID(), title: "before", pinned: false))
+        context.insert(row)
+        try context.save()
+        let db = EntityDB(modelContainer: container)
+        let expired = try #require(await db.transactions(since: nil).last?.token)
+        try context.deleteHistory(HistoryDescriptor<DefaultHistoryTransaction>())
+        row.title = "after"
+        try context.save()
+        let anchor = try await db.currentHistoryToken(after: expired)
+        let retained = try await db.transactions(since: nil)
+        #expect(retained.count == 1)
+        #expect(anchor == retained.last?.token)
+        #expect(anchor != expired)
+    }
+
+    @Test("an existing watermark limits returned history to later transactions")
+    func anchorLookupUsesTheExistingWatermark() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "first", pinned: false)], deletions: [], as: NoteModel.self)
+        let first = try #require(await coordinator.database.currentHistoryToken())
+
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "second", pinned: false)], deletions: [], as: NoteModel.self)
+        let bounded = try #require(
+            await coordinator.database.currentHistoryToken(
+                after: first, recentCutoff: .distantFuture))
+        let expected = try #require(
+            await coordinator.database.transactions(since: nil).last?.token)
+
+        #expect(bounded == expected)
+        #expect(bounded != first)
+        #expect(try await coordinator.database.transactions(since: bounded).isEmpty)
+    }
+
+    @Test("an unchanged watermark remains a valid current anchor")
+    func anchorLookupKeepsAnUnchangedWatermark() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "only", pinned: false)], deletions: [], as: NoteModel.self)
+        let watermark = try #require(await coordinator.database.currentHistoryToken())
+
+        let bounded = try await coordinator.database.currentHistoryToken(
+            after: watermark, recentCutoff: .distantFuture)
+
+        #expect(bounded == watermark)
+    }
+
+    @Test("a recent transaction window produces the same anchor as complete history")
+    func anchorLookupUsesRecentTransactions() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "older", pinned: false)], deletions: [], as: NoteModel.self)
+        let cutoff = Date()
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "recent", pinned: false)], deletions: [], as: NoteModel.self)
+        let recent = try await coordinator.database.recentTransactions(after: cutoff)
+        let bounded = try await coordinator.database.currentHistoryToken(
+            after: nil, recentCutoff: cutoff)
+        let expected = try #require(
+            await coordinator.database.transactions(since: nil).last?.token)
+
+        #expect(recent.count == 1, "the concrete predicate should return only the transaction after the cutoff")
+        #expect(bounded == expected)
+    }
+
+    @Test("an empty recent window falls back to complete history")
+    func anchorLookupFallsBackWhenRecentHistoryIsEmpty() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        try await coordinator.database.apply(
+            writes: [Note(id: UUID(), title: "retained", pinned: false)], deletions: [], as: NoteModel.self)
+        let expected = try #require(await coordinator.database.currentHistoryToken())
+
+        let fallback = try await coordinator.database.currentHistoryToken(
+            after: nil, recentCutoff: .distantFuture)
+
+        #expect(fallback == expected)
+    }
+
     @Test("a remote edit recorded in history surfaces")
     func surfacesARemoteEdit() async throws {
         let (coordinator, store, id) = try await makeAnchoredNote()
@@ -812,31 +1008,62 @@ struct HistoryWatermarkTests {
         )
         // A tick suspended across the swap, arriving with the old store's answer.
         let reinstalled = coordinator.handle.installAnchor(
-            watermark: token, carryOver: nil, ifGeneration: stale.generation)
+            watermark: token, carryOver: nil, ifGeneration: stale.generation, ifRevision: stale.revision)
         #expect(reinstalled == false)
         #expect(coordinator.handle.anchor.token == nil)
     }
 
-    @Test("an older token does not rewind the watermark")
-    func olderTokenDoesNotRewind() async throws {
+    @Test("a suspended operation cannot rewind the watermark")
+    func olderOperationDoesNotRewind() async throws {
         let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: UUID(), title: "one", pinned: false)))
         await coordinator.corePlugin.flush()
         await establishWatermark(coordinator, store)
-        let first = try #require(coordinator.handle.anchor.token)
+        let stale = coordinator.handle.anchor
+        let first = try #require(stale.token)
 
         store.send(.add(Note(id: UUID(), title: "two", pinned: false)))
         await coordinator.corePlugin.flush()
         await coordinator.mergeChanges(into: store)
         let second = try #require(coordinator.handle.anchor.token)
-        #expect(second > first, "the second tick consumed a later window")
+        let later = try await coordinator.database.transactions(since: first)
+        #expect(later.last?.token == second, "the second tick consumed a later window")
+        #expect(second != first)
 
         // The slower of two overlapping ticks, arriving late with its older answer.
-        let generation = coordinator.handle.anchor.generation
-        #expect(coordinator.handle.installAnchor(watermark: first, carryOver: nil, ifGeneration: generation) == false)
+        #expect(
+            coordinator.handle.installAnchor(
+                watermark: first, carryOver: nil, ifGeneration: stale.generation, ifRevision: stale.revision) == false)
         #expect(coordinator.handle.anchor.token == second)
+    }
+
+    @Test("an accounting revision protects debt even when the token is unchanged", arguments: [false, true])
+    func staleAccountingCannotSettleNewerDebt(includeToken: Bool) async throws {
+        let (coordinator, _, id) = try await makeAnchoredNote()
+        let handle = coordinator.handle
+        let stale = handle.anchor
+        var debt = AttributedIDs()
+        debt.insert(changed: [id], for: "NoteModel")
+        #expect(
+            handle.installAnchor(
+                watermark: nil, carryOver: debt, ifGeneration: stale.generation, ifRevision: stale.revision))
+        let token = includeToken ? stale.token : nil
+        #expect(
+            !handle.installAnchor(
+                watermark: token, carryOver: AttributedIDs(), ifGeneration: stale.generation,
+                ifRevision: stale.revision))
+        #expect(handle.anchor.carryOver.reading(for: "NoteModel") == [id])
+        #expect(handle.anchor.token == stale.token)
+
+        let current = handle.anchor
+        #expect(
+            handle.installAnchor(
+                watermark: token, carryOver: AttributedIDs(), ifGeneration: current.generation,
+                ifRevision: current.revision))
+        #expect(handle.anchor.carryOver.isEmpty)
+        #expect(handle.anchor.token == stale.token)
     }
 
     // MARK: - Pruning
