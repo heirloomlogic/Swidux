@@ -72,3 +72,11 @@ func memberAccessPrefix(structAccess: String?, member: AccessLevel?) -> String {
     case .package, .public: return "\(member.keyword) "
     }
 }
+
+/// The generated memberwise initializer cannot be wider than its narrowest parameter property.
+func initializerAccessPrefix(structAccess: String?, members: [AccessLevel?]) -> String {
+    guard let narrowest = members.map({ $0 ?? .internal }).min() else {
+        return structAccess.map { "\($0) " } ?? ""
+    }
+    return memberAccessPrefix(structAccess: structAccess, member: narrowest)
+}

@@ -980,7 +980,15 @@ final class SwiduxMacroTests: XCTestCase {
                     var hidden: Int
                     fileprivate var secret: Int
 
-                    public init(shown: Int = 0, readOnly: Int = 0, shared: Int = 0, hidden: Int = 0, secret: Int = 0) {
+                    public init() {
+                        self.shown = 0
+                        self.readOnly = 0
+                        self.shared = 0
+                        self.hidden = 0
+                        self.secret = 0
+                    }
+
+                    fileprivate init(shown: Int, readOnly: Int, shared: Int, hidden: Int, secret: Int) {
                         self.shown = shown
                         self.readOnly = readOnly
                         self.shared = shared
@@ -1058,7 +1066,11 @@ final class SwiduxMacroTests: XCTestCase {
                 public final class PublicStateObserver: @unchecked Sendable {
                     var count: Int
 
-                    public init(count: Int = 0) {
+                    public init() {
+                        self.count = 0
+                    }
+
+                    init(count: Int) {
                         self.count = count
                     }
                 }

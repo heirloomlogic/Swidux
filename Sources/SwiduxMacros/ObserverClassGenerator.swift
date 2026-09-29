@@ -8,6 +8,7 @@ func generateObserverClass(
 ) -> DeclSyntax {
     let className = "\(structName)Observer"
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
+    let requiresSeparatedInitializers = accessLevel == "public" || accessLevel == "package"
 
     let memberLines = properties.map { prop -> String in
         let binding = prop.kind == .nested ? "let" : "var"
@@ -15,9 +16,11 @@ func generateObserverClass(
         return "    \(access)\(binding) \(prop.name): \(prop.observerTypeName)"
     }.joined(separator: "\n")
 
-    let initParams = properties.map { prop -> String in
+    let memberwiseParams = properties.map { prop -> String in
         let typeName = prop.observerTypeName
-        if prop.kind == .nested {
+        if requiresSeparatedInitializers {
+            return "\(prop.name): \(typeName)"
+        } else if prop.kind == .nested {
             return "\(prop.name): \(typeName) = \(typeName)()"
         } else if let defaultValue = prop.defaultValue {
             return "\(prop.name): \(typeName) = \(defaultValue.trimmedDescription)"
@@ -30,15 +33,42 @@ func generateObserverClass(
         "        self.\(prop.name) = \(prop.name)"
     }.joined(separator: "\n")
 
+    let memberwiseAccess = initializerAccessPrefix(
+        structAccess: accessLevel,
+        members: properties.map(\.accessLevel)
+    )
+    let memberwiseInitializer = """
+            \(memberwiseAccess)init(\(memberwiseParams)) {
+        \(initAssignments)
+            }
+        """
+
+    let defaultAssignments = properties.compactMap { prop -> String? in
+        let value =
+            prop.kind == .nested
+            ? "\(prop.observerTypeName)()"
+            : prop.defaultValue?.trimmedDescription
+        return value.map { "        self.\(prop.name) = \($0)" }
+    }
+    let defaultInitializer: String? =
+        requiresSeparatedInitializers && defaultAssignments.count == properties.count
+        ? """
+            \(accessPrefix)init() {
+        \(defaultAssignments.joined(separator: "\n"))
+            }
+        """
+        : nil
+    let initializers = [defaultInitializer, properties.isEmpty ? nil : memberwiseInitializer]
+        .compactMap { $0 }
+        .joined(separator: "\n\n")
+
     let source = """
         @Observable
         @MainActor
         \(accessPrefix)final class \(className): @unchecked Sendable {
         \(memberLines)
 
-            \(accessPrefix)init(\(initParams)) {
-        \(initAssignments)
-            }
+        \(initializers)
         }
         """
 

@@ -34,6 +34,7 @@ let package = Package(
             ]
         ),
         .target(name: "Swidux", dependencies: ["SwiduxMacros"]),
+        .target(name: "SwiduxMacroAccessFixtures", dependencies: ["Swidux"]),
         .target(name: "SwiduxAnalytics", dependencies: ["Swidux"]),
         .target(name: "SwiduxFeatureFlags", dependencies: ["Swidux"]),
         .target(name: "SwiduxKillswitch", dependencies: ["Swidux"]),
@@ -43,6 +44,10 @@ let package = Package(
         .target(name: "SwiduxPersistence", dependencies: ["Swidux", "SwiduxMacros"]),
         .target(name: "SwiduxCloudKitSync", dependencies: ["SwiduxPersistence"]),
         .testTarget(name: "SwiduxTests", dependencies: ["Swidux"]),
+        .testTarget(
+            name: "SwiduxMacroAccessTests",
+            dependencies: ["Swidux", "SwiduxMacroAccessFixtures"]
+        ),
         .testTarget(name: "SwiduxAnalyticsTests", dependencies: ["Swidux", "SwiduxAnalytics"]),
         .testTarget(name: "SwiduxFeatureFlagsTests", dependencies: ["Swidux", "SwiduxFeatureFlags"]),
         .testTarget(name: "SwiduxKillswitchTests", dependencies: ["Swidux", "SwiduxKillswitch"]),
