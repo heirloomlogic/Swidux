@@ -74,6 +74,16 @@ extension PersistedMacro: PeerMacro {
                     // to-one `@Relation` cannot be reconstructed safely.
                     diagnose(property, .relationRequiresOptional)
                 }
+            case .association(let toMany, _, _):
+                if !property.hasSupportedRelationShape {
+                    diagnose(property, .associationUnsupportedShape(toMany: toMany))
+                } else if toMany && cloudKitMirrorDefault(for: property) == .missing {
+                    diagnose(property, .mirrorRequiresDefault)
+                }
+                let column = "_swidux_\(property.name)Reference"
+                if properties.contains(where: { $0.name == column && !isIgnored($0) }) {
+                    diagnose(property, .associationColumnCollision(property: property.name, column: column))
+                }
             case .inlineBlob:
                 // A non-optional `@Inline` blob backed by `Data()` (the CloudKit-safe
                 // column default) has nothing to decode until the first write; without
@@ -81,7 +91,7 @@ extension PersistedMacro: PeerMacro {
                 if !property.isOptional && property.defaultValue == nil {
                     diagnose(property, .inlineRequiresDefault)
                 }
-                let column = "\(property.name)Data"
+                let column = "_swidux_\(property.name)Data"
                 if properties.contains(where: { $0.name == column && !isIgnored($0) }) {
                     diagnose(property, .inlineColumnCollision(property: property.name, column: column))
                 }
@@ -119,7 +129,8 @@ extension PersistedMacro: ExtensionMacro {
         return [
             generatePersistableEntityExtension(
                 typeName: type.trimmedDescription,
-                accessLevel: accessLevel(of: structDecl)
+                accessLevel: accessLevel(of: structDecl),
+                properties: classifyPersistedProperties(of: structDecl).filter(\.hasSupportedRelationShape)
             )
         ]
     }

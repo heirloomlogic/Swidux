@@ -201,11 +201,16 @@ extension EntityDB {
                 switch change {
                 case .delete:
                     deletedPIDs.insert(identifier)
+                    guard !isOwnWrite else { continue }
                     guard let id = reader.tombstoneID(change) else {
                         scan.escalate(.unidentifiedDeletion(entityName: reader.entityName))
                         continue
                     }
-                    scan.rows.insert(deleted: [id], for: reader.entityName)
+                    scan.rows.insert(
+                        deleted: [id], for: reader.entityName,
+                        evidence: DeletionEvidence(
+                            historyToken: transaction.token,
+                            transaction: EntityEditTransaction.id(from: transaction.author)))
                 case .insert, .update:
                     changedPIDs[reader.entityName, default: []].append(identifier)
                 @unknown default:

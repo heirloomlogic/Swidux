@@ -23,6 +23,8 @@ enum SwiduxDiagnostic: DiagnosticMessage {
     case relationUnsupportedShape
     case inlineColumnCollision(property: String, column: String)
     case letRequiresDefault
+    case associationUnsupportedShape(toMany: Bool)
+    case associationColumnCollision(property: String, column: String)
 
     var severity: DiagnosticSeverity { .error }
 
@@ -89,6 +91,13 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .inlineColumnCollision(let property, let column):
             return
                 "@Inline property '\(property)' stores its blob in a generated '\(column)' column, which collides with the property '\(column)'; rename one of them"
+        case .associationUnsupportedShape(let toMany):
+            return toMany
+                ? "@HasMany requires a [UUID] property, a directly named destination type, and an inverse property name string"
+                : "@BelongsTo requires a UUID? property, a directly named destination type, and an inverse property name string"
+        case .associationColumnCollision(let property, let column):
+            return
+                "Association property '\(property)' generates reserved column '\(column)', which collides with a stored property; rename that property"
         case .letRequiresDefault:
             return
                 "A let without a default can't be rebuilt by the generated init(observer:), which reads only the var properties the observer mirrors; give it a default, or make it a var"
@@ -121,6 +130,8 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .relationUnsupportedShape: return "relationUnsupportedShape"
         case .inlineColumnCollision: return "inlineColumnCollision"
         case .letRequiresDefault: return "letRequiresDefault"
+        case .associationUnsupportedShape: return "associationUnsupportedShape"
+        case .associationColumnCollision: return "associationColumnCollision"
         }
     }
 

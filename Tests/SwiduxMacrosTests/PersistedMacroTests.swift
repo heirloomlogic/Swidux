@@ -313,10 +313,10 @@ final class PersistedMacroTests: XCTestCase {
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
                     @Attribute(.preserveValueOnDeletion) public var id: UUID = UUID()
-                    private var settingsData: Data = Data()
+                    private var _swidux_settingsData: Data = Data()
                     public var settings: Settings {
                         get throws {
-                            try SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
+                            try SwiduxInlineCodec.decode(Settings.self, from: _swidux_settingsData, decoder: \
                 Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
                         }
                     }
@@ -324,7 +324,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     public init(from domain: Profile) throws {
                         self.id = domain.id
-                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
+                        self._swidux_settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                         self.ownerID = domain.ownerID
                     }
 
@@ -338,7 +338,7 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     public func update(from domain: Profile) throws {
-                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
+                        self._swidux_settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                         self.ownerID = domain.ownerID
                     }
 
@@ -598,10 +598,10 @@ final class PersistedMacroTests: XCTestCase {
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-                    private var metaData: Data = Data()
+                    private var _swidux_metaData: Data = Data()
                     var meta: Meta? {
                         get throws {
-                            try SwiduxInlineCodec.decode(Meta?.self, from: metaData, decoder: \
+                            try SwiduxInlineCodec.decode(Meta?.self, from: _swidux_metaData, decoder: \
                 Self.swiduxInlineDecoder, \
                 model: "DocModel", property: "meta") ?? nil
                         }
@@ -609,7 +609,7 @@ final class PersistedMacroTests: XCTestCase {
 
                     init(from domain: Doc) throws {
                         self.id = domain.id
-                        self.metaData = try Self.swiduxInlineEncoder.encode(domain.meta)
+                        self._swidux_metaData = try Self.swiduxInlineEncoder.encode(domain.meta)
                     }
 
                     func toDomain() throws -> Doc {
@@ -620,7 +620,7 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     func update(from domain: Doc) throws {
-                        self.metaData = try Self.swiduxInlineEncoder.encode(domain.meta)
+                        self._swidux_metaData = try Self.swiduxInlineEncoder.encode(domain.meta)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DocModel> {
@@ -1021,16 +1021,16 @@ final class PersistedMacroTests: XCTestCase {
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-                    private var settingsData: Data = Data()
+                    private var _swidux_settingsData: Data = Data()
                     var settings: Settings {
                         get throws {
-                            try Self.swiduxInlineDecoder.decode(Settings.self, from: settingsData)
+                            try Self.swiduxInlineDecoder.decode(Settings.self, from: _swidux_settingsData)
                         }
                     }
 
                     init(from domain: Profile) throws {
                         self.id = domain.id
-                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
+                        self._swidux_settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
                     func toDomain() throws -> Profile {
@@ -1041,7 +1041,7 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     func update(from domain: Profile) throws {
-                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
+                        self._swidux_settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {
@@ -1320,17 +1320,17 @@ final class PersistedMacroTests: XCTestCase {
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-                    private var settingsData: Data = Data()
+                    private var _swidux_settingsData: Data = Data()
                     var settings: Settings {
                         get throws {
-                            try SwiduxInlineCodec.decode(Settings.self, from: settingsData, decoder: \
+                            try SwiduxInlineCodec.decode(Settings.self, from: _swidux_settingsData, decoder: \
                 Self.swiduxInlineDecoder, model: "ProfileModel", property: "settings") ?? Settings()
                         }
                     }
 
                     init(from domain: Profile) throws {
                         self.id = domain.id
-                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
+                        self._swidux_settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
                     func toDomain() throws -> Profile {
@@ -1341,7 +1341,7 @@ final class PersistedMacroTests: XCTestCase {
                     }
 
                     func update(from domain: Profile) throws {
-                        self.settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
+                        self._swidux_settingsData = try Self.swiduxInlineEncoder.encode(domain.settings)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ProfileModel> {

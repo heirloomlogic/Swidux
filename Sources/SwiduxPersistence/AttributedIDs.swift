@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import SwiftData
 
 /// Identities keyed by the entity that owns them, split by what a merge should
 /// do with each: read the row back, or remove it.
@@ -21,6 +22,9 @@ struct AttributedIDs: Sendable {
 
     /// Rows to remove, where policy grants the authority.
     private(set) var deleted: [String: Set<UUID>] = [:]
+
+    /// Latest tombstone evidence for each identity, retained across deferred merges.
+    private(set) var deletionEvidence: [String: [UUID: DeletionEvidence]] = [:]
 
     /// Whether any entity was named for anything.
     var isEmpty: Bool { changed.isEmpty && deleted.isEmpty }
@@ -49,6 +53,7 @@ struct AttributedIDs: Sendable {
     var deletionsOnly: AttributedIDs {
         var only = AttributedIDs()
         only.deleted = deleted
+        only.deletionEvidence = deletionEvidence
         return only
     }
 
@@ -68,21 +73,37 @@ struct AttributedIDs: Sendable {
     }
 
     /// Names `ids` as deleted under `entityName`.
-    mutating func insert(deleted ids: Set<UUID>, for entityName: String) {
+    mutating func insert(
+        deleted ids: Set<UUID>, for entityName: String, evidence: DeletionEvidence = DeletionEvidence()
+    ) {
         Self.insert(ids, into: &deleted, for: entityName)
+        for id in ids {
+            let previous = deletionEvidence[entityName]?[id]
+            deletionEvidence[entityName, default: [:]][id] = previous?.merging(evidence) ?? evidence
+        }
     }
 
     /// Records one entity's unfinished business, under the name a history scan
     /// groups by.
-    mutating func record(_ withheld: Withheld, for entityName: String) {
+    mutating func record(
+        _ withheld: Withheld, for entityName: String, evidence: [UUID: DeletionEvidence] = [:]
+    ) {
         insert(changed: withheld.changed, for: entityName)
-        insert(deleted: withheld.deleted, for: entityName)
+        for id in withheld.deleted {
+            insert(deleted: [id], for: entityName, evidence: evidence[id] ?? DeletionEvidence())
+        }
     }
 
     /// Folds `other` in, entity by entity.
     mutating func formUnion(_ other: AttributedIDs) {
         for (entityName, ids) in other.changed { insert(changed: ids, for: entityName) }
-        for (entityName, ids) in other.deleted { insert(deleted: ids, for: entityName) }
+        for (entityName, ids) in other.deleted {
+            for id in ids {
+                insert(
+                    deleted: [id], for: entityName,
+                    evidence: other.deletionEvidence[entityName]?[id] ?? DeletionEvidence())
+            }
+        }
     }
 
     /// The one writer, so the absent-not-empty invariant has one place to hold.
@@ -135,5 +156,16 @@ struct Withheld: Sendable {
         if changed.isEmpty { return deleted }
         if deleted.isEmpty { return changed }
         return changed.union(deleted)
+    }
+}
+
+/// A transaction stamp distinguishes a grouped deletion acknowledged by this state from another state's deletion.
+struct DeletionEvidence: Sendable {
+    var historyToken: DefaultHistoryToken?
+    var transaction: UUID?
+
+    func merging(_ other: Self) -> Self {
+        guard let historyToken, let otherToken = other.historyToken else { return Self() }
+        return otherToken > historyToken ? other : self
     }
 }

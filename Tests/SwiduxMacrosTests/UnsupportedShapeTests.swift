@@ -1058,14 +1058,14 @@ final class UnsupportedShapeTests: XCTestCase {
             struct Blob: Identifiable, Equatable, Sendable {
                 var id: UUID
                 @Inline var payload: Payload = Payload()
-                var payloadData: Data = Data()
+                var _swidux_payloadData: Data = Data()
             }
             """,
             expandedSource: """
                 struct Blob: Identifiable, Equatable, Sendable {
                     var id: UUID
                     var payload: Payload = Payload()
-                    var payloadData: Data = Data()
+                    var _swidux_payloadData: Data = Data()
                 }
 
                 @Model
@@ -1075,32 +1075,32 @@ final class UnsupportedShapeTests: XCTestCase {
                     private static let swiduxInlineEncoder = JSONEncoder()
                     private static let swiduxInlineDecoder = JSONDecoder()
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-                    private var payloadData: Data = Data()
+                    private var _swidux_payloadData: Data = Data()
                     var payload: Payload {
                         get throws {
-                            try SwiduxInlineCodec.decode(Payload.self, from: payloadData, decoder: \
+                            try SwiduxInlineCodec.decode(Payload.self, from: _swidux_payloadData, decoder: \
                 Self.swiduxInlineDecoder, model: "BlobModel", property: "payload") ?? Payload()
                         }
                     }
-                    var payloadData: Data = Data()
+                    var _swidux_payloadData: Data = Data()
 
                     init(from domain: Blob) throws {
                         self.id = domain.id
-                        self.payloadData = try Self.swiduxInlineEncoder.encode(domain.payload)
-                        self.payloadData = domain.payloadData
+                        self._swidux_payloadData = try Self.swiduxInlineEncoder.encode(domain.payload)
+                        self._swidux_payloadData = domain._swidux_payloadData
                     }
 
                     func toDomain() throws -> Blob {
                         Blob(
                             id: id,
                             payload: try payload,
-                            payloadData: payloadData
+                            _swidux_payloadData: _swidux_payloadData
                         )
                     }
 
                     func update(from domain: Blob) throws {
-                        self.payloadData = try Self.swiduxInlineEncoder.encode(domain.payload)
-                        self.payloadData = domain.payloadData
+                        self._swidux_payloadData = try Self.swiduxInlineEncoder.encode(domain.payload)
+                        self._swidux_payloadData = domain._swidux_payloadData
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<BlobModel> {
@@ -1224,7 +1224,7 @@ private enum Message {
     static let letDefault =
         "A let without a default can't be rebuilt by the generated init(observer:), which reads only the var properties the observer mirrors; give it a default, or make it a var"
     static let inlineCollision =
-        "@Inline property 'payload' stores its blob in a generated 'payloadData' column, which collides with the property 'payloadData'; rename one of them"
+        "@Inline property 'payload' stores its blob in a generated '_swidux_payloadData' column, which collides with the property '_swidux_payloadData'; rename one of them"
     static let mirrorDefault =
         "Persisted properties of a non-primitive type must provide a default value (= …), be optional, or be marked @Inline to be CloudKit-safe"
     static let ignoredOptional =

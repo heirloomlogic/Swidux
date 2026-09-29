@@ -32,7 +32,8 @@ public enum SwiduxDeleteRule: Sendable {
 /// `Identifiable & Equatable & Sendable` with `ID == UUID`. By default every
 /// stored property is mirrored onto the model (SwiftData persists scalars and
 /// `Codable` composites natively); use the marker macros to override:
-/// ``Relation(deleteRule:)``, ``ForeignKey()``, ``Inline()``, ``Ignored()``.
+/// ``Relation(deleteRule:)``, ``ForeignKey()``, ``Inline()``, ``Ignored()``,
+/// ``BelongsTo(_:inverse:)``, and ``HasMany(_:inverse:)``.
 @attached(peer, names: suffixed(Model))
 @attached(extension, conformances: PersistableEntity, names: arbitrary)
 public macro Persisted() = #externalMacro(module: "SwiduxMacros", type: "PersistedMacro")
@@ -45,8 +46,8 @@ public macro Persisted() = #externalMacro(module: "SwiduxMacros", type: "Persist
 /// them when the parent is saved. Its converters do not support back-references
 /// or bidirectional relationships. Give the child a ``ForeignKey()`` `UUID` if
 /// it needs to name its parent; this marker adds no referential constraint.
-/// Independently addressable associations with generated storage inverses are
-/// planned in Swidux issue #102, but are not implemented by this macro.
+/// For independently addressable entities, use ``BelongsTo(_:inverse:)`` and
+/// ``HasMany(_:inverse:)`` to generate storage references from scalar IDs.
 ///
 /// That also makes the relationship **local-only**. CloudKit mirroring requires
 /// an inverse on every relationship, so a model that declares a `@Relation`
@@ -78,3 +79,18 @@ public macro Inline() = #externalMacro(module: "SwiduxMacros", type: "MarkerMacr
 /// property must be optional so it can be reconstructed as `nil` on load.
 @attached(peer)
 public macro Ignored() = #externalMacro(module: "SwiduxMacros", type: "MarkerMacro")
+
+/// Declares a child-owned association using an optional scalar parent ID.
+/// The inverse names the parent's `@HasMany` ID-array property. The generated
+/// SwiftData reference is optional and uses a nullify delete rule; ownership
+/// and deletion policies are enforced by the registered `EntityAssociation`.
+@attached(peer)
+public macro BelongsTo<Destination>(_ destination: Destination.Type, inverse: String) =
+    #externalMacro(module: "SwiduxMacros", type: "MarkerMacro")
+
+/// Declares the inverse of a child's `@BelongsTo` property. The `[UUID]` domain
+/// property stores ordering metadata; the child's parent ID determines membership.
+/// Supply an empty-array default to keep the scalar column CloudKit-compatible.
+@attached(peer)
+public macro HasMany<Destination>(_ destination: Destination.Type, inverse: String) =
+    #externalMacro(module: "SwiduxMacros", type: "MarkerMacro")

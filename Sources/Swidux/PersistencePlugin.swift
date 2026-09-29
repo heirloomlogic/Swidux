@@ -42,6 +42,11 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
     private let debounceInterval: Duration
     private let logger: Logger
 
+    private var debounceNow: @MainActor () -> ContinuousClock.Instant = { .now }
+    private var sleepUntilDebounce: @MainActor (ContinuousClock.Instant) async throws -> Void = {
+        try await Task.sleep(until: $0, clock: .continuous)
+    }
+
     /// Active debounce task — cancelled and restarted on each change.
     private var debounceTask: Task<Void, Never>?
 
@@ -150,6 +155,20 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         self.onLoopSuspected = onLoopSuspected
     }
 
+    /// Keeps debounce deadline tests independent of executor availability.
+    /// Retry scheduling continues to use the continuous clock.
+    convenience init(
+        writers: [StateWriter<State>],
+        debounce: Duration,
+        maxWait: Duration? = nil,
+        debounceNow: @escaping @MainActor () -> ContinuousClock.Instant,
+        sleepUntilDebounce: @escaping @MainActor (ContinuousClock.Instant) async throws -> Void
+    ) {
+        self.init(writers: writers, debounce: debounce, maxWait: maxWait)
+        self.debounceNow = debounceNow
+        self.sleepUntilDebounce = sleepUntilDebounce
+    }
+
     /// Immediately flushes all pending writes, cancelling any active debounce timer.
     ///
     /// Call this during app shutdown (e.g. `applicationWillTerminate`,
@@ -194,7 +213,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
 
         guard hasPending else { return }
 
-        let now = ContinuousClock.now
+        let now = debounceNow()
         countDrainForLoopDetection(at: now)
 
         // Trailing debounce, capped: a drain restarts the timer, but never
@@ -218,7 +237,7 @@ public final class PersistencePlugin<State, Action>: SwiduxPlugin {
         debounceTask?.cancel()
         debounceTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(until: deadline, clock: .continuous)
+            try? await self.sleepUntilDebounce(deadline)
             guard !Task.isCancelled else { return }
 
             self.pendingSince = nil

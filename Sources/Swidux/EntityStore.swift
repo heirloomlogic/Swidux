@@ -44,8 +44,7 @@ public nonisolated struct EntityStore<
     /// Accumulated changes since the last `resetChanges()` call.
     public private(set) var changes = ChangeSet()
 
-    /// IDs a reconcile removed on storage's authority — a deletion made on
-    /// another device, inferred from absence by
+    /// IDs storage declared deleted, including tombstones for rows already absent locally. Deletion may be inferred from absence by
     /// ``reconcile(with:preserving:removingMissing:)`` or named outright by
     /// ``reconcile(with:deleting:preserving:)``.
     ///
@@ -63,6 +62,11 @@ public nonisolated struct EntityStore<
     /// deletion's. The set is bounded by remote deletions per session, and a
     /// first-load hydration replaces the store outright.
     public private(set) var remotelyRemovedIDs: Set<UUID> = []
+
+    /// The last grouped deletion transaction acknowledged for each locally absent ID.
+    ///
+    /// Copies retain their own acknowledgements. Repeated deletion replaces the token; local restoration, accepted arrival, and foreign deletion clear it. Resetting pending changes preserves it so history can recognize the state's own deletion.
+    public private(set) var acknowledgedDeletionTransactions: [UUID: UUID] = [:]
 
     /// Rows storage inserted — a creation made on another device, or a row
     /// fetched from a server — each tagged with a token for that particular
@@ -305,6 +309,9 @@ public nonisolated struct EntityStore<
             }
         case .remote:
             remotelyRemovedIDs.formUnion(removedIDs)
+            for id in removedIDs where acknowledgedDeletionTransactions[id] != nil {
+                acknowledgedDeletionTransactions[id] = nil
+            }
             // The removal record now keeps undo from bringing the row back,
             // and a later re-arrival gets a new token anyway, so the arrival
             // entry has nothing left to decide. Checked first so a tick that
@@ -325,6 +332,7 @@ public nonisolated struct EntityStore<
     /// unconditionally would fault in a copy-on-write copy to accomplish
     /// nothing. A non-mutating lookup does not.
     private mutating func clearRemoteRemoval(of id: UUID) {
+        if acknowledgedDeletionTransactions[id] != nil { acknowledgedDeletionTransactions[id] = nil }
         guard remotelyRemovedIDs.contains(id) else { return }
         remotelyRemovedIDs.remove(id)
     }
@@ -339,6 +347,19 @@ public nonisolated struct EntityStore<
     /// to outlive every undo snapshot taken before it.
     public mutating func resetChanges() {
         changes = ChangeSet()
+    }
+
+    /// Acknowledges only the identities durably saved by a grouped writer.
+    ///
+    /// Supply the successful save's transaction UUID to recognize its tombstones for IDs deleted from this store.
+    public mutating func acknowledgePersisted(_ ids: Set<UUID>, deletionTransaction: UUID? = nil) {
+        if let deletionTransaction {
+            for id in ids where positions[id] == nil {
+                acknowledgedDeletionTransactions[id] = deletionTransaction
+            }
+        }
+        changes.upserts.subtract(ids)
+        changes.deletions.subtract(ids)
     }
 
     // MARK: - Merging (Re-hydration)
@@ -477,6 +498,12 @@ public nonisolated struct EntityStore<
             removable.insert(id)
         }
         removeBatch(removable, origin: .remote)
+        // A tombstone can arrive after a local deletion was flushed. Keep that evidence even when no row remains to remove.
+        let observed = deletedIDs.filter { !owned.contains($0) && !remote.contains($0) }
+        remotelyRemovedIDs.formUnion(observed)
+        for id in observed where acknowledgedDeletionTransactions[id] != nil {
+            acknowledgedDeletionTransactions[id] = nil
+        }
     }
 
     /// Folds every row of `remote` this store has no local claim on into
@@ -557,6 +584,9 @@ public nonisolated struct EntityStore<
         // Upserts: new or changed entities in the snapshot. Restoring an entity
         // cancels any pending deletion for the same ID (later operation wins).
         for entity in snapshot {
+            if acknowledgedDeletionTransactions[entity.id] != nil {
+                acknowledgedDeletionTransactions[entity.id] = nil
+            }
             if let index = positions[entity.id] {
                 if entities[index] != entity {
                     changes.upserts.insert(entity.id)
@@ -577,8 +607,7 @@ public nonisolated struct EntityStore<
 
     /// Two stores are equal when they contain the same entities in the same order.
     ///
-    /// Changes and the remote removal and arrival records are excluded —
-    /// they're transient metadata, not semantic state.
+    /// Changes, deletion acknowledgements, and remote removal and arrival records are excluded because they are transient metadata.
     public static func == (lhs: EntityStore, rhs: EntityStore) -> Bool {
         lhs.entities == rhs.entities
     }

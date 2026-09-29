@@ -34,12 +34,34 @@ func generatePersistedModelClass(
     let updateLines = properties.compactMap { updateLine(for: $0) }
         .joined(separator: "\n")
 
+    let associationProperties = properties.filter { if case .association = $0.kind { true } else { false } }
+    let associationMembers: String
+    if associationProperties.isEmpty {
+        associationMembers = ""
+    } else {
+        let descriptors = associationProperties.map { prop -> String in
+            guard case .association(let toMany, let destination, let inverse) = prop.kind else { fatalError() }
+            let constructor = toMany ? "hasMany" : "belongsTo"
+            let idArgument = toMany ? "ids" : "id"
+            return
+                "            .\(constructor)(property: \"\(prop.name)\", inverse: \"\(inverse)\", destination: \(destination).self, \(idArgument): \\\(modelName).\(prop.name), reference: \\\(modelName)._swidux_\(prop.name)Reference)"
+        }.joined(separator: ",\n")
+        associationMembers = """
+
+                \(accessPrefix)static var swiduxAssociations: [SwiduxAssociationDescriptor<\(modelName)>] {
+                    [
+            \(descriptors)
+                    ]
+                }
+            """
+    }
+
     let source = """
         @Model
         \(accessPrefix)final class \(modelName): PersistableModel {
             \(accessPrefix)typealias Domain = \(structName)
 
-        \(codecMembers)\(memberLines)
+        \(codecMembers)\(memberLines)\(associationMembers)
 
             \(accessPrefix)init(from domain: \(structName)) throws {
         \(initLines)
@@ -79,12 +101,31 @@ func generatePersistedModelClass(
 /// struct, is named by appending `Model` to it (`Library.BookModel`).
 func generatePersistableEntityExtension(
     typeName: String,
-    accessLevel: String?
+    accessLevel: String?,
+    properties: [PersistedProperty] = []
 ) -> ExtensionDeclSyntax {
     let accessPrefix = accessLevel.map { "\($0) " } ?? ""
+    let associations = properties.filter { if case .association = $0.kind { true } else { false } }
+    let inverseMember: String
+    if associations.isEmpty {
+        inverseMember = ""
+    } else {
+        let cases = associations.map {
+            "            case \"\($0.name)\": return \\\(typeName)Model._swidux_\($0.name)Reference"
+        }.joined(separator: "\n")
+        inverseMember = """
+
+                \(accessPrefix)static func swiduxAssociationInverse(_ property: String) -> AnyKeyPath? {
+                    switch property {
+            \(cases)
+                    default: return nil
+                    }
+                }
+            """
+    }
     let source = """
         extension \(typeName): PersistableEntity {
-            \(accessPrefix)typealias Model = \(typeName)Model
+            \(accessPrefix)typealias Model = \(typeName)Model\(inverseMember)
         }
         """
     let sourceFile = Parser.parse(source: source)
@@ -154,10 +195,8 @@ private func identityAttribute(for prop: PersistedProperty) -> String {
     prop.isIdentity ? "@Attribute(.preserveValueOnDeletion) " : ""
 }
 
-/// The current nested-value converters do not support inverse relationships,
-/// so this generator emits none. Adding a storage-only inverse requires the
-/// association identity and save contract tracked in Swidux issue #102; merely
-/// including the parent in child conversion would cause recursive traversal.
+/// Embedded-value `@Relation` converters cannot carry an inverse; storage-only
+/// `@BelongsTo` and `@HasMany` references are generated separately.
 private func relationshipAttribute(deleteRule: String?) -> String {
     deleteRule.map { "@Relationship(deleteRule: \($0))" } ?? "@Relationship"
 }
@@ -169,24 +208,30 @@ private func modelMemberLines(
 ) -> String? {
     let type = prop.typeSyntax.trimmedDescription
     switch prop.kind {
-    case .mirror:
+    case .mirror, .association:
         let suffix: String
         switch cloudKitMirrorDefault(for: prop) {
         case .explicit(let value): suffix = " = \(value)"
         case .notNeeded, .missing: suffix = ""
         }
-        return "    \(identityAttribute(for: prop))\(accessPrefix)var \(prop.name): \(type)\(suffix)"
+        let scalar = "    \(identityAttribute(for: prop))\(accessPrefix)var \(prop.name): \(type)\(suffix)"
+        if case .association(let toMany, let destination, let inverse) = prop.kind {
+            let referenceType = toMany ? "[\(destination)Model]?" : "\(destination)Model?"
+            return scalar
+                + "\n    @Relationship(deleteRule: .nullify, inverse: associationInverse(\(destination).self, \"\(inverse)\")) \(accessPrefix)var _swidux_\(prop.name)Reference: \(referenceType) = nil"
+        }
+        return scalar
     case .inlineBlob:
         // Empty columns are CloudKit defaults. Non-empty invalid payloads
         // throw so a read cannot turn corruption into a successful default.
         let fallback = prop.isOptional ? "nil" : prop.defaultExpr
         let decode =
-            "try SwiduxInlineCodec.decode(\(type).self, from: \(prop.name)Data, decoder: Self.swiduxInlineDecoder, model: \"\(modelName)\", property: \"\(prop.name)\")"
+            "try SwiduxInlineCodec.decode(\(type).self, from: _swidux_\(prop.name)Data, decoder: Self.swiduxInlineDecoder, model: \"\(modelName)\", property: \"\(prop.name)\")"
         let getter =
             fallback.map { "\(decode) ?? \($0)" }
-            ?? "try Self.swiduxInlineDecoder.decode(\(type).self, from: \(prop.name)Data)"
+            ?? "try Self.swiduxInlineDecoder.decode(\(type).self, from: _swidux_\(prop.name)Data)"
         return """
-                private var \(prop.name)Data: Data = Data()
+                private var _swidux_\(prop.name)Data: Data = Data()
                 \(accessPrefix)var \(prop.name): \(type) {
                     get throws { \(getter) }
                 }
@@ -202,10 +247,10 @@ private func modelMemberLines(
 
 private func initLine(for prop: PersistedProperty) -> String? {
     switch prop.kind {
-    case .mirror:
+    case .mirror, .association:
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
-        return "        self.\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
+        return "        self._swidux_\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
     case .relation(_, let cardinality, let element):
         switch cardinality {
         case .toMany, .toOneOptional:
@@ -220,7 +265,7 @@ private func initLine(for prop: PersistedProperty) -> String? {
 
 private func toDomainArgument(for prop: PersistedProperty) -> String {
     switch prop.kind {
-    case .mirror:
+    case .mirror, .association:
         return "            \(prop.name): \(prop.name)"
     case .inlineBlob:
         return "            \(prop.name): try \(prop.name)"
@@ -244,10 +289,10 @@ private func updateLine(for prop: PersistedProperty) -> String? {
     // Identity is stable; never reassign it on update.
     if prop.isIdentity { return nil }
     switch prop.kind {
-    case .mirror:
+    case .mirror, .association:
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
-        return "        self.\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
+        return "        self._swidux_\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
     case .relation:
         // Reconciled by id rather than rebuilt. Rebuilding detaches the previous
         // rows instead of removing them — a delete rule fires when the *parent*

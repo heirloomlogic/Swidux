@@ -276,6 +276,10 @@ public actor EntityDB {
         as type: M.Type,
         fromState: Bool
     ) throws {
+        let gate = EntityPersistenceGate.forContainer(modelContainer)
+        gate.lock.lock()
+        defer { gate.lock.unlock() }
+        guard !gate.requiresGroups else { throw EntityPersistenceGroupError.groupedWritesRequired }
         var unencodable: Set<UUID> = []
         var firstError: (any Error)?
         // Each pass that meets a conversion failure excludes at least one more
@@ -336,6 +340,7 @@ public actor EntityDB {
                     modelContext.delete(row)
                 }
             }
+            try SwiduxAssociationGraph.reconcile(models: [M.self], in: modelContext)
             modelContext.author = fromState ? transactionAuthor : nil
             try modelContext.save()
             return []
@@ -401,6 +406,10 @@ public actor EntityDB {
         as type: M.Type,
         using collapse: @Sendable ([M.Domain]) -> [M.Domain]
     ) throws -> (outcome: CollapseOutcome<M.Domain>, undecodable: UndecodableRows) {
+        let gate = EntityPersistenceGate.forContainer(modelContainer)
+        gate.lock.lock()
+        defer { gate.lock.unlock() }
+        guard !gate.requiresGroups else { throw EntityPersistenceGroupError.groupedWritesRequired }
         do {
             let rows = try modelContext.fetch(FetchDescriptor<M>())
             // Convert once and keep the domain value beside its row: the
@@ -455,6 +464,7 @@ public actor EntityDB {
                 }
             }
 
+            try SwiduxAssociationGraph.reconcile(models: [M.self], in: modelContext)
             // Survivors are chosen from disk, not from state: a foreign write.
             modelContext.author = nil
             try modelContext.save()

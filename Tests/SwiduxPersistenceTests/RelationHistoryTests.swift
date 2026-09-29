@@ -192,6 +192,40 @@ struct RelationHistoryTests {
             "the full read finds an empty table, and anchoring past the window threw the tombstone away")
     }
 
+    @Test("full fallback retains a foreign tombstone for an already locally deleted row beside a survivor")
+    func fallbackRetainsAbsentTombstone() async throws {
+        let (log, onDiagnostic) = diagnosticLog()
+        let (coordinator, store, container) = try makeShelf(onDiagnostic: onDiagnostic)
+        let deleted = Book(id: UUID(), title: "Deleted", chapters: [])
+        let survivor = Book(id: UUID(), title: "Survivor", chapters: [])
+        store.send(.put(deleted))
+        store.send(.put(survivor))
+        await coordinator.corePlugin.flush()
+        let seed = ModelContext(container)
+        seed.insert(try ChapterModel(from: Chapter(id: UUID(), heading: "stray")))
+        try seed.save()
+        await coordinator.mergeChanges(into: store)
+        let snapshot = store.books
+        log.clear()
+        store.mutate { $0.books[deleted.id] = nil }
+        await coordinator.corePlugin.flush()
+        let peer = ModelContext(container)
+        let row = try BookModel(from: deleted)
+        peer.insert(row)
+        try peer.save()
+        peer.delete(row)
+        try peer.save()
+        for stray in try peer.fetch(FetchDescriptor<ChapterModel>()) { peer.delete(stray) }
+        try peer.save()
+        await coordinator.mergeChanges(into: store)
+        #expect(log.contains(.historyUnavailable))
+        #expect(store.books[survivor.id] == survivor)
+        #expect(store.books.remotelyRemovedIDs.contains(deleted.id))
+        await coordinator.mergeChanges(into: store)
+        store.mutate { $0.books.restore(from: snapshot) }
+        #expect(store.books[deleted.id] == nil)
+    }
+
     // MARK: - Resolving a child to its parent
 
     @Test("another writer's edit to a child is merged without re-reading every table")
