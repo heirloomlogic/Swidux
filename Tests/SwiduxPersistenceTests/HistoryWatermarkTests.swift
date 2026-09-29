@@ -117,6 +117,45 @@ struct HistoryWatermarkTests {
         #expect(merged.transaction == stamp)
     }
 
+    @Test("successive history merges install each chronological anchor")
+    func successiveMergesInstallChronologicalAnchors() async throws {
+        let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
+        let store = makeNotesStore(coordinator)
+        let id = UUID()
+        for index in 0..<64 {
+            try await remoteWrite(coordinator, writes: [Note(id: id, title: "write \(index)", pinned: false)])
+            await coordinator.mergeChanges(into: store)
+            let transactions = try await coordinator.database.transactions(since: nil)
+            let latest = try #require(transactions.last)
+            #expect(coordinator.handle.anchor.token == latest.token, "merge \(index) did not consume its window")
+            #expect(store.notes[id]?.title == "write \(index)")
+        }
+    }
+
+    @Test("a handle installs chronological tokens without comparing their opaque values")
+    func handleInstallsChronologicalAnchors() async throws {
+        let container = try makeNotesContainer()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let row = try NoteModel(from: Note(id: UUID(), title: "seed", pinned: false))
+        context.insert(row)
+        for index in 0..<64 {
+            row.title = "write \(index)"
+            try context.save()
+        }
+        let handle = DatabaseHandle(EntityDB(modelContainer: container))
+        let transactions = try await handle.db.transactions(since: nil)
+        #expect(transactions.count == 64)
+        for transaction in transactions {
+            let anchor = handle.anchor
+            #expect(
+                handle.installAnchor(
+                    watermark: transaction.token, carryOver: nil, ifGeneration: anchor.generation,
+                    ifRevision: anchor.revision))
+            #expect(handle.anchor.token == transaction.token)
+        }
+    }
+
     @Test("a timestamp window is completed with later transactions it omitted")
     func recentWindowIncludesTransactionsBeyondItsCandidate() async throws {
         let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
@@ -969,31 +1008,62 @@ struct HistoryWatermarkTests {
         )
         // A tick suspended across the swap, arriving with the old store's answer.
         let reinstalled = coordinator.handle.installAnchor(
-            watermark: token, carryOver: nil, ifGeneration: stale.generation)
+            watermark: token, carryOver: nil, ifGeneration: stale.generation, ifRevision: stale.revision)
         #expect(reinstalled == false)
         #expect(coordinator.handle.anchor.token == nil)
     }
 
-    @Test("an older token does not rewind the watermark")
-    func olderTokenDoesNotRewind() async throws {
+    @Test("a suspended operation cannot rewind the watermark")
+    func olderOperationDoesNotRewind() async throws {
         let coordinator = try makeNotesCoordinator(debounce: .seconds(30))
         let store = makeNotesStore(coordinator)
 
         store.send(.add(Note(id: UUID(), title: "one", pinned: false)))
         await coordinator.corePlugin.flush()
         await establishWatermark(coordinator, store)
-        let first = try #require(coordinator.handle.anchor.token)
+        let stale = coordinator.handle.anchor
+        let first = try #require(stale.token)
 
         store.send(.add(Note(id: UUID(), title: "two", pinned: false)))
         await coordinator.corePlugin.flush()
         await coordinator.mergeChanges(into: store)
         let second = try #require(coordinator.handle.anchor.token)
-        #expect(second > first, "the second tick consumed a later window")
+        let later = try await coordinator.database.transactions(since: first)
+        #expect(later.last?.token == second, "the second tick consumed a later window")
+        #expect(second != first)
 
         // The slower of two overlapping ticks, arriving late with its older answer.
-        let generation = coordinator.handle.anchor.generation
-        #expect(coordinator.handle.installAnchor(watermark: first, carryOver: nil, ifGeneration: generation) == false)
+        #expect(
+            coordinator.handle.installAnchor(
+                watermark: first, carryOver: nil, ifGeneration: stale.generation, ifRevision: stale.revision) == false)
         #expect(coordinator.handle.anchor.token == second)
+    }
+
+    @Test("an accounting revision protects debt even when the token is unchanged", arguments: [false, true])
+    func staleAccountingCannotSettleNewerDebt(includeToken: Bool) async throws {
+        let (coordinator, _, id) = try await makeAnchoredNote()
+        let handle = coordinator.handle
+        let stale = handle.anchor
+        var debt = AttributedIDs()
+        debt.insert(changed: [id], for: "NoteModel")
+        #expect(
+            handle.installAnchor(
+                watermark: nil, carryOver: debt, ifGeneration: stale.generation, ifRevision: stale.revision))
+        let token = includeToken ? stale.token : nil
+        #expect(
+            !handle.installAnchor(
+                watermark: token, carryOver: AttributedIDs(), ifGeneration: stale.generation,
+                ifRevision: stale.revision))
+        #expect(handle.anchor.carryOver.reading(for: "NoteModel") == [id])
+        #expect(handle.anchor.token == stale.token)
+
+        let current = handle.anchor
+        #expect(
+            handle.installAnchor(
+                watermark: token, carryOver: AttributedIDs(), ifGeneration: current.generation,
+                ifRevision: current.revision))
+        #expect(handle.anchor.carryOver.isEmpty)
+        #expect(handle.anchor.token == stale.token)
     }
 
     // MARK: - Pruning

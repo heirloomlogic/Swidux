@@ -27,6 +27,9 @@ public final class DatabaseHandle: @unchecked Sendable {
     /// The newest history token a merge has offered in full.
     private var watermark: DefaultHistoryToken?
 
+    /// Changes whenever a tick installs history accounting.
+    private var revision: UInt64 = 0
+
     /// The rows a merge was offered and declined to apply, still owed.
     ///
     /// Stored beside the watermark rather than inside it, because the two are
@@ -79,15 +82,12 @@ public final class DatabaseHandle: @unchecked Sendable {
         Set(db.modelContainer.configurations.lazy.map(\.url.standardizedFileURL))
     }
 
-    /// The current anchor — watermark and outstanding rows — and the generation
-    /// it belongs to.
-    ///
-    /// Callers read all three together and quote the generation back when they
-    /// install, so the set can't be torn by a swap between reads.
-    var anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int) {
+    /// The current history accounting and the generation and revision it belongs to.
+    /// Callers capture this before reading and quote both counters when installing.
+    var anchor: (token: DefaultHistoryToken?, carryOver: AttributedIDs, generation: Int, revision: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        return (watermark, outstanding, generation)
+        return (watermark, outstanding, generation, revision)
     }
 
     /// Records what a tick accounted for: the window it consumed, and the rows
@@ -101,12 +101,10 @@ public final class DatabaseHandle: @unchecked Sendable {
     /// delivers a row after its hold lifts, since lifting a hold writes no
     /// transaction of its own.
     ///
-    /// Refuses in two cases. A `generation` older than the current one means the
-    /// container was swapped while the merge was suspended, so `token` describes
-    /// a store this handle no longer points at. A `token` no newer than the one
-    /// held means two ticks overlapped and this is the slower one — installing it
-    /// would rewind the anchor and re-merge a window that has already landed, so
-    /// its accounting is refused wholesale rather than half-applied.
+    /// Refuses accounting from a replaced database or an older revision. The
+    /// revision detects a tick that suspended while another tick committed,
+    /// including commits that changed only outstanding rows. History tokens are
+    /// opaque; their in-memory comparison need not follow transaction order.
     ///
     /// - Parameters:
     ///   - token: The newest token the tick consumed, or `nil` for a tick that
@@ -117,27 +115,22 @@ public final class DatabaseHandle: @unchecked Sendable {
     ///     everything already owed — so the tick recomputed withholding against
     ///     its own news *and* the last tick's deferrals together.
     ///   - generation: The generation the tick read before it started.
-    /// - Returns: Whether anything moved.
+    ///   - revision: The accounting revision the tick read before it started.
+    /// - Returns: Whether the accounting was accepted.
     @discardableResult
     func installAnchor(
         watermark token: DefaultHistoryToken?,
         carryOver: AttributedIDs?,
-        ifGeneration generation: Int
+        ifGeneration generation: Int,
+        ifRevision revision: UInt64
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard generation == self.generation else { return false }
-        guard let token else {
-            // No window to advance past, so there is only a debt to update. It
-            // needs no watermark to hang off: identities are meaningful against
-            // the store that resolved them, which the generation already checks.
-            guard let carryOver else { return false }
-            outstanding = carryOver
-            return true
-        }
-        if let watermark, token <= watermark { return false }
-        watermark = token
+        guard generation == self.generation, revision == self.revision else { return false }
+        guard token != nil || carryOver != nil else { return false }
+        if let token { watermark = token }
         if let carryOver { outstanding = carryOver }
+        self.revision &+= 1
         return true
     }
 }
