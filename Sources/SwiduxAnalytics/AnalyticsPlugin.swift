@@ -37,10 +37,18 @@ import Swidux
 ///     extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
 ///     service: mixpanel,
 ///     onConsentChange: { optedOut in
-///         optedOut ? mixpanel.optOutTracking() : mixpanel.optInTracking()
+///         if optedOut {
+///             await mixpanel.optOutTracking()
+///         } else {
+///             await mixpanel.optInTracking()
+///         }
 ///     }
 /// )
 /// ```
+///
+/// Seed ``AnalyticsState/isOptedOut`` from the app's persisted consent before
+/// creating the store, then dispatch that value once at launch. This applies
+/// the same initial value to a vendor SDK that has its own consent state.
 ///
 /// ``AnalyticsService`` stays at five members: consent APIs vary too much
 /// between vendors to abstract, and only the app knows which it is using.
