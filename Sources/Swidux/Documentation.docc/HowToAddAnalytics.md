@@ -250,9 +250,9 @@ Toggle("Share usage analytics", isOn: Binding(
 
 When `setOptedOut(true)` fires, the plugin clears `lastIdentifiedUserID` and calls `service.reset()` to clear server-side identity. While opted out, all tracking is dropped and auto-identify is paused. Opting back in re-identifies the user automatically on the next dispatch.
 
-### Engage the SDK's own consent switch
+### Synchronize the SDK's consent switch
 
-The gate above stops events Swidux dispatches. It does not tell your vendor's SDK anything — so if that SDK collects automatic events, or is still holding its own queue, data can leave the device after the user opts out.
+The gate above stops events Swidux dispatches. It does not tell your vendor's SDK anything, so an SDK that collects automatic events or holds its own queue can still send data after the user opts out.
 
 If your provider has a consent API, wire it through `onConsentChange` when you build the plugin:
 
@@ -262,13 +262,32 @@ AnalyticsPlugin(
     action: AppAction.analytics,
     extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
     service: mixpanel,
-    onConsentChange: { optedOut in
-        optedOut ? mixpanel.optOutTracking() : mixpanel.optInTracking()
-    }
+    onConsentChange: { await mixpanel.setOptedOut($0) }
 )
 ```
 
-The hook fires for either value, and on opt-out it runs before `service.reset()` — so the SDK's own opt-out closes the tap before the reset hands it an identity change that is still eligible to be sent. Events already in flight when the toggle fires are not retracted; the hook shuts off what happens next. This is the one place your app names the vendor, which the line constructing the service already does.
+Keep the consent choice in app storage and use it for both the plugin and the vendor SDK. `AnalyticsState.isOptedOut` is `false` by default, while some vendors can start opted out. If their initial values differ, the plugin can record an identify that the vendor drops and never retry it after consent changes.
+
+Seed the initial state from the stored choice when you configure the store:
+
+```swift
+var initialState = AppState()
+initialState.analytics = AnalyticsState(isOptedOut: ConsentStore.isOptedOut)
+
+return Store(
+    initialState: initialState,
+    reducer: AppReducer().reduce,
+    plugins: plugins
+)
+```
+
+Then dispatch the same value once from the root view at launch. The dispatch invokes the consent hook even when the value already matches the state, so the vendor SDK receives the stored choice:
+
+```swift
+.task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
+```
+
+The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK stops accepting work recorded after opt-out before the reset can send another identity change. It does not retract work already in flight or purge the vendor's queue. This is the one place your app names the vendor, which the line constructing the service already does.
 
 ## Step 10: Flush on app shutdown
 

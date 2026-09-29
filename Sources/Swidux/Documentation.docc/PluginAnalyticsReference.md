@@ -255,6 +255,10 @@ Semantics: it fires on every `.setOptedOut` dispatch with the new value, and on 
 
 Treat this as required wiring for any vendor with a consent API, not an optional extra: without it, "opted out" means only that Swidux stopped sending. See <doc:HowToAddAnalytics> Step 9 for the wiring.
 
+Keep the user's choice in app storage. Before creating the store, seed `AnalyticsState(isOptedOut:)` from that choice. Then dispatch `.setOptedOut(storedValue)` once from the root view at launch. The dispatch applies the stored value to the vendor SDK even when it matches the plugin's initial state. This keeps the plugin and vendor in step when a vendor starts opted out by default.
+
+The consent hook cannot retract vendor work already in flight or purge a vendor queue. It stops the vendor from accepting work recorded after opt-out.
+
 ## Mapper semantics
 
 The mapper runs in `afterReduce` for every non-analytics action while the user is opted in. The plugin:
