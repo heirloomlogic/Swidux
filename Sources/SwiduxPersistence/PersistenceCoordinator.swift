@@ -876,7 +876,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
         if let window {
             token = window
         } else {
-            token = try? await handle.db.currentHistoryToken()
+            token = try? await handle.db.currentHistoryToken(after: anchor.token)
         }
         // Anchoring even though the read withheld something is what keeps one
         // held row from costing a full table scan on every tick until it is

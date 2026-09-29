@@ -33,9 +33,7 @@ import Foundation
 /// at all. Publishing a token that neither Swidux nor an app author can act on
 /// would be an invitation to misuse it.
 ///
-/// Nothing is lost by leaving it out: `PersistenceCoordinator.mergeChanges(into:policy:)`
-/// anchors its watermark on the highest token in the window it just scanned, so
-/// the token it needs is one it already holds.
+/// `PersistenceCoordinator.mergeChanges(into:policy:)` anchors its watermark on the last transaction in the window it just scanned, so it already holds the token it needs.
 public struct RemoteChange: Sendable {
     /// The on-disk stores the burst named, from `NSPersistentStoreURLKey`.
     ///

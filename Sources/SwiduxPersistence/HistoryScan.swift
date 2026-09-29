@@ -50,11 +50,9 @@ struct HistoryScan: Sendable {
     /// read from tombstones.
     var rows = AttributedIDs()
 
-    /// The highest token in the window, or `nil` when the window was empty.
+    /// The last transaction's token, or `nil` when the window was empty.
     ///
-    /// The *highest*, not the last: `HistoryDescriptor.sortBy` is macOS 26+, so
-    /// below that the fetch order is unspecified and "the last one" is whatever
-    /// the store felt like returning.
+    /// SwiftData returns history in transaction order. In-memory token comparison on iOS 18 does not preserve that order.
     var newWatermark: DefaultHistoryToken?
 
     /// Why this window can't be merged row by row, when it can't.
@@ -129,7 +127,7 @@ extension EntityDB {
     /// touched.
     ///
     /// Pass `nil` for `watermark` only to measure a window from the beginning of
-    /// retained history; the tick uses ``currentHistoryToken()`` to anchor
+    /// retained history; the tick uses ``currentHistoryToken(after:recentCutoff:)`` to anchor
     /// instead, which is cheaper and doesn't materialize every change.
     ///
     /// A window that was read but holds a change this scan can't attribute to
@@ -153,6 +151,7 @@ extension EntityDB {
         let transactions = try transactions(since: watermark)
         var scan = HistoryScan()
         guard !transactions.isEmpty else { return scan }
+        scan.newWatermark = transactions.last?.token
 
         let byName = Dictionary(
             readers.map { ($0.entityName, $0) }, uniquingKeysWith: { first, _ in first })
@@ -166,11 +165,6 @@ extension EntityDB {
         // and `flatMap(\.changes)` would materialize a second array as large as
         // the transactions it came from, alongside them.
         for transaction in transactions {
-            // The *highest* token, not the last: `HistoryDescriptor.sortBy` is
-            // macOS 26+, so below that the fetch order is unspecified.
-            if scan.newWatermark.map({ transaction.token > $0 }) ?? true {
-                scan.newWatermark = transaction.token
-            }
             let isOwnWrite = transaction.author == transactionAuthor
             var touched: Set<String> = []
             var embeddedDeletions: Set<String> = []
@@ -209,7 +203,8 @@ extension EntityDB {
                     scan.rows.insert(
                         deleted: [id], for: reader.entityName,
                         evidence: DeletionEvidence(
-                            historyToken: transaction.token,
+                            storeIdentifier: transaction.storeIdentifier,
+                            transactionIdentifier: transaction.transactionIdentifier,
                             transaction: EntityEditTransaction.id(from: transaction.author)))
                 case .insert, .update:
                     changedPIDs[reader.entityName, default: []].append(identifier)
@@ -262,18 +257,46 @@ extension EntityDB {
 
     /// The newest token in the store, or `nil` when it has no history yet.
     ///
-    /// This is what a whole-table read installs as its anchor. Below macOS 26 it
-    /// costs a scan of retained history, because `HistoryDescriptor.sortBy` —
-    /// the only way to ask for "the newest one" — is 26+. Hence the fast path.
-    func currentHistoryToken() throws -> DefaultHistoryToken? {
+    /// Systems before macOS/iOS 26 reuse a watermark or probe recent history before reading the retained log. SwiftData returns transactions chronologically; comparing their tokens in memory does not preserve that order on iOS 18.
+    func currentHistoryToken(
+        after watermark: DefaultHistoryToken? = nil,
+        recentCutoff: Date = Date(timeIntervalSinceNow: -(24 * 60 * 60))
+    ) throws -> DefaultHistoryToken? {
+        guard modelContainer.configurations.count <= 1 else {
+            throw HistoryScanFailure.multipleStores
+        }
         if #available(macOS 26, iOS 26, tvOS 26, watchOS 26, visionOS 26, *) {
             var descriptor = HistoryDescriptor<DefaultHistoryTransaction>(
                 predicate: nil, sortBy: [SortDescriptor(\.token, order: .reverse)])
             descriptor.fetchLimit = 1
             return try modelContext.fetchHistory(descriptor).first?.token
         }
-        return try modelContext.fetchHistory(HistoryDescriptor<DefaultHistoryTransaction>())
-            .lazy.map(\.token).max()
+        if let watermark, let transactions = try? transactions(since: watermark) {
+            return transactions.last?.token ?? watermark
+        }
+        if let recent = try? recentTransactions(after: recentCutoff),
+            let token = try? historyToken(completing: recent)
+        {
+            return token
+        }
+        return try transactions(since: nil).last?.token
+    }
+
+    /// Completes a timestamp-selected window with transactions committed after its last token.
+    ///
+    /// A clock adjustment can give a later transaction an older timestamp. The token query includes it even when the recent timestamp predicate did not.
+    func historyToken(completing recent: [DefaultHistoryTransaction]) throws -> DefaultHistoryToken? {
+        guard let candidate = recent.last?.token else { return nil }
+        return try transactions(since: candidate).last?.token ?? candidate
+    }
+
+    /// Transactions committed after `cutoff`.
+    ///
+    /// The concrete predicate avoids returning older transactions and their changes. The backing store may still scan its timestamp column to evaluate it.
+    func recentTransactions(after cutoff: Date) throws -> [DefaultHistoryTransaction] {
+        try modelContext.fetchHistory(
+            HistoryDescriptor<DefaultHistoryTransaction>(
+                predicate: #Predicate { $0.timestamp > cutoff }))
     }
 
     /// Deletes transactions recorded before `cutoff`, unless CloudKit mirroring

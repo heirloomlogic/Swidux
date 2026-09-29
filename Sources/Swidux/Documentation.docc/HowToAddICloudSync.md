@@ -168,7 +168,7 @@ It only ever drops a store it can positively identify as someone else's. A notif
 
 The callback's parameter is a `RemoteChange` — the stores that burst named. Because the debounce coalesces an unbounded number of notifications into one callback, the payload is the **union** over the whole burst, not whatever the last notification carried. Most apps ignore it and call `mergeChanges(into:)`, which works out what changed from the history log itself.
 
-The notification also carries a CoreData history token, which `RemoteChange` deliberately doesn't surface. There is no supported conversion from it to the SwiftData token the watermark is built on, and `mergeChanges(into:)` doesn't need one: it anchors on the highest token in the window it just scanned.
+The notification also carries a CoreData history token, which `RemoteChange` deliberately doesn't surface. There is no supported conversion from it to the SwiftData token the watermark is built on, and `mergeChanges(into:)` doesn't need one: it anchors on the last transaction in the window it just scanned.
 
 `mergeChanges(into:)` reads the store's persistent-history log to find out *which* rows changed since the last tick and merges only those, so a tick on an N-row table where k rows changed costs O(k) rather than re-reading every table. History names the entity each changed row belongs to, so a tick reads only the entities it actually has news for — editing one note in a five-entity app is one query, not five. A tick with nothing behind it costs one history fetch and stops there.
 
