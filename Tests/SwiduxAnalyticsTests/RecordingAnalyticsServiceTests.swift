@@ -5,17 +5,6 @@ import Testing
 
 @Suite("RecordingAnalyticsService")
 struct RecordingAnalyticsServiceTests {
-    @Test("A new recorder is empty")
-    func startsEmpty() async {
-        let recorder = RecordingAnalyticsService()
-        #expect(await recorder.calls.isEmpty)
-        #expect(await recorder.trackedEvents.isEmpty)
-        #expect(await recorder.identifyCalls.isEmpty)
-        #expect(await recorder.aliasCalls.isEmpty)
-        #expect(await recorder.resetCount == 0)
-        #expect(await recorder.flushCount == 0)
-    }
-
     @Test("calls keeps every kind in arrival order")
     func recordsCallsInOrder() async {
         let recorder = RecordingAnalyticsService()

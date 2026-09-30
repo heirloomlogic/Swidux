@@ -164,8 +164,7 @@ public actor RecordingAnalyticsService: AnalyticsService {
     }
 
     /// Records a consent change. Call it from the plugin's `onConsentChange`
-    /// hook so consent appears in ``calls`` alongside the service calls:
-    /// `onConsentChange: { await recorder.setOptedOut($0) }`.
+    /// hook so consent appears in ``calls`` alongside the service calls.
     public func setOptedOut(_ optedOut: Bool) async {
         calls.append(.setOptedOut(optedOut))
     }
