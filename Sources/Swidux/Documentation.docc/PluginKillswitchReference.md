@@ -243,9 +243,18 @@ A blocked verdict carries the config's `blockedTitle`, `blockedMessage`, and `up
 
 Config-side versions parse strictly: `"2.0"`, `"v2.0.0"`, and `" 2.0.0"` (stray whitespace from a dashboard paste) are all rejected, as are ranges with spaces around `..<` or a lower bound that isn't below the upper. A rejected rule never matches, so it fails open. Every evaluation logs each rejected rule at error level to the `swidux` subsystem, `killswitch` category, with the offending string public — check Console after publishing an incident config, because the endpoint will happily serve a rule no client can apply.
 
+## Diagnostics
+
+The killswitch fails open, so a broken config channel leaves the app usable and shows nothing on screen. These log lines, all under the `swidux` subsystem, are where it shows up instead. None of them changes the verdict.
+
+- **A failed network fetch** logs at error level, `killswitch` category, with a summary of the error. With `KillswitchService.live` the line also names the endpoint, without its query, fragment, or credentials. A non-2xx response names its status, so a wrong URL reads as `HTTP 404`. A failure identical to the last one logged is skipped until a fetch succeeds, so a device that stays offline logs the outage once. A cancelled fetch isn't logged. `fetchError` records every failure either way.
+- **A version rule that fails strict parsing** logs at error level on every evaluation. See <doc:PluginKillswitchReference#Verdict-evaluation-rules>.
+- **In debug builds, a top-level key `KillswitchConfig` doesn't declare** logs at warning level, `killswitch` category, on each fetch through `live`. A misspelled `minimumSupportedVerison` decodes as a config with no minimum, and this line is how you find it. Release builds don't log it, because a field added for newer builds is unknown to older ones by design.
+- **In debug builds, a 2xx response carrying `X-Config-Source: default`** logs at warning level, `remoteconfig` category. A config worker can send that header when nothing is stored under the requested key and it serves its fallback instead, which usually means the app ID in the URL is wrong. `Examples/ConfigWorker` doesn't send this header.
+
 ## Remote config JSON shape
 
-`KillswitchConfig` derives its `Codable` conformance from synthesized keys, so the JSON keys match the property names. A representative file:
+The JSON keys are `KillswitchConfig`'s property names. A representative file:
 
 ```json
 {
@@ -262,7 +271,7 @@ Every field is optional. An empty object `{}` is valid and evaluates to `.allowe
 
 ### Schema evolution
 
-`KillswitchConfig` has no `version` field and no `type` discriminator, and its synthesized decoding ignores keys it doesn't declare. A field added for newer builds therefore never makes an older build reject the document, so feature flags' unknown-type problem (see <doc:PluginFeatureFlagsReference#Schema-evolution>) has no killswitch counterpart.
+`KillswitchConfig` has no `version` field and no `type` discriminator, and its decoding ignores keys it doesn't declare. Debug builds log them on a fetch through `live` (see <doc:PluginKillswitchReference#Diagnostics>); release builds don't. A field added for newer builds therefore never makes an older build reject the document, so feature flags' unknown-type problem (see <doc:PluginFeatureFlagsReference#Schema-evolution>) has no killswitch counterpart.
 
 The risk runs the other way: an older build ignores a field it predates without any error, and older builds are usually the ones an incident needs to block. **Never express a block for old builds with a field those builds don't decode.** Use `minimumSupportedVersion`, `blockedVersions`, or `blockedRanges`, which every release of `SwiduxKillswitch` has decoded.
 

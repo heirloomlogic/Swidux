@@ -10,6 +10,10 @@
 //
 
 import Foundation
+import os
+
+/// Logs what `BoundedResponse` notices about a response it still accepts.
+private let logger = Logger(subsystem: "swidux", category: "remoteconfig")
 
 /// Fetches a response body while enforcing a byte cap during the transfer.
 ///
@@ -24,9 +28,9 @@ public enum BoundedResponse {
     ///
     /// Three guards, in the order that spends the least on a bad response:
     ///
-    /// 1. A non-2xx status throws `URLError.badServerResponse` **before the body
-    ///    is read at all** — an error page is not a config, however well it
-    ///    decodes.
+    /// 1. A non-2xx status throws `URLError.badServerResponse`, with the status
+    ///    in its description, **before the body is read at all** — an error
+    ///    page is not a config, however well it decodes.
     /// 2. A declared `Content-Length` above the cap throws
     ///    `URLError.dataLengthExceedsMaximum` immediately, without transferring
     ///    the body.
@@ -98,6 +102,23 @@ public enum BoundedResponse {
         return .seconds(seconds)
     }
 
+    /// The warning for a 2xx response marked `X-Config-Source: default`, or
+    /// `nil` for any other.
+    ///
+    /// A config worker can mark a response built from its fallback, served
+    /// because nothing is stored under the requested key. That is usually a
+    /// typo in the app ID of the URL, which the fallback hides: it decodes, so
+    /// the fetch succeeds with no rules. Debug builds log this at warning level.
+    package static func unseededDefaultWarning(for response: HTTPURLResponse) -> String? {
+        let source = response.value(forHTTPHeaderField: "X-Config-Source")
+        guard source?.trimmingCharacters(in: .whitespaces).lowercased() == "default" else { return nil }
+        let endpoint = response.url.map(FetchFailureLog.loggable) ?? "The config endpoint"
+        return """
+            \(endpoint) served its unseeded default (X-Config-Source: default). \
+            Check the app ID in the URL, or seed the key.
+            """
+    }
+
     /// The capped read itself, with no deadline of its own.
     private static func transfer(
         _ request: URLRequest,
@@ -109,9 +130,20 @@ public enum BoundedResponse {
         // Dropping the iterator does not promise transport cancellation.
         // Close the transfer on every early rejection as well as normal EOF.
         defer { bytes.task.cancel() }
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+        guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
+        guard (200...299).contains(http.statusCode) else {
+            throw URLError(
+                .badServerResponse,
+                userInfo: [NSLocalizedDescriptionKey: "The server answered HTTP \(http.statusCode)."]
+            )
+        }
+        #if DEBUG
+        if let warning = unseededDefaultWarning(for: http) {
+            logger.warning("\(warning, privacy: .public)")
+        }
+        #endif
         if response.expectedContentLength > Int64(limit) {
             throw URLError(.dataLengthExceedsMaximum)
         }

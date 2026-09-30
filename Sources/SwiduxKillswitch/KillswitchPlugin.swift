@@ -30,6 +30,8 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
     private let service: KillswitchService
     private let appVersion: @Sendable () -> String
     private let openURL: @Sendable (URL) async -> Void
+    /// Logs failed network fetches. Internal so a test can read what it logged.
+    let failureLog = FetchFailureLog(channel: "Killswitch", category: "killswitch")
 
     /// Creates a killswitch plugin wired into the host app's state and action types.
     ///
@@ -150,6 +152,7 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
     ) -> Effect<KillswitchAction> {
         state.isFetching = true
         let service = self.service
+        let failureLog = self.failureLog
         let appVersion = self.appVersion()
         // Nothing has decided the verdict yet: a cold launch. The device may
         // already hold a config that blocks this build, so show it while the
@@ -166,7 +169,7 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
             }
             await Self.fetchFromNetwork(
                 service: service, appVersion: appVersion,
-                fallsBackToCache: preview == nil, send: send
+                fallsBackToCache: preview == nil, failureLog: failureLog, send: send
             )
         }
     }
@@ -175,16 +178,19 @@ public struct KillswitchPlugin<RootState, RootAction>: SwiduxPlugin {
         service: KillswitchService,
         appVersion: String,
         fallsBackToCache: Bool,
+        failureLog: FetchFailureLog,
         send: @escaping Send<KillswitchAction>
     ) async {
         do {
             let config = try await boundedFetch(from: service)
+            failureLog.succeeded()
             service.saveCached(config)
             let verdict = KillswitchVerdict.evaluate(
                 config, against: appVersion
             )
             await send(.verdictReceived(verdict, fromNetwork: true))
         } catch {
+            failureLog.failed(error, endpoint: service.endpoint)
             // A previewed cache is already the verdict, and the in-flight
             // guard means nothing has rewritten the file since.
             if fallsBackToCache, let cached = service.loadCached() {

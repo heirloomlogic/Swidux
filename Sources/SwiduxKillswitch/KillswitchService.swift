@@ -7,6 +7,10 @@
 
 import Foundation
 import Swidux
+import os
+
+/// Logs what the live service notices about a config it still accepts.
+private let logger = Logger(subsystem: "swidux", category: "killswitch")
 
 /// A provider-agnostic service for fetching and caching the remote
 /// killswitch configuration.
@@ -28,6 +32,9 @@ public struct KillswitchService: Sendable {
     /// treats it as failed (`URLError.timedOut`), falling back to the cache.
     /// A value that isn't finite and positive means no bound.
     public let fetchTimeout: TimeInterval
+    /// Where ``fetch`` goes, for the plugin's failure log. Set by ``live(endpoint:fetchTimeout:cacheLifetime:session:)``;
+    /// `nil` for a service built from closures, whose destination the plugin can't know.
+    var endpoint: URL?
 
     /// Creates a service with the given closures.
     ///
@@ -110,7 +117,7 @@ public struct KillswitchService: Sendable {
         let cacheURL = Self.cacheFileURL()
         let origin = endpoint.absoluteString
 
-        return KillswitchService(
+        var service = KillswitchService(
             fetch: {
                 var request = URLRequest(url: endpoint)
                 request.timeoutInterval = fetchTimeout
@@ -119,7 +126,18 @@ public struct KillswitchService: Sendable {
                     for: request, session: session, limit: Self.maxResponseBytes,
                     deadline: BoundedResponse.deadline(forTimeout: fetchTimeout)
                 )
-                return try JSONDecoder().decode(KillswitchConfig.self, from: data)
+                let config = try JSONDecoder().decode(KillswitchConfig.self, from: data)
+                #if DEBUG
+                for key in KillswitchConfig.unknownKeys(in: data) {
+                    logger.warning(
+                        """
+                        Killswitch config key \(key, privacy: .public) is not one this build \
+                        reads, so it has no effect. Check the spelling.
+                        """
+                    )
+                }
+                #endif
+                return config
             },
             loadCached: {
                 guard let data = try? Data(contentsOf: cacheURL),
@@ -138,6 +156,8 @@ public struct KillswitchService: Sendable {
             cacheLifetime: cacheLifetime,
             fetchTimeout: fetchTimeout
         )
+        service.endpoint = endpoint
+        return service
     }
 
     /// A cached config plus the endpoint it was fetched from.

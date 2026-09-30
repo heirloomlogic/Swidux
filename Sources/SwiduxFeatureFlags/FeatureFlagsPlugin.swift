@@ -30,6 +30,8 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     private let keyValueStore: any KeyValueStore
     private let onExposure: (@Sendable (String, FlagValue) -> Void)?
     private let fetchTimeout: Duration
+    /// Logs failed refreshes. Internal so a test can read what it logged.
+    let failureLog = FetchFailureLog(channel: "Feature flags", category: "featureflags")
 
     /// Creates the plugin and wires it into the host's root state and action types.
     ///
@@ -70,6 +72,10 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         self.onExposure = onExposure
         self.fetchTimeout = fetchTimeout
     }
+
+    /// Where the service fetches from, for the failure log. Known only for an
+    /// ``HTTPFeatureFlagsService``; any other service is logged without one.
+    var endpoint: URL? { (service as? HTTPFeatureFlagsService)?.url }
 
     /// Routes feature-flags actions and returns effects for service fetches,
     /// cache writes, and exposure callbacks.
@@ -116,11 +122,15 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
             let service = self.service
             let lift = self.toRootAction
             let timeout = self.fetchTimeout
+            let failureLog = self.failureLog
+            let endpoint = self.endpoint
             return Effect { send in
                 do {
                     let config = try await Self.fetch(from: service, timeout: timeout)
+                    failureLog.succeeded()
                     await send(lift(.refreshSucceeded(config, fetchedAt: Date())))
                 } catch {
+                    failureLog.failed(error, endpoint: endpoint)
                     // Deliberately unfiltered, cancellation included:
                     // `isFetching` is cleared by `.refreshSucceeded` or
                     // `.refreshFailed` and by nothing else, so an effect torn
