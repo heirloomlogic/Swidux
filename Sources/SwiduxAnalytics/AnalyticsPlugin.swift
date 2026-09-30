@@ -85,12 +85,16 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     private var pending = ServiceCallQueue()
     /// `true` while a worker task is draining ``pending``.
     private var isDraining = false
-    /// Consent hooks not yet finished.
+    /// Opt-out hooks not yet finished.
     private var consentInflight = 0
-    /// Tail of the consent-hook FIFO while any hook is in flight. Hooks run
-    /// outside ``pending`` so a stalled service call cannot defer withdrawal;
-    /// the worker waits for the tail before it takes the next call.
+    /// Tail of the withdrawal-hook FIFO while any opt-out hook is in flight.
+    /// Withdrawals run outside ``pending`` so a stalled service call cannot
+    /// defer them; the worker waits for the tail before it takes the next
+    /// call.
     private var lastConsentTask: Task<Void, Never>?
+    /// The opt-in hook the worker is running, if any. A withdrawal waits for
+    /// it so the SDK sees the two in dispatch order.
+    private var runningGrant: Task<Void, Never>?
     /// Continuations parked in ``flush()`` waiting for the worker and consent
     /// hooks to go idle, keyed so a timed-out waiter can be resumed individually.
     private var flushWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
@@ -208,12 +212,18 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
                 state.clearIdentified()
                 pending.removeAll { !$0.kind.survivesOptOut }
             }
-            if onConsentChange != nil {
-                enqueueConsent(optedOut)
+            guard let onConsentChange else {
+                if optedOut { enqueue(.reset) { await service.reset() } }
+                return
             }
-            // Queued after the hook, so it waits for the SDK's own opt-out.
             if optedOut {
+                enqueueWithdrawal(onConsentChange)
+                // Queued after the hook, so it waits for the SDK's own opt-out.
                 enqueue(.reset) { await service.reset() }
+            } else {
+                // In queue order, so it follows an opt-out's reset that is
+                // still waiting behind a stalled call.
+                enqueue(.consentGrant) { await onConsentChange(false) }
             }
         }
     }
@@ -355,28 +365,36 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     }
 
     /// What the worker does next. A call leaves the queue only once no
-    /// consent hook is in flight, so every hook dispatched before it has run
-    /// and an opt-out's purge has seen it. On an empty queue the worker
-    /// retires and flush waiters may resume.
+    /// opt-out hook is in flight, so every withdrawal dispatched before it has
+    /// run and an opt-out's purge has seen it. An opt-in hook runs as a task
+    /// the worker waits on, so a withdrawal can wait on it too. On an empty
+    /// queue the worker retires and flush waiters may resume.
     private func nextStep() -> WorkerStep {
+        runningGrant = nil
         if !pending.isEmpty, let hook = lastConsentTask {
             return .wait(hook)
         }
         if let call = pending.popFirst() {
-            return .run(call)
+            guard call.kind == .consentGrant else { return .run(call) }
+            let grant = Task { @concurrent in await call.work() }
+            runningGrant = grant
+            return .wait(grant)
         }
         isDraining = false
         resumeFlushWaitersIfIdle()
         return .retire
     }
 
-    private func enqueueConsent(_ optedOut: Bool) {
+    /// Runs an opt-out hook ahead of queued service calls, after every
+    /// earlier withdrawal and any opt-in hook the worker is running.
+    private func enqueueWithdrawal(_ hook: @escaping @Sendable (Bool) async -> Void) {
         consentInflight += 1
         let previous = lastConsentTask
-        let hook = onConsentChange
+        let grant = runningGrant
         lastConsentTask = Task { @concurrent in
             await previous?.value
-            await hook?(optedOut)
+            await grant?.value
+            await hook(true)
             await self.consentCompleted()
         }
     }
@@ -453,6 +471,10 @@ enum ServiceCallKind: Sendable {
     case identity
     /// `service.reset`: the one call that still runs after opting out.
     case reset
+    /// The `onConsentChange(false)` opt-in hook. It runs in queue order so an
+    /// opt-out's `reset` still queued ahead of it reaches the SDK first, and a
+    /// later opt-out removes it while it waits.
+    case consentGrant
 
     var isDroppable: Bool { self == .track }
     var survivesOptOut: Bool { self == .reset }

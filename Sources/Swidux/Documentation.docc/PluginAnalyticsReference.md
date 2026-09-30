@@ -245,7 +245,7 @@ Sets `lastIdentifiedUserID = nil` and queues `service.reset()`. Runs even when o
 ### `setOptedOut(Bool)`
 
 - `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, discards every `track`, `screen_view`, `identify` and `alias` call still in the queue, runs `onConsentChange(true)` when a hook is configured, and queues `service.reset()` behind it to clear server-side identity.
-- `setOptedOut(false)` — Clears the flag and runs `onConsentChange(false)` when a hook is configured. Auto-identify on the next dispatch will re-establish identity.
+- `setOptedOut(false)` — Clears the flag and queues `onConsentChange(false)` when a hook is configured. Auto-identify on the next dispatch will re-establish identity.
 
 ## Queueing
 
@@ -253,7 +253,7 @@ Dispatch never waits for the service. Every call the plugin makes — explicit, 
 
 The queue holds at most 1,000 `track` calls (explicit `track`, `screenView`, and mapper events). Queuing one past that drops the oldest queued `track`; nothing reports the drop. `identify`, `alias` and `reset` are never dropped, however many are waiting. Opting out discards every call still in the queue that needs consent — see *Consent*.
 
-`onConsentChange` hooks don't join this queue: they run in dispatch order without waiting for service calls, so a stalled service call cannot delay an opt-out. The worker takes no further call off the queue while a hook is in flight, so every call still queued when a hook is dispatched, and every call queued after it, waits for the hook to return.
+The opt-out hook, `onConsentChange(true)`, doesn't join this queue: opt-out hooks run in dispatch order without waiting for service calls, so a stalled service call cannot delay a withdrawal. The worker takes no further call off the queue while an opt-out hook is in flight, so every call still queued when it is dispatched, and every call queued after it, waits for the hook to return. The opt-in hook, `onConsentChange(false)`, does join the queue. It runs after every call queued before it, so an opt-out's `reset` still waiting behind a stalled call reaches the SDK before the SDK opts back in, and calls queued after it wait for it to return. An opt-out that arrives while the opt-in hook is still queued removes it; one that arrives while the hook is running waits for it to finish.
 
 ## Consent
 

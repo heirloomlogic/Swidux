@@ -150,6 +150,67 @@ extension AnalyticsPluginTests {
         #expect(await service.log == ["track", "consent(true)", "reset", "flush"])
     }
 
+    @Test("Opt-in behind a stalled call waits for the opt-out's reset")
+    func optInWaitsForOptOutReset() async {
+        let service = RecordingAnalyticsService(stallTracks: true)
+        let plugin = makePlugin(service: service, onConsentChange: { await service.consentChanged(to: $0) })
+        var state = TestState()
+        _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("stalled"))))
+        await service.trackStarted()
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        await plugin.flush(timeout: .milliseconds(50))
+        await service.release()
+        await plugin.flush()
+        // A reset landing after the SDK opts back in would hand it an identity
+        // change that is eligible to be sent (#132).
+        let log = await service.log
+        #expect(log == ["track", "consent(true)", "reset", "consent(false)", "flush"])
+    }
+
+    @Test("An opt-in still queued is dropped by a later opt-out")
+    func queuedOptInDroppedByLaterOptOut() async {
+        let service = RecordingAnalyticsService(stallTracks: true)
+        let plugin = makePlugin(service: service, onConsentChange: { await service.consentChanged(to: $0) })
+        var state = TestState()
+        _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("stalled"))))
+        await service.trackStarted()
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        await service.release()
+        await plugin.flush()
+        // The SDK must end opted out, matching the plugin's state.
+        let log = await service.log
+        #expect(log == ["track", "consent(true)", "consent(true)", "reset", "reset", "flush"])
+    }
+
+    @Test("An opt-out waits for an opt-in hook that is still running")
+    func optOutWaitsForRunningOptInHook() async {
+        let service = RecordingAnalyticsService()
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let plugin = makePlugin(
+            service: service,
+            onConsentChange: { optedOut in
+                if !optedOut {
+                    entered.continuation.yield()
+                    for await _ in release.stream { break }
+                }
+                // Logged on completion: what matters is which call the SDK finishes last.
+                await service.consentChanged(to: optedOut)
+            })
+        var state = TestState()
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        for await _ in entered.stream { break }
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        await plugin.flush(timeout: .milliseconds(50))
+        release.continuation.yield()
+        await plugin.flush()
+        let log = await service.log
+        #expect(log == ["consent(false)", "consent(true)", "reset", "flush"])
+    }
+
     @Test("Events following opt-in wait for the SDK consent hook")
     func optInWaitsForConsent() async {
         let service = RecordingAnalyticsService()
