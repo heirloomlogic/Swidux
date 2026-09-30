@@ -56,13 +56,13 @@ store.send(.paywall(.customerInfoUpdated(EntitlementSnapshot())))   // free unti
 store.send(.paywall(.refreshCustomerInfo))
 ```
 
-A locked keychain reads as an empty cache. `KeychainKeyValueStore.value(_:)` returns `nil` both when no item exists and when the keychain can't be read. With the default `.afterFirstUnlockThisDeviceOnly` accessibility that is the time between a restart and the first unlock; with `.whenUnlocked`, `.whenUnlockedThisDeviceOnly`, or `.whenPasscodeSetThisDeviceOnly` it is any time the device is locked. While it can't be read, `ResilientPaywallService` behaves as if nothing were cached:
+A locked keychain reads as an empty cache. `KeychainKeyValueStore.value(_:)` returns `nil` both when no item exists and when the keychain can't be read. With the default `.afterFirstUnlockThisDeviceOnly` accessibility, or `.afterFirstUnlock`, that is the time between a restart and the first unlock; with `.whenUnlocked`, `.whenUnlockedThisDeviceOnly`, or `.whenPasscodeSetThisDeviceOnly` it is any time the device is locked. While it can't be read, `ResilientPaywallService` behaves as if nothing were cached:
 
-- A stream started then, such as `.observeCustomerInfo` during a background launch, yields no `.cacheSeed`, so `PaywallState` stays at its free default until a live snapshot arrives.
+- A stream started then, such as `.observeCustomerInfo` during a background launch, yields no `.cacheSeed`, so `PaywallState` stays at its free default until some snapshot arrives.
 - When every live attempt fails, `customerInfo()` throws instead of returning the cached entitlement. `.refreshCustomerInfo` ends in `.refreshFailed`, and `currentSnapshot()` returns a free snapshot.
 - The stored entitlement survives the miss, because the service writes the cache only when a live snapshot arrives or `clearCache()` runs.
 
-The service doesn't watch for the keychain becoming readable. Dispatch `.refreshCustomerInfo` when a scene becomes active; if the keychain is readable by then, that refresh gets a live snapshot or falls back to the cache as usual:
+The service doesn't watch for the keychain becoming readable. Dispatch `.refreshCustomerInfo` when a scene becomes active; once the keychain is readable, that refresh returns a live snapshot or, when every live read fails, falls back to the cache as usual, and either one sets `PaywallState.isPro`:
 
 ```swift
 .onChange(of: scenePhase) { _, phase in
@@ -70,7 +70,7 @@ The service doesn't watch for the keychain becoming readable. Dispatch `.refresh
 }
 ```
 
-See "Failure Modes" in <doc:KeyValueStoreGuide> for how `KeychainKeyValueStore` reports a locked keychain.
+See "Failure Modes" in <doc:KeyValueStoreGuide> for how `KeychainKeyValueStore` reports a locked keychain on writes and on `deviceIdentity(key:)`.
 
 ## Types
 
