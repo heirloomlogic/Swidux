@@ -9,6 +9,26 @@ release — write release notes on the release itself.
 <!-- Release notes generated using configuration in .github/release.yml at main -->
 
 ### What's Changed
+#### Breaking
+
+1.10.0 contains source-breaking changes. An app on `from: "1.9.0"` resolves this release automatically, so check the following before upgrading. From 2.0.0 on, Swidux follows semver and breaking changes ship only in major versions.
+
+**`PersistenceMiddleware` and `UndoMiddleware` are gone.** Use `PersistencePlugin` and `UndoPlugin`; the wiring is the same.
+
+**`Effect` is now a `Sendable` struct, not a bare closure.** A reducer can no longer `return { send in ... }`; write `return Effect { send in ... }`. `effect.map(...)` lifts an effect's action type while preserving its cancellation metadata.
+
+**Generated `@Persisted` converters throw.** `init(from:)`, `toDomain()`, and `update(from:)` need `try`. `EntityDB` propagates failures and rolls back instead of silently writing empty data for an unencodable value or defaulting a corrupt non-empty blob.
+
+**`@Inline` properties on the generated model are read-only `get throws` accessors.** Update through the domain value and `update(from:)`.
+
+**Parental-gate `.answerAccepted`/`.answerRejected` report a completed transition.** Submit answers through `.submitAnswer`; the plugin validates and counts synchronously.
+
+**`EntityStore` enforces stable identity with a `precondition`.** Assigning under a key that doesn't match the entity's `id`, or changing `id` inside `modify`, traps in Debug and Release. Replace an identity by deleting the old ID and inserting the new value.
+
+**`PaywallAction.refreshCancelled(requestID:)` is new.** Exhaustive switches over `PaywallAction` need the case.
+
+Additive: `EntitlementSnapshot.source` (`.live` / `.cache` / `.cacheSeed`).
+
 #### Other Changes
 * Manifest: apply the dev-tooling gate after the package is built by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/92
 * CI: drop duplicate triggers, bump checkout off EOL node20, harden workflows by @heirloomlogic in https://github.com/heirloomlogic/Swidux/pull/93
