@@ -115,6 +115,68 @@ struct FeatureFlagsConfigTests {
         }
     }
 
+    @Test("an entry with an unknown type is skipped and the rest of the document decodes")
+    func skipsUnknownType() throws {
+        let json = """
+            {
+              "version": 1,
+              "flags": {
+                "new_onboarding": { "type": "boolean", "rollout": 25 },
+                "home_layout": { "type": "json", "value": { "columns": 2 } },
+                "max_free_uploads": { "type": "value", "value": 5 }
+              }
+            }
+            """
+        let config = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        #expect(
+            config.flags == [
+                "new_onboarding": .boolean(rollout: 25),
+                "max_free_uploads": .value(.int(5)),
+            ])
+    }
+
+    @Test(
+        "a malformed known type still rejects the document beside a skipped unknown type",
+        arguments: [
+            #"{ "type": "boolean", "rollout": 150 }"#,
+            #"{ "type": "variant", "variants": [{ "value": "a", "weight": 50 }, { "value": "b", "weight": 40 }] }"#,
+            #"{ "type": "value", "value": { "nested": true } }"#,
+        ])
+    func malformedKnownTypeBesideUnknownType(_ malformed: String) {
+        let json = """
+            {
+              "version": 1,
+              "flags": {
+                "home_layout": { "type": "json" },
+                "k": \(malformed)
+              }
+            }
+            """
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("an entry with no type rejects the document")
+    func rejectsMissingType() {
+        let json = """
+            { "version": 1, "flags": { "k": { "rollout": 25 } } }
+            """
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(FeatureFlagsConfig.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("a lone FlagDefinition with an unknown type still fails to decode")
+    func loneDefinitionRejectsUnknownType() {
+        let json = """
+            { "type": "json" }
+            """
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(FlagDefinition.self, from: Data(json.utf8))
+        }
+    }
+
     @Test("empty config is decodable and has no flags")
     func emptyConfig() throws {
         let json = "{ \"version\": 1, \"flags\": {} }"

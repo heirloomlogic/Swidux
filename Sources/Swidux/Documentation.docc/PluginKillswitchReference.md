@@ -260,6 +260,12 @@ Config-side versions parse strictly: `"2.0"`, `"v2.0.0"`, and `" 2.0.0"` (stray 
 
 Every field is optional. An empty object `{}` is valid and evaluates to `.allowed` for any version.
 
+### Schema evolution
+
+`KillswitchConfig` has no `version` field and no `type` discriminator, and its synthesized decoding ignores keys it doesn't declare. A field added for newer builds therefore never makes an older build reject the document, so feature flags' unknown-type problem (see <doc:PluginFeatureFlagsReference#Schema-evolution>) has no killswitch counterpart.
+
+The risk runs the other way: an older build ignores a field it predates without any error, and older builds are usually the ones an incident needs to block. **Never express a block for old builds with a field those builds don't decode.** Use `minimumSupportedVersion`, `blockedVersions`, or `blockedRanges`, which every release of `SwiduxKillswitch` has decoded.
+
 ## View modifier: `killswitchBlocker`
 
 `SwiduxKillswitch` ships a SwiftUI view modifier that overlays a non-dismissible blocker whenever the verdict is `.blocked` and disables the underlying content while it is. Two overloads:

@@ -40,6 +40,17 @@ For end-to-end wiring, see <doc:HowToAddFeatureFlags>.
 
 The plugin rejects unknown `version` values and falls back to the last-known-good cache. Defaults always live in Swift at the call site — this keeps them type-checked and forces "what if missing?" thinking.
 
+### Schema evolution
+
+Each entry in `flags` decodes on its own. An entry whose `type` the running build doesn't know is skipped, and the rest of the document applies; a read of the skipped flag behaves as if the flag were absent from the config. Each skipped entry is logged at error level to the `swidux` subsystem, `featureflags` category, with the flag key and type public.
+
+An entry with a known type and a malformed body still rejects the whole document, as does an entry with no `type`. A rollout outside 0–100, variant weights that don't sum to 100, or a `value` that isn't a JSON scalar is a publishing error, not a newer schema, so the plugin keeps its last-known-good config.
+
+Two rules keep builds already in the field working as the format grows:
+
+- **A new flag type is additive only when every build reading the endpoint skips unknown types.** Skipping ships in the first release after 1.10.0. Builds on 1.10.0 or earlier reject the whole document on an unknown `type`, so if any are still in the field, serve the new type from a new resource such as `/<appID>/flags-v2`, as the next rule describes. Once every build has the skip, publish on the existing endpoint: a build that predates the type skips that one flag and keeps applying the others. Changing an existing key to a new type looks the same to those builds: the flag reads as absent and takes its Swift default, because each fetch replaces the whole config and no per-flag last-known-good value is kept.
+- **Never bump `version` on an endpoint that shipped builds read.** Every build that predates the bump rejects the whole document from then on: installs with a cached config stay on it, and fresh installs get no remote flags. Ship a breaking schema as a new resource, such as `/<appID>/flags-v2`, and keep serving the old one to the builds that read it. The shared `Examples/ConfigWorker` returns 404 for any resource missing from `RESOURCES` in `worker.js`, so add the new resource there.
+
 ## Bucketing and identity
 
 `bucket = FNV1a(bucketingID + ":" + flagKey) % 100`
