@@ -123,7 +123,7 @@ someView.devPaywall(state: store.paywall, service: simulatedPaywallService, onAc
 
 ### Analytics
 
-Centralize event tracking behind a provider-agnostic `AnalyticsService`. A declarative `AnalyticsMapper` turns domain actions into tracked events in `afterReduce`, auto-identify sends people-properties derived from state, and screen views, opt-out, and shutdown flushing are first-class. The plugin doesn't know about your backend — implement `AnalyticsService` against Amplitude, PostHog, Segment, or a custom server, or drop in the ready-made [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) adapter for Mixpanel. See [Add Analytics](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddanalytics).
+Centralize event tracking behind a provider-agnostic `AnalyticsService`. A declarative `AnalyticsMapper` turns domain actions into tracked events in `afterReduce`, auto-identify sends people-properties derived from state, and screen views, opt-out, and shutdown flushing are first-class. The plugin doesn't know about your backend — implement `AnalyticsService` against Amplitude, PostHog, Segment, or a custom server, or drop in the ready-made [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) adapter for Mixpanel. `SwiduxAnalytics` also ships `RecordingAnalyticsService`, which records every call in order so tests and previews can assert on analytics without a vendor SDK. See [Add Analytics](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddanalytics).
 
 ```swift
 plugins.register(AnalyticsPlugin(state: \.analytics, action: AppAction.analytics, extractAction: { if case .analytics(let a) = $0 { return a }; return nil }, service: MixpanelAnalyticsService(token: "..."), mapper: mapper, identity: identity))
@@ -159,7 +159,7 @@ await persistence.hydrate(into: &initialState)
 Vendor-specific adapters live in their own repositories so the SDK dependency stays out of the core graph. Each ships a drop-in service plus a preview mock, and publishes its own DocC reference.
 
 - [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — RevenueCat adapter for `SwiduxPaywall`. Ships `RevenueCatPaywallService` (drop-in `PaywallService`), `MockRevenueCatPaywallService` for previews, and `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI. [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/).
-- [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) — Mixpanel adapter for `SwiduxAnalytics`. Ships `MixpanelAnalyticsService` (drop-in `AnalyticsService` that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types) and `RecordingMixpanelAnalyticsService` for previews and tests. [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
+- [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) — Mixpanel adapter for `SwiduxAnalytics`. Ships `MixpanelAnalyticsService` (drop-in `AnalyticsService` that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types) and a recording stand-in for its Mixpanel-only controls, built on `RecordingAnalyticsService`. [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
 
 ## Macros
 

@@ -33,7 +33,7 @@ The plugin ships with three in-repo conformers, all provider-agnostic and SDK-fr
 For production Mixpanel integrations, the [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) companion package provides:
 
 - `MixpanelAnalyticsService` — an `AnalyticsService` conformer that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types.
-- `RecordingMixpanelAnalyticsService` — a `RecordingAnalyticsService` plus recorded versions of Mixpanel's consent and diagnostics controls.
+- A recording stand-in for Mixpanel's consent and diagnostics controls, built on `RecordingAnalyticsService`. Its name and API are in the package's DocC reference.
 
 Full API documentation lives in the package's own [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
 

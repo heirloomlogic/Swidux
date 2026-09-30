@@ -126,7 +126,7 @@ Use the built-in `MockAnalyticsService` for previews that don't need to check an
 let service = MockAnalyticsService()
 ```
 
-If you're on Path A, `SwiduxMixpanelAnalytics` adds `RecordingMixpanelAnalyticsService`, which puts Mixpanel's consent and diagnostics controls on top of a `RecordingAnalyticsService`.
+If you're on Path A, `SwiduxMixpanelAnalytics` adds a recording stand-in for its Mixpanel-only controls, built on `RecordingAnalyticsService`. See its [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
 
 ## Step 4: Declare an event mapper
 

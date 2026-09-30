@@ -9,8 +9,9 @@ import os
 /// previews and Swift Testing suites.
 ///
 /// Tests written against the recorder don't depend on the analytics vendor,
-/// so they stay the same when the app changes provider. Await the plugin's
-/// `flush()` before reading, so every queued call has arrived:
+/// so they stay the same when the app changes provider. Await the store's
+/// `flush()` before reading, so every queued call has arrived. `AppStore` and
+/// its `configured` factory below belong to the app, not to this package:
 ///
 /// ```swift
 /// let recorder = RecordingAnalyticsService()
@@ -20,7 +21,7 @@ import os
 /// )
 ///
 /// store.send(.analytics(.setOptedOut(true)))
-/// await store.analyticsPlugin.flush()
+/// await store.flush()
 ///
 /// #expect(await recorder.calls == [.setOptedOut(true), .reset, .flush])
 /// ```
