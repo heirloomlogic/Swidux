@@ -9,11 +9,15 @@ import SwiftUI
 extension View {
     /// Presents a basic developer/QA paywall sheet driven by `state.isPresented`.
     ///
-    /// Mirrors the shape of the vendor paywall UI (e.g.
-    /// `.revenueCatPaywall(state:onAction:)`) so the call site is unchanged
-    /// when a real provider is adopted. The sheet's buttons drive `service`
-    /// directly, so simulated entitlement changes flow back through the real
-    /// `PaywallPlugin` pipeline.
+    /// The sheet's buttons drive `service` directly, so simulated entitlement
+    /// changes flow back through the real `PaywallPlugin` pipeline.
+    ///
+    /// Adopting a real provider changes this call site. Provider modifiers
+    /// take no `service` argument and have their own names. The RevenueCat
+    /// adapter spells its modifier `.revenueCatPaywall(state:send:)` through
+    /// release 1.1.0 and `.revenueCatPaywallAndCustomerCenter(state:onAction:)`
+    /// in later releases. See "Moving to a real provider" in the Paywall Plugin
+    /// Reference.
     ///
     /// Pass the *same* ``SimulatedPaywallService`` instance you handed to
     /// `Store.configured()`.
