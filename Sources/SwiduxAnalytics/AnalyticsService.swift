@@ -27,11 +27,13 @@ public protocol AnalyticsService: Sendable {
 
     /// Identify the active user with optional people properties.
     ///
-    /// Implementations set each property in `properties` on the user's
-    /// profile. A property left out of `properties` keeps its saved value,
-    /// and a property passed as ``AnalyticsValue/null`` is deleted.
-    /// Deletion is never inferred from omission, and implementations keep
-    /// no per-user snapshot of earlier calls to detect omitted keys.
+    /// An implementation that stores a user profile must set each property
+    /// in `properties` on it, leave alone any property omitted from
+    /// `properties`, and delete a property passed as ``AnalyticsValue/null``.
+    /// It must not infer deletion from omission, so it needs no per-user
+    /// snapshot of earlier calls to detect omitted keys. An implementation
+    /// that stores no profile, such as a logger or a no-op, has nothing to
+    /// merge.
     ///
     /// ```swift
     /// // Saved: plan = "pro", experiment_variant = "B"

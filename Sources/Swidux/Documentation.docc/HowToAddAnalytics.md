@@ -170,7 +170,7 @@ let identity = AnalyticsIdentity<AppState>(
 )
 ```
 
-`userProperties` is re-evaluated each non-analytics dispatch. The plugin re-fires `service.identify` whenever the returned dictionary changes — so derived people-properties (subscription tier, paywall entitlements, feature flags, A/B variants) stay in sync with state without any explicit `.identify` plumbing.
+`userProperties` is re-evaluated each non-analytics dispatch. The plugin re-fires `service.identify` whenever the returned dictionary changes — so derived people-properties (subscription tier, paywall entitlements, feature flags, A/B variants) are sent without any explicit `.identify` plumbing. Each call carries the current dictionary; a key you stop returning is omitted, not deleted, so it keeps its last value on the profile unless you return `.null` for it.
 
 ## Step 6: Wire the plugin
 

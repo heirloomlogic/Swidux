@@ -11,7 +11,10 @@
 /// `userID` or `userProperties` changes, and `service.reset` when
 /// `userID` transitions to `nil`. There's no separate "identify on
 /// transition" moment — derived people-properties (subscription tier,
-/// paywall entitlements, feature flags) stay in sync with state.
+/// paywall entitlements, feature flags) are sent with each change. A key
+/// that `userProperties` stops returning is omitted from the next
+/// `identify`, not deleted; return ``AnalyticsValue/null`` for it to
+/// delete it.
 ///
 /// ```swift
 /// AnalyticsIdentity(
