@@ -11,9 +11,11 @@
 /// Dispatch doesn't wait for these calls, but the plugin serializes them:
 /// each call starts only after the previous one returns, so they reach the
 /// service in dispatch order. A call that awaits a network round trip
-/// therefore holds back every later event, and those events stay queued in
-/// memory until it returns. Enqueue the work (as vendor SDKs do) and return
-/// promptly; do network I/O in the service's own background upload.
+/// therefore holds back every later call. The plugin keeps at most 1,000
+/// `track` calls waiting behind a stalled one and then drops the oldest
+/// queued `track`; `identify`, `alias` and `reset` are never dropped.
+/// Enqueue the work (as vendor SDKs do) and return promptly; do network I/O
+/// in the service's own background upload.
 ///
 /// ```swift
 /// // Mixpanel implementation lives in SwiduxMixpanelAnalytics:

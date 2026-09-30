@@ -191,7 +191,7 @@ public protocol AnalyticsService: Sendable {
 
 Implementations own batching, retry, network failure handling, and offline queueing.
 
-Dispatch never waits for the service, but the plugin **serializes** its calls: `track`/`identify`/`alias`/`reset` run one at a time in dispatch order, each starting after the previous one returns. A conformer that awaits a network round trip inside `track` therefore delivers one event per round trip, and while a call is stalled (offline, a 60-second request timeout) every later event waits in memory behind it — opting out stops those events from being sent but doesn't release them until the stalled call returns. Enqueue the work and return promptly, as vendor SDKs do; upload from the service's own background queue.
+Dispatch never waits for the service, but the plugin **serializes** its calls: `track`/`identify`/`alias`/`reset` run one at a time in dispatch order, each starting after the previous one returns (see *Queueing*). A conformer that awaits a network round trip inside `track` therefore delivers one event per round trip, and while a call is stalled (offline, a 60-second request timeout) every later call waits behind it. Enqueue the work and return promptly, as vendor SDKs do; upload from the service's own background queue.
 
 ### `MockAnalyticsService`
 
@@ -218,32 +218,40 @@ public struct ConsoleAnalyticsService: AnalyticsService {
 
 ## Action semantics
 
-Each case below describes the state mutation the plugin performs and the effect (if any) it returns.
+Each case below describes the state mutation the plugin performs and the service call it queues. `reduce` returns no effect for any case: the call runs on the plugin's worker (see *Queueing*), and `flush()` is how to wait for it.
 
 ### `track(AnalyticsEvent)`
 
-Returns an effect calling `service.track(event)`, with `currentScreen` auto-attached as the `screen` property if the event doesn't already specify one. Skipped entirely (returns `nil`) when opted out. No state mutation.
+Queues `service.track(event)`, with `currentScreen` auto-attached as the `screen` property if the event doesn't already specify one. Skipped entirely when opted out. No state mutation.
 
 ### `screenView(String, properties:)`
 
-Sets `currentScreen` to the given name **regardless of opt-out** (the screen state still progresses for when the user opts back in). Returns an effect calling `service.track` with a `"screen_view"` event whose properties include `screen_name` plus any extras. Skipped (returns `nil`) when opted out.
+Sets `currentScreen` to the given name **regardless of opt-out** (the screen state still progresses for when the user opts back in). Queues `service.track` with a `"screen_view"` event whose properties include `screen_name` plus any extras. Skipped when opted out.
 
 ### `identify(userID:, properties:)`
 
-Sets `lastIdentifiedUserID = userID` and returns an effect calling `service.identify`. Skipped when opted out. Use this when the app needs to force identity before the auto-identify keypath would observe the change — see *Explicit identify and auto-identify* below for how the two interact.
+Sets `lastIdentifiedUserID = userID` and queues `service.identify`. Skipped when opted out. Use this when the app needs to force identity before the auto-identify keypath would observe the change — see *Explicit identify and auto-identify* below for how the two interact.
 
 ### `alias(newID:, previousID:)`
 
-No state mutation. Returns an effect calling `service.alias`. Skipped when opted out. Call once when an anonymous user signs up to link the anonymous distinct ID to the new user ID.
+No state mutation. Queues `service.alias`. Skipped when opted out. Call once when an anonymous user signs up to link the anonymous distinct ID to the new user ID.
 
 ### `reset`
 
-Sets `lastIdentifiedUserID = nil` and returns an effect calling `service.reset()`. Runs even when opted out — `reset` is by definition a clean-slate operation.
+Sets `lastIdentifiedUserID = nil` and queues `service.reset()`. Runs even when opted out — `reset` is by definition a clean-slate operation.
 
 ### `setOptedOut(Bool)`
 
-- `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, returns an effect that invokes `onConsentChange(true)` and then calls `service.reset()` to clear server-side identity.
-- `setOptedOut(false)` — Clears the flag. Returns an effect invoking `onConsentChange(false)`, or `nil` when no hook is configured. Auto-identify on the next dispatch will re-establish identity.
+- `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, discards every queued `track`, `screen_view`, `identify` and `alias` call, runs `onConsentChange(true)` when a hook is configured, and queues `service.reset()` behind it to clear server-side identity.
+- `setOptedOut(false)` — Clears the flag and runs `onConsentChange(false)` when a hook is configured. Auto-identify on the next dispatch will re-establish identity.
+
+## Queueing
+
+Dispatch never waits for the service. Every call the plugin makes — explicit, mapped, and auto-identify — joins one queue that a worker task drains off the main actor, one call at a time, in dispatch order. A `track` that awaits a network round trip holds back every call behind it for the length of the request.
+
+The queue holds at most 1,000 `track` calls (explicit `track`, `screenView`, and mapper events). Queuing one past that drops the oldest queued `track`; nothing reports the drop. `identify`, `alias` and `reset` are never dropped, however many are waiting. Opting out discards every queued call that needs consent — see *Consent*.
+
+`onConsentChange` hooks don't join this queue: they run as soon as they're dispatched, in dispatch order, so a stalled service call cannot delay an opt-out. Calls queued after a hook wait for it to return.
 
 ## Consent
 
@@ -251,13 +259,13 @@ Opting out is enforced *plugin-side*: `track`, `screenView`, `identify`, `alias`
 
 That gate stops Swidux-dispatched events. It does not touch the vendor SDK's own consent switch — so an SDK configured to collect automatic events, or one still holding a queue of its own, can keep sending after the user opts out. `AnalyticsService` deliberately stays at five members (consent APIs differ too much between vendors to abstract, and only the app knows which one it is using), so the bridge is the `onConsentChange` closure.
 
-Semantics: it fires on every `.setOptedOut` dispatch with the new value, and on opt-out it runs **before** `service.reset()`, so the SDK receives the withdrawal before the service reset. Queue and in-flight handling remains the adapter's responsibility.
+Semantics: it fires on every `.setOptedOut` dispatch with the new value, and on opt-out it runs **before** `service.reset()`, so the SDK receives the withdrawal before the service reset. What the SDK does with uploads it has queued or started remains the adapter's responsibility.
 
 Treat this as required wiring for any vendor with a consent API, not an optional extra: without it, "opted out" means only that Swidux stopped sending. See <doc:HowToAddAnalytics> Step 9 for the wiring.
 
 Keep the user's choice in app storage. Before creating the store, seed `AnalyticsState(isOptedOut:)` from that choice. Then dispatch `.setOptedOut(storedValue)` once from the root view at launch. The dispatch applies the stored value to the vendor SDK even when it matches the plugin's initial state. This keeps the plugin and vendor in step when a vendor starts opted out by default.
 
-The plugin stops scheduling vendor work after opt-out. The hook does not guarantee whether work already queued or in flight is delivered or discarded, and it is not a data-deletion API.
+Opting out discards the plugin's queued `track`, `screen_view`, `identify` and `alias` calls as the action reduces, so their payloads are released at once; a queued `reset` stays, and a call the service is already running finishes. Until the user opts back in, an explicit `reset` is the only call the plugin still queues. The hook says nothing about what the vendor SDK does with uploads of its own, and it is not a data-deletion API.
 
 ## Mapper semantics
 
@@ -297,7 +305,7 @@ An explicit `.identify` naming the same user the identity derives is recorded li
 
 ## Flushing
 
-`AnalyticsPlugin.flush()` awaits every service call the plugin has queued, explicit and mapped, then calls `service.flush()`. It waits without bound, so on shutdown paths use `flush(timeout:)`, which gives up once the deadline passes (queued work keeps running; the caller just stops waiting). `Store` has no typed accessor for a registered plugin, so keep a reference to the one you registered — see <doc:HowToAddAnalytics> Step 6:
+`AnalyticsPlugin.flush()` waits until every queued service call has run and every consent hook has returned, then calls `service.flush()`. It waits without bound, so on shutdown paths use `flush(timeout:)`, which gives up once the deadline passes (queued work keeps running; the caller just stops waiting). `Store` has no typed accessor for a registered plugin, so keep a reference to the one you registered — see <doc:HowToAddAnalytics> Step 6:
 
 ```swift
 .onChange(of: scenePhase) { _, phase in
