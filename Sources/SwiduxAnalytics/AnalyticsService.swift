@@ -26,6 +26,20 @@ public protocol AnalyticsService: Sendable {
     func track(_ event: AnalyticsEvent) async
 
     /// Identify the active user with optional people properties.
+    ///
+    /// Implementations set each property in `properties` on the user's
+    /// profile. A property left out of `properties` keeps its saved value,
+    /// and a property passed as ``AnalyticsValue/null`` is deleted.
+    /// Deletion is never inferred from omission, and implementations keep
+    /// no per-user snapshot of earlier calls to detect omitted keys.
+    ///
+    /// ```swift
+    /// // Saved: plan = "pro", experiment_variant = "B"
+    /// await service.identify(userID: "u1", properties: ["plan": "free"])
+    /// // plan = "free", experiment_variant is still "B"
+    /// await service.identify(userID: "u1", properties: ["experiment_variant": .null])
+    /// // experiment_variant is deleted, plan is still "free"
+    /// ```
     func identify(userID: String, properties: [String: AnalyticsValue]) async
 
     /// Link an anonymous distinct ID to a known user ID.

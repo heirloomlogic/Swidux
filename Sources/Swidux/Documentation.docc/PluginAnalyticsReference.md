@@ -191,6 +191,8 @@ public protocol AnalyticsService: Sendable {
 
 Implementations own batching, retry, network failure handling, and offline queueing.
 
+An `identify` implementation sets each property it is given. A key left out of `properties` keeps its saved value, and a key passed as `.null` is deleted. Auto-identify passes whatever dictionary `userProperties` returns, so a key that drops out of that dictionary is omitted from the next `identify` and keeps its saved value; return `.null` for the key to delete it.
+
 Dispatch never waits for the service, but the plugin **serializes** its calls: `track`/`identify`/`alias`/`reset` run one at a time in dispatch order, each starting after the previous one returns (see *Queueing*). A conformer that awaits a network round trip inside `track` therefore delivers one event per round trip, and while a call is stalled (offline, a 60-second request timeout) every later call waits behind it. Enqueue the work and return promptly, as vendor SDKs do; upload from the service's own background queue.
 
 ### `MockAnalyticsService`
