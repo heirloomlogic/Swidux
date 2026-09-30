@@ -150,6 +150,25 @@ plugins.register(paywallPlugin)
 >
 > The cache is not scoped to an account: if your app signs users in and out, call `clearCache()` on the resilient service at sign-out and account switch. See the `SwiduxPaywall` reference (<doc:PluginPaywallReference>) for the staleness policy, threat model, and sign-out sequence.
 
+If your app can launch in the background before the first unlock after a restart, the keychain can't be read yet, and `KeychainKeyValueStore` returns `nil` for the cached entitlement just as it does when nothing is cached. `ResilientPaywallService` then treats the cache as empty. The entitlement stream yields no cached seed, so `store.paywall` stays free until a live snapshot arrives, and a refresh whose live reads all fail sets `store.paywall.error` instead of returning the cached entitlement. The miss doesn't erase anything, because the service writes the cache only when a live snapshot arrives or `clearCache()` runs. The service also doesn't watch for the keychain becoming readable, so dispatch `.refreshCustomerInfo` when a scene becomes active:
+
+```swift
+struct ContentView: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        RootContent()
+            .task { store.send(.paywall(.observeCustomerInfo)) }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { store.send(.paywall(.refreshCustomerInfo)) }
+            }
+    }
+}
+```
+
+If the keychain is readable by then, that refresh gets a live snapshot or falls back to the cache as usual. See "Failure Modes" in <doc:KeyValueStoreGuide> for how `KeychainKeyValueStore` reports a locked keychain.
+
 ## Step 5: Observe customer info on launch
 
 Start the long-lived entitlement stream once, on the root view:
