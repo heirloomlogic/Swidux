@@ -120,13 +120,13 @@ Return promptly from each method. The plugin calls the service one call at a tim
 
 ### Previews and tests
 
-Use the built-in `MockAnalyticsService` for backend-agnostic previews:
+Use the built-in `MockAnalyticsService` for previews that don't need to check anything, and `RecordingAnalyticsService` for tests (see *Testing* below). Both are backend-agnostic, so neither changes when you switch provider:
 
 ```swift
 let service = MockAnalyticsService()
 ```
 
-If you're on Path A, `SwiduxMixpanelAnalytics` ships `MockMixpanelAnalyticsService` for Mixpanel-flavored previews.
+If you're on Path A, `SwiduxMixpanelAnalytics` adds `RecordingMixpanelAnalyticsService`, which puts Mixpanel's consent and diagnostics controls on top of a `RecordingAnalyticsService`.
 
 ## Step 4: Declare an event mapper
 
@@ -330,20 +330,11 @@ struct MyApp: App {
 
 ## Testing
 
-Use a recording `AnalyticsService` to verify your mapper and explicit dispatches in tests:
+`RecordingAnalyticsService` records every call it receives. Use it to verify your mapper and explicit dispatches in tests:
 
 ```swift
+import SwiduxAnalytics
 import Testing
-@testable import SwiduxAnalytics
-
-actor RecordingAnalyticsService: AnalyticsService {
-    private(set) var events: [AnalyticsEvent] = []
-    func track(_ event: AnalyticsEvent) async { events.append(event) }
-    func identify(userID: String, properties: [String: AnalyticsValue]) async {}
-    func alias(newID: String, previousID: String?) async {}
-    func reset() async {}
-    func flush() async {}
-}
 
 @Test func incrementTracks() async {
     let service = RecordingAnalyticsService()
@@ -352,11 +343,28 @@ actor RecordingAnalyticsService: AnalyticsService {
     store.send(.counter(.increment(5)))
     await store.flush()
 
-    let events = await service.events
+    let events = await service.trackedEvents
     #expect(events.first?.name == "counter_added")
     #expect(events.first?.properties["amount"] == .int(5))
 }
 ```
+
+`calls` holds every call in arrival order, for assertions about sequence. To put consent changes in the same log, point the plugin's consent hook at the recorder:
+
+```swift
+let service = RecordingAnalyticsService()
+let plugin = AnalyticsPlugin(
+    state: \.analytics,
+    action: AppAction.analytics,
+    extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
+    service: service,
+    onConsentChange: { await service.setOptedOut($0) }
+)
+// After opting out and flushing:
+#expect(await service.calls == [.setOptedOut(true), .reset, .flush])
+```
+
+The recorder keeps calls a real service would drop, such as tracking while opted out, so assert consent through the `.setOptedOut` entries rather than a missing event. The log grows without limit, and the recorder logs a fault at init in Release builds.
 
 `store.flush()` is the deterministic sync point — it flushes every registered plugin, and the analytics plugin waits for every queued service call before returning, so post-flush assertions are stable. Its unbounded wait is what a test wants.
 

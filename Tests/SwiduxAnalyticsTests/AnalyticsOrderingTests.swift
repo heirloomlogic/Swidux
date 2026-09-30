@@ -37,7 +37,7 @@ extension AnalyticsPluginTests {
         let plugin = makePlugin(
             service: service,
             mapper: .init { _, _ in [AnalyticsEvent("mapped")] },
-            onConsentChange: { await service.consentChanged(to: $0) })
+            onConsentChange: { await service.setOptedOut($0) })
         var state = TestState()
         // Submit without yielding so consent changes invalidate both queued paths.
         _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("explicit"))))
@@ -53,11 +53,11 @@ extension AnalyticsPluginTests {
 
     @Test("Opting out removes queued calls at once while the service is stalled")
     func optOutFreesQueuedCallsBehindStalledService() async {
-        let service = RecordingAnalyticsService(stallTracks: true)
+        let service = StallingAnalyticsService()
         let plugin = makePlugin(
             service: service,
             mapper: .init { _, _ in [AnalyticsEvent("mapped")] },
-            onConsentChange: { await service.consentChanged(to: $0) })
+            onConsentChange: { await service.setOptedOut($0) })
         var state = TestState()
         _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("stalled"))))
         await service.trackStarted()
@@ -86,7 +86,7 @@ extension AnalyticsPluginTests {
         let plugin = makePlugin(
             service: service,
             onConsentChange: { optedOut in
-                await service.consentChanged(to: optedOut)
+                await service.setOptedOut(optedOut)
                 guard !optedOut else { return }
                 entered.continuation.yield()
                 for await _ in release.stream { break }
@@ -107,7 +107,7 @@ extension AnalyticsPluginTests {
 
     @Test("Identity calls survive overflow; the oldest queued track is dropped")
     func identityCallsSurviveOverflow() async {
-        let service = RecordingAnalyticsService(stallTracks: true)
+        let service = StallingAnalyticsService()
         let plugin = makePlugin(service: service, identity: AnalyticsIdentity(userID: \.userID))
         var state = TestState()
         _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("stalled"))))
@@ -137,8 +137,8 @@ extension AnalyticsPluginTests {
 
     @Test("Consent withdrawal bypasses a stalled tracking call")
     func consentBypassesBlockedTracking() async {
-        let service = RecordingAnalyticsService(stallTracks: true)
-        let plugin = makePlugin(service: service, onConsentChange: { await service.consentChanged(to: $0) })
+        let service = StallingAnalyticsService()
+        let plugin = makePlugin(service: service, onConsentChange: { await service.setOptedOut($0) })
         var state = TestState()
         _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("blocked"))))
         await service.trackStarted()

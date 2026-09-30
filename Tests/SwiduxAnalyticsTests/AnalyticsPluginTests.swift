@@ -398,7 +398,7 @@ struct AnalyticsPluginTests {
         let recorder = RecordingAnalyticsService()
         let plugin = makePlugin(
             service: recorder,
-            onConsentChange: { optedOut in await recorder.consentChanged(to: optedOut) }
+            onConsentChange: { optedOut in await recorder.setOptedOut(optedOut) }
         )
         var state = TestState()
 
@@ -416,7 +416,7 @@ struct AnalyticsPluginTests {
         let recorder = RecordingAnalyticsService()
         let plugin = makePlugin(
             service: recorder,
-            onConsentChange: { optedOut in await recorder.consentChanged(to: optedOut) }
+            onConsentChange: { optedOut in await recorder.setOptedOut(optedOut) }
         )
         var state = TestState()
         state.analytics.isOptedOut = true
@@ -452,7 +452,7 @@ struct AnalyticsPluginTests {
         let recorder = RecordingAnalyticsService()
         let plugin = makePlugin(
             service: recorder,
-            onConsentChange: { optedOut in await recorder.consentChanged(to: optedOut) }
+            onConsentChange: { optedOut in await recorder.setOptedOut(optedOut) }
         )
         var state = TestState()
 

@@ -1,49 +1,47 @@
 //
-//  RecordingAnalyticsService.swift
+//  AnalyticsTestServices.swift
 //  SwiduxAnalyticsTests
 //
-//  Shared recording mock for the analytics test suites.
+//  Test helpers built on the public RecordingAnalyticsService.
 //
 
 import Swidux
 
 @testable import SwiduxAnalytics
 
-actor RecordingAnalyticsService: AnalyticsService {
-    struct IdentifyCall: Equatable {
-        let userID: String
-        let properties: [String: AnalyticsValue]
+extension RecordingAnalyticsService {
+    /// ``calls`` as short labels (`"track"`, `"consent(true)"`), for
+    /// sequencing assertions that don't care about arguments.
+    var log: [String] {
+        calls.map { call in
+            switch call {
+            case .track: "track"
+            case .identify: "identify"
+            case .alias: "alias"
+            case .reset: "reset"
+            case .flush: "flush"
+            case .setOptedOut(let optedOut): "consent(\(optedOut))"
+            }
+        }
     }
-    struct AliasCall: Equatable {
-        let newID: String
-        let previousID: String?
-    }
+}
 
-    private(set) var trackedEvents: [AnalyticsEvent] = []
-    private(set) var identifyCalls: [IdentifyCall] = []
-    private(set) var aliasCalls: [AliasCall] = []
-    private(set) var resetCount: Int = 0
-    private(set) var flushCount: Int = 0
+/// Records through a ``RecordingAnalyticsService``, but every `track` parks
+/// after recording until ``release()``, so the plugin's queue backs up
+/// behind the first one.
+actor StallingAnalyticsService: AnalyticsService {
+    let recorder = RecordingAnalyticsService()
 
-    /// Every call in arrival order, for tests that care about sequencing
-    /// across call kinds — the per-kind collections above can't express it.
-    private(set) var log: [String] = []
-
-    private let stallsTracks: Bool
     private var released = false
     private var parked: [CheckedContinuation<Void, Never>] = []
     private let trackParked = AsyncStream<Void>.makeStream()
 
-    /// With `stallTracks`, every `track` records itself and then parks until
-    /// ``release()``, so the plugin's queue backs up behind the first one.
-    init(stallTracks: Bool = false) {
-        stallsTracks = stallTracks
+    var log: [String] {
+        get async { await recorder.log }
     }
 
-    /// Call from the plugin's `onConsentChange` hook so consent invocations
-    /// interleave into ``log`` alongside the service calls.
-    func consentChanged(to optedOut: Bool) {
-        log.append("consent(\(optedOut))")
+    var trackedEvents: [AnalyticsEvent] {
+        get async { await recorder.trackedEvents }
     }
 
     /// Lets every parked and future `track` call return.
@@ -60,32 +58,31 @@ actor RecordingAnalyticsService: AnalyticsService {
         for await _ in trackParked.stream { break }
     }
 
+    func setOptedOut(_ optedOut: Bool) async {
+        await recorder.setOptedOut(optedOut)
+    }
+
     func track(_ event: AnalyticsEvent) async {
-        trackedEvents.append(event)
-        log.append("track")
-        guard stallsTracks, !released else { return }
+        await recorder.track(event)
+        guard !released else { return }
         trackParked.continuation.yield()
         await withCheckedContinuation { parked.append($0) }
     }
 
     func identify(userID: String, properties: [String: AnalyticsValue]) async {
-        identifyCalls.append(IdentifyCall(userID: userID, properties: properties))
-        log.append("identify")
+        await recorder.identify(userID: userID, properties: properties)
     }
 
     func alias(newID: String, previousID: String?) async {
-        aliasCalls.append(AliasCall(newID: newID, previousID: previousID))
-        log.append("alias")
+        await recorder.alias(newID: newID, previousID: previousID)
     }
 
     func reset() async {
-        resetCount += 1
-        log.append("reset")
+        await recorder.reset()
     }
 
     func flush() async {
-        flushCount += 1
-        log.append("flush")
+        await recorder.flush()
     }
 }
 
