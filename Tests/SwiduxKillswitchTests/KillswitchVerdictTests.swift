@@ -153,4 +153,13 @@ struct KillswitchVerdictTests {
         )
         #expect(config.malformedRules.isEmpty)
     }
+
+    @Test("a key this build doesn't declare is ignored, not rejected")
+    func ignoresUndeclaredKey() throws {
+        let json = """
+            { "minimumSupportedVersion": "2.0.0", "blockedBuilds": [42] }
+            """
+        let config = try JSONDecoder().decode(KillswitchConfig.self, from: Data(json.utf8))
+        #expect(config == KillswitchConfig(minimumSupportedVersion: "2.0.0"))
+    }
 }

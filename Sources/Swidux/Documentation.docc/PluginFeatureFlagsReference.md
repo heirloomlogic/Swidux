@@ -40,6 +40,17 @@ For end-to-end wiring, see <doc:HowToAddFeatureFlags>.
 
 The plugin rejects unknown `version` values and falls back to the last-known-good cache. Defaults always live in Swift at the call site — this keeps them type-checked and forces "what if missing?" thinking.
 
+### Schema evolution
+
+Each entry in `flags` decodes on its own. An entry whose `type` the running build doesn't know is skipped, and the rest of the document applies; a read of the skipped flag behaves as if the flag were absent from the config. Each skipped entry is logged at error level to the `swidux` subsystem, `featureflags` category, with the flag key and type public.
+
+An entry with a known type and a malformed body still rejects the whole document, as does an entry with no `type`. A rollout outside 0–100, variant weights that don't sum to 100, or a `value` that isn't a JSON scalar is a publishing error, not a newer schema, so the plugin keeps its last-known-good config.
+
+Two rules keep builds already in the field working as the format grows:
+
+- **A new flag type is additive.** Publish it on the existing endpoint. Builds that predate the type skip that one flag and keep applying the others.
+- **Never bump `version` on an endpoint that shipped builds read.** Every build that predates the bump rejects the whole document from then on: installs with a cached config stay on it, and fresh installs get no remote flags. Ship a breaking schema as a new resource, such as `/<appID>/flags-v2`, and keep serving the old one to the builds that read it. The shared `Examples/ConfigWorker` returns 404 for any resource missing from `RESOURCES` in `worker.js`, so add the new resource there.
+
 ## Bucketing and identity
 
 `bucket = FNV1a(bucketingID + ":" + flagKey) % 100`

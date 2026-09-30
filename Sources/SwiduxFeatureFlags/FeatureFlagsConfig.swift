@@ -4,6 +4,10 @@
 //
 
 import Foundation
+import os
+
+/// Logs flag entries this build cannot decode.
+private let logger = Logger(subsystem: "swidux", category: "featureflags")
 
 /// Wire-format root for a Swidux feature-flags JSON config.
 ///
@@ -27,6 +31,12 @@ public struct FeatureFlagsConfig: Sendable, Equatable, Codable {
     }
 
     /// Decodes a wire-format config. Throws if `version` is not `1`.
+    ///
+    /// Each entry in `flags` decodes on its own. An entry whose `type` this
+    /// build doesn't know, typically one added by a newer schema, is dropped
+    /// and logged at error level, and the rest of the document still applies.
+    /// A known type with a malformed body, or an entry with no `type`, throws
+    /// and rejects the whole document.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .version)
@@ -38,10 +48,36 @@ public struct FeatureFlagsConfig: Sendable, Equatable, Codable {
             )
         }
         self.version = version
-        self.flags = try container.decode([String: FlagDefinition].self, forKey: .flags)
+        let entries = try container.decode([String: Entry].self, forKey: .flags)
+        for (key, entry) in entries where entry.definition == nil {
+            logger.error(
+                """
+                Feature flag \(key, privacy: .public) has unknown type \
+                \(entry.type, privacy: .public) and is skipped.
+                """
+            )
+        }
+        self.flags = entries.compactMapValues(\.definition)
     }
 
     private enum CodingKeys: String, CodingKey { case version, flags }
+
+    /// One `flags` entry, decoded as a ``FlagDefinition`` only when this build
+    /// knows its `type`.
+    private struct Entry: Decodable {
+        let type: String
+        let definition: FlagDefinition?
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: FlagDefinition.CodingKeys.self)
+            type = try container.decode(String.self, forKey: .type)
+            guard FlagDefinition.Kind(rawValue: type) != nil else {
+                definition = nil
+                return
+            }
+            definition = try FlagDefinition(from: decoder)
+        }
+    }
 }
 
 /// One flag's definition in the wire format.
@@ -71,14 +107,20 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case type, rollout, variants, value }
+    fileprivate enum CodingKeys: String, CodingKey { case type, rollout, variants, value }
+
+    /// The `type` discriminators this build decodes.
+    fileprivate enum Kind: String { case boolean, variant, value }
 
     /// Decodes a flag definition by branching on the `type` discriminator.
+    ///
+    /// Throws on a `type` this build doesn't know. ``FeatureFlagsConfig``
+    /// skips such entries instead of rejecting the document.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(String.self, forKey: .type)
-        switch type {
-        case "boolean":
+        switch Kind(rawValue: type) {
+        case .boolean:
             let rollout = try container.decode(Int.self, forKey: .rollout)
             guard (0...100).contains(rollout) else {
                 throw DecodingError.dataCorruptedError(
@@ -86,7 +128,7 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
                     debugDescription: "boolean rollout must be in 0...100")
             }
             self = .boolean(rollout: rollout)
-        case "variant":
+        case .variant:
             let variants = try container.decode([Variant].self, forKey: .variants)
             // Reject malformed variant sets at the wire boundary: an empty
             // array has nothing to assign, negative weights corrupt the
@@ -118,10 +160,10 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
                 )
             }
             self = .variant(variants: variants)
-        case "value":
+        case .value:
             let value = try container.decode(FlagValue.self, forKey: .value)
             self = .value(value)
-        default:
+        case nil:
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
                 in: container,
@@ -135,13 +177,13 @@ public enum FlagDefinition: Sendable, Equatable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .boolean(let rollout):
-            try container.encode("boolean", forKey: .type)
+            try container.encode(Kind.boolean.rawValue, forKey: .type)
             try container.encode(rollout, forKey: .rollout)
         case .variant(let variants):
-            try container.encode("variant", forKey: .type)
+            try container.encode(Kind.variant.rawValue, forKey: .type)
             try container.encode(variants, forKey: .variants)
         case .value(let value):
-            try container.encode("value", forKey: .type)
+            try container.encode(Kind.value.rawValue, forKey: .type)
             try container.encode(value, forKey: .value)
         }
     }
