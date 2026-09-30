@@ -9,16 +9,18 @@ import Foundation
 import Synchronization
 import os
 
-/// Logs a remote-config channel's failed fetches, once per distinct failure.
+/// Logs a remote-config channel's failed fetches, skipping repeats of the last one.
 ///
 /// Both remote-config plugins (killswitch, feature flags) keep failing open
 /// when a fetch fails: they hold on to what they had. Without a log line, a
 /// wrong endpoint URL or an app ID the server doesn't know stays invisible
 /// for the life of the build. Each failure is logged at error level with the
-/// endpoint and a summary of the error. A failure identical to the last one
-/// logged is skipped until a fetch succeeds, so a device that stays offline
-/// logs the outage once rather than on every retry. A cancelled fetch isn't
-/// logged: it is how an effect ends when its scene goes away.
+/// endpoint and a summary of the error. The log remembers only the last line
+/// it wrote, in memory, so a failure identical to it is skipped until a fetch
+/// succeeds: an outage with a steady error is logged once per launch instead
+/// of on every retry. A different error, or the same one after a success, is
+/// logged again. A cancelled fetch isn't logged: it is how an effect ends
+/// when its scene goes away.
 package final class FetchFailureLog: Sendable {
     private let channel: String
     private let logger: Logger
@@ -71,8 +73,8 @@ package final class FetchFailureLog: Sendable {
         last.withLock { $0 = nil }
     }
 
-    /// `url` without its query, fragment, user, or password — the parts that
-    /// can carry a token.
+    /// `url` without its query, fragment, user, or password, which are the
+    /// usual places for a token. A token embedded in the path is not removed.
     package static func loggable(_ url: URL) -> String {
         guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return "(unparseable URL)"
@@ -84,13 +86,13 @@ package final class FetchFailureLog: Sendable {
         return parts.string ?? "(unparseable URL)"
     }
 
-    /// A one-line description of `error` that names the cause but not the
-    /// config's values.
+    /// A one-line description of `error` that names the cause.
     ///
     /// A decoding failure reports its key path and reason; the stock
     /// `localizedDescription` says only that the data isn't in the correct
     /// format. A `URLError` reports its message and code; its `description`
-    /// includes the failing URL, query and all.
+    /// includes the failing URL, query and all. A decoding reason may quote a
+    /// value from the config, such as an unknown flag type.
     static func summary(of error: any Error) -> String {
         if let error = error as? DecodingError {
             let context: DecodingError.Context

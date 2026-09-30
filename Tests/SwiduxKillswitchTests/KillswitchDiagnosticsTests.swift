@@ -65,7 +65,7 @@ struct KillswitchDiagnosticsTests {
         #expect(state.killswitch.fetchError != nil)
     }
 
-    @Test("a failure that falls back to the cache is still logged, and the verdict is unchanged")
+    @Test("a failure that falls back to the cache is still logged, and the cached config decides the verdict")
     func cacheFallbackIsStillLogged() async throws {
         let blocking = KillswitchConfig(minimumSupportedVersion: "2.0.0")
         let plugin = makePlugin(service: service(throwing: URLError(.timedOut), cached: blocking))
