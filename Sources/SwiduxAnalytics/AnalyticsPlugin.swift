@@ -23,12 +23,27 @@ import Swidux
 /// ``AnalyticsAction/identify(userID:properties:)`` naming a different user
 /// than the identity overrides it until the identity's `userID` changes.
 ///
+/// ## Queueing
+///
+/// Dispatch never waits for the service. Each service call joins a queue that
+/// one worker task drains off the main actor, one call at a time, in dispatch
+/// order; ``flush()`` waits for the queue. At most 1,000 `track` calls
+/// (explicit, screen-view, and mapped) wait at once — past that the oldest
+/// queued track is dropped, and nothing reports the drop. `identify`, `alias`
+/// and `reset` are never dropped.
+///
 /// ## Consent
 ///
 /// Opting out gates events *plugin-side* — every dispatch path returns early,
-/// so nothing reaches the service. That alone does not engage a vendor SDK's
-/// own consent switch, which matters when the SDK tracks automatic events or
-/// still holds a queue of its own. Supply `onConsentChange` to bridge the two:
+/// so nothing reaches the service — and removes every call still in the queue
+/// that needs consent (track, screen view, identify, alias) as the action
+/// reduces, releasing their payloads at once. A queued `reset` stays. A call
+/// already taken off the queue, running or about to run, is not removed and
+/// may still reach the service after the opt-out.
+///
+/// That alone does not engage a vendor SDK's own consent switch, which matters
+/// when the SDK tracks automatic events or still holds a queue of its own.
+/// Supply `onConsentChange` to bridge the two:
 ///
 /// ```swift
 /// AnalyticsPlugin(
@@ -60,32 +75,33 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     public typealias Action = RootAction
 
     private let stateKeyPath: WritableKeyPath<RootState, AnalyticsState>
-    private let toRootAction: @Sendable (AnalyticsAction) -> RootAction
     private let extractAction: @Sendable (RootAction) -> AnalyticsAction?
     private let service: any AnalyticsService
     private let mapper: AnalyticsMapper<RootState, RootAction>
     private let identity: AnalyticsIdentity<RootState>?
     private let onConsentChange: (@Sendable (Bool) async -> Void)?
 
-    /// Number of queued service calls (and consent hooks) not yet finished.
-    private var inflightCount: Int = 0
-    /// Continuations parked in ``flush()`` waiting for inflight work to drain
-    /// to zero, keyed so a timed-out waiter can be resumed individually.
-    private var flushWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
-    /// Tail of the chain of spawned service-call tasks. Each new spawn
-    /// awaits this before running, so service calls reach the service
-    /// in submission order even when scheduled on a concurrent executor.
-    private var lastSpawnedTask: Task<Void, Never>?
-    /// Consent has its own FIFO so a blocked event cannot defer withdrawal.
+    /// Service calls waiting for the worker, in dispatch order.
+    private var pending = ServiceCallQueue()
+    /// `true` while a worker task is draining ``pending``.
+    private var isDraining = false
+    /// Consent hooks not yet finished.
+    private var consentInflight = 0
+    /// Tail of the consent-hook FIFO while any hook is in flight. Hooks run
+    /// outside ``pending`` so a stalled service call cannot defer withdrawal;
+    /// the worker waits for the tail before it takes the next call.
     private var lastConsentTask: Task<Void, Never>?
-    /// Invalidates unsent events when consent is withdrawn, even if the user
-    /// opts back in before the queue reaches them.
-    private var consentGeneration = UUID()
+    /// Continuations parked in ``flush()`` waiting for the worker and consent
+    /// hooks to go idle, keyed so a timed-out waiter can be resumed individually.
+    private var flushWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     /// The derived user ID in effect when an explicit `.identify` named a
     /// different user, wrapped so a derived `nil` is distinguishable from no
     /// override. Auto-identify defers to the explicit identity until the
     /// derived ID moves off this value.
     private var explicitIdentityPin: String??
+
+    /// Number of service calls waiting for the worker.
+    var queuedCallCount: Int { pending.count }
 
     /// Creates an analytics plugin wired into the host app.
     ///
@@ -93,7 +109,9 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
     ///   - state: WritableKeyPath into the root state where the plugin's
     ///     ``AnalyticsState`` slice lives.
     ///   - toRootAction: Lifts an ``AnalyticsAction`` into the host's root
-    ///     action enum (e.g. `AppAction.analytics`).
+    ///     action enum (e.g. `AppAction.analytics`). The plugin sends no
+    ///     actions, so the closure is not used; the parameter stays so
+    ///     existing call sites keep compiling.
     ///   - extractAction: Unwraps an ``AnalyticsAction`` from the host's root
     ///     action when present, returning `nil` for unrelated actions.
     ///   - service: Backend implementation conforming to ``AnalyticsService``.
@@ -117,7 +135,6 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         onConsentChange: (@Sendable (Bool) async -> Void)? = nil
     ) {
         self.stateKeyPath = state
-        self.toRootAction = toRootAction
         self.extractAction = extractAction
         self.service = service
         self.mapper = mapper
@@ -127,15 +144,15 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
 
     // MARK: - Reduce (explicit AnalyticsAction handling)
 
-    /// Routes ``AnalyticsAction`` cases and returns effects for service calls.
-    /// Returns `nil` for non-analytics actions (which `afterReduce` then
-    /// processes via the mapper and auto-identify).
+    /// Routes ``AnalyticsAction`` cases and queues their service calls.
+    /// Always returns `nil`: the calls run on the plugin's worker, and
+    /// ``flush()`` is the way to wait for them. Non-analytics actions are
+    /// left to `afterReduce` (mapper and auto-identify).
     public func reduce(state: inout RootState, action: RootAction) -> Effect<RootAction>? {
         guard let local = extractAction(action) else { return nil }
         pinExplicitIdentity(state: state, action: local)
-        let localEffect = reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
-        guard let localEffect else { return nil }
-        return localEffect.map(toRootAction)
+        reduceLocal(state: &state[keyPath: stateKeyPath], action: local)
+        return nil
     }
 
     /// Records an explicit `.identify` that disagrees with the configured
@@ -155,60 +172,49 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         }
     }
 
-    private func reduceLocal(
-        state: inout AnalyticsState,
-        action: AnalyticsAction
-    ) -> Effect<AnalyticsAction>? {
+    private func reduceLocal(state: inout AnalyticsState, action: AnalyticsAction) {
+        let service = self.service
         switch action {
         case .track(let event):
-            guard !state.isOptedOut else { return nil }
-            let enriched = enrich(event, currentScreen: state.currentScreen)
-            let service = self.service
-            return enqueue { await service.track(enriched) }
+            guard !state.isOptedOut else { return }
+            enqueueTrack(enrich(event, currentScreen: state.currentScreen))
 
         case .screenView(let name, let extraProperties):
             state.currentScreen = name
-            guard !state.isOptedOut else { return nil }
+            guard !state.isOptedOut else { return }
             var properties = extraProperties
             properties["screen_name"] = .string(name)
-            let event = AnalyticsEvent("screen_view", properties)
-            let service = self.service
-            return enqueue { await service.track(event) }
+            enqueueTrack(AnalyticsEvent("screen_view", properties))
 
         case .identify(let userID, let properties):
             // Record only when the identify actually reaches the service —
             // recording while opted out would make a later opt-in compare
             // equal and silently skip ever identifying the user.
-            guard !state.isOptedOut else { return nil }
+            guard !state.isOptedOut else { return }
             state.recordIdentified(userID: userID, properties: properties)
-            let service = self.service
-            return enqueue {
-                await service.identify(userID: userID, properties: properties)
-            }
+            enqueue(.identity) { await service.identify(userID: userID, properties: properties) }
 
         case .alias(let newID, let previousID):
-            guard !state.isOptedOut else { return nil }
-            let service = self.service
-            return enqueue { await service.alias(newID: newID, previousID: previousID) }
+            guard !state.isOptedOut else { return }
+            enqueue(.identity) { await service.alias(newID: newID, previousID: previousID) }
 
         case .reset:
             state.clearIdentified()
-            let service = self.service
-            return enqueue(requiresConsent: false) { await service.reset() }
+            enqueue(.reset) { await service.reset() }
 
         case .setOptedOut(let optedOut):
             state.isOptedOut = optedOut
             if optedOut {
                 state.clearIdentified()
-                consentGeneration = UUID()
+                pending.removeAll { !$0.kind.survivesOptOut }
             }
-            guard optedOut || onConsentChange != nil else { return nil }
-            let consent = enqueueConsent(optedOut)
-            let service = self.service
+            if onConsentChange != nil {
+                enqueueConsent(optedOut)
+            }
+            // Queued after the hook, so it waits for the SDK's own opt-out.
             if optedOut {
-                return enqueue(requiresConsent: false) { await service.reset() }
+                enqueue(.reset) { await service.reset() }
             }
-            return Effect { _ in await consent.value }
         }
     }
 
@@ -239,7 +245,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         guard let userID = derivedUserID else {
             guard analyticsState.lastIdentifiedUserID != nil else { return }
             state[keyPath: stateKeyPath].clearIdentified()
-            spawn(requiresConsent: false) { await service.reset() }
+            enqueue(.reset) { await service.reset() }
             return
         }
 
@@ -250,7 +256,7 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         else { return }
 
         state[keyPath: stateKeyPath].recordIdentified(userID: userID, properties: nextProperties)
-        spawn { await service.identify(userID: userID, properties: nextProperties) }
+        enqueue(.identity) { await service.identify(userID: userID, properties: nextProperties) }
     }
 
     private func runMapper(state: RootState, action: RootAction) {
@@ -261,17 +267,16 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         guard !events.isEmpty else { return }
 
         let currentScreen = analyticsState.currentScreen
-        let service = self.service
-        let enrichedEvents = events.map { enrich($0, currentScreen: currentScreen) }
-        for event in enrichedEvents {
-            spawn { await service.track(event) }
+        for event in events {
+            enqueueTrack(enrich(event, currentScreen: currentScreen))
         }
     }
 
     // MARK: - Flush
 
-    /// Awaits all pending explicit and mapped service calls, then
-    /// drains the service's own buffers via `service.flush()`.
+    /// Waits until every queued service call has run and every consent hook
+    /// has returned, then drains the service's own buffers via
+    /// `service.flush()`.
     ///
     /// Call during app shutdown (`scenePhase == .background`,
     /// `applicationWillTerminate`) to avoid losing in-flight events.
@@ -312,64 +317,81 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         return enriched
     }
 
-    /// Spawns a tracked Task on a background executor so afterReduce stays
-    /// fast and ``flush()`` can deterministically wait for completion.
-    ///
-    /// Each new task awaits ``lastSpawnedTask`` before running, chaining
-    /// spawns into a single FIFO so concurrent dispatch can't reorder
-    /// service calls. Consent hooks have their own FIFO; service work waits
-    /// for the consent transition in effect at submission. Completed tails
-    /// are released when all tracked work drains.
-    private func enqueue(
-        requiresConsent: Bool = true,
-        _ work: @escaping @Sendable () async -> Void
-    ) -> Effect<AnalyticsAction> {
-        let task = spawn(requiresConsent: requiresConsent, work)
-        return Effect { _ in await task.value }
+    private func enqueueTrack(_ event: AnalyticsEvent) {
+        let service = self.service
+        enqueue(.track) { await service.track(event) }
     }
 
-    @discardableResult
-    private func spawn(
-        requiresConsent: Bool = true,
-        _ work: @escaping @Sendable () async -> Void
-    ) -> Task<Void, Never> {
-        inflightCount += 1
-        let previous = lastSpawnedTask
-        let generation = consentGeneration
-        let consent = lastConsentTask
-        let next = Task { @concurrent in
-            await previous?.value
-            await consent?.value
-            let permitted = await self.permits(generation)
-            if !requiresConsent || permitted {
-                await work()
+    /// Queues a service call and makes sure a worker is draining.
+    private func enqueue(_ kind: ServiceCallKind, _ work: @escaping @Sendable () async -> Void) {
+        pending.append(QueuedServiceCall(kind: kind, work: work))
+        startWorkerIfIdle()
+    }
+
+    /// Runs queued calls one at a time, in queue order, off the main actor.
+    /// The worker retires as soon as the queue is empty; the next enqueue
+    /// starts a fresh one.
+    private func startWorkerIfIdle() {
+        guard !isDraining else { return }
+        isDraining = true
+        Task { @concurrent in
+            while true {
+                switch await self.nextStep() {
+                case .wait(let hook):
+                    await hook.value
+                case .run(let call):
+                    await call.work()
+                case .retire:
+                    return
+                }
             }
-            await self.markCompleted()
         }
-        lastSpawnedTask = next
-        return next
     }
 
-    private func enqueueConsent(_ optedOut: Bool) -> Task<Void, Never> {
-        inflightCount += 1
+    private enum WorkerStep {
+        case wait(Task<Void, Never>)
+        case run(QueuedServiceCall)
+        case retire
+    }
+
+    /// What the worker does next. A call leaves the queue only once no
+    /// consent hook is in flight, so every hook dispatched before it has run
+    /// and an opt-out's purge has seen it. On an empty queue the worker
+    /// retires and flush waiters may resume.
+    private func nextStep() -> WorkerStep {
+        if !pending.isEmpty, let hook = lastConsentTask {
+            return .wait(hook)
+        }
+        if let call = pending.popFirst() {
+            return .run(call)
+        }
+        isDraining = false
+        resumeFlushWaitersIfIdle()
+        return .retire
+    }
+
+    private func enqueueConsent(_ optedOut: Bool) {
+        consentInflight += 1
         let previous = lastConsentTask
         let hook = onConsentChange
-        let next = Task { @concurrent in
+        lastConsentTask = Task { @concurrent in
             await previous?.value
             await hook?(optedOut)
-            await self.markCompleted()
+            await self.consentCompleted()
         }
-        lastConsentTask = next
-        return next
     }
 
-    private func permits(_ generation: UUID) -> Bool { generation == consentGeneration }
-
-    private func markCompleted() {
-        inflightCount -= 1
-        guard inflightCount == 0 else { return }
-        lastSpawnedTask = nil
+    private func consentCompleted() {
+        consentInflight -= 1
+        guard consentInflight == 0 else { return }
         lastConsentTask = nil
+        resumeFlushWaitersIfIdle()
+    }
+
+    private var isIdle: Bool { !isDraining && consentInflight == 0 }
+
+    private func resumeFlushWaitersIfIdle() {
+        guard isIdle else { return }
         let waiters = flushWaiters
         flushWaiters.removeAll()
         for waiter in waiters.values {
@@ -377,12 +399,12 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         }
     }
 
-    /// Parks until in-flight service calls drain to zero, or `timeout`
+    /// Parks until the worker and consent hooks are idle, or `timeout`
     /// elapses when one is given. Removal from `flushWaiters` is the claim
     /// ticket — MainActor serialization makes drain and timeout resume a
     /// waiter exactly once.
     private func drainInflight(timeout: Duration?) async {
-        guard inflightCount > 0 else { return }
+        guard !isIdle else { return }
         let id = UUID()
         await withCheckedContinuation { continuation in
             flushWaiters[id] = continuation
@@ -417,5 +439,58 @@ public final class AnalyticsPlugin<RootState, RootAction>: SwiduxPlugin {
         }
         var signals = winner.makeAsyncIterator()
         await signals.next()
+    }
+}
+
+// MARK: - Service-call queue
+
+/// What a queued call does, which decides how the queue treats it.
+enum ServiceCallKind: Sendable {
+    /// `service.track`: carries an event payload and arrives in volume, so it
+    /// is the only kind the queue's cap drops.
+    case track
+    /// `service.identify` or `service.alias`.
+    case identity
+    /// `service.reset`: the one call that still runs after opting out.
+    case reset
+
+    var isDroppable: Bool { self == .track }
+    var survivesOptOut: Bool { self == .reset }
+}
+
+/// A service call waiting for the plugin's worker.
+struct QueuedServiceCall: Sendable {
+    let kind: ServiceCallKind
+    let work: @Sendable () async -> Void
+}
+
+/// FIFO of service calls with a cap on how many droppable ones wait.
+struct ServiceCallQueue {
+    /// Most `track` calls that wait at once. Appending one past this drops
+    /// the oldest queued `track`.
+    static let droppableCapacity = 1_000
+
+    private var calls: [QueuedServiceCall] = []
+
+    var count: Int { calls.count }
+    var isEmpty: Bool { calls.isEmpty }
+
+    /// Appends `call`, first dropping the oldest queued droppable call when
+    /// `call` is droppable and ``droppableCapacity`` of them already wait.
+    mutating func append(_ call: QueuedServiceCall) {
+        if call.kind.isDroppable, calls.count(where: \.kind.isDroppable) >= Self.droppableCapacity,
+            let oldest = calls.firstIndex(where: \.kind.isDroppable)
+        {
+            calls.remove(at: oldest)
+        }
+        calls.append(call)
+    }
+
+    mutating func popFirst() -> QueuedServiceCall? {
+        calls.isEmpty ? nil : calls.removeFirst()
+    }
+
+    mutating func removeAll(where shouldRemove: (QueuedServiceCall) -> Bool) {
+        calls.removeAll(where: shouldRemove)
     }
 }

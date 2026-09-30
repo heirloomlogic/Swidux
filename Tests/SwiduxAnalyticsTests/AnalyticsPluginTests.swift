@@ -47,11 +47,6 @@ struct AnalyticsPluginTests {
         )
     }
 
-    private func runEffect(_ effect: Effect<TestAction>?) async throws {
-        guard let effect else { return }
-        try await effect { _ in }
-    }
-
     // MARK: - Mapper-driven tracking
 
     @Test("mapper returning empty array makes no service calls")
@@ -192,8 +187,8 @@ struct AnalyticsPluginTests {
         state.analytics.currentScreen = "Home"
 
         let event = AnalyticsEvent("custom", ["foo": .string("bar")])
-        let effect = plugin.reduce(state: &state, action: .analytics(.track(event)))
-        try await runEffect(effect)
+        _ = plugin.reduce(state: &state, action: .analytics(.track(event)))
+        await plugin.flush()
 
         let events = await service.trackedEvents
         #expect(events.count == 1)
@@ -209,15 +204,14 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.track(AnalyticsEvent("nope")))
         )
-        try await runEffect(effect)
+        await plugin.flush()
 
         let events = await service.trackedEvents
         #expect(events.isEmpty)
-        #expect(effect == nil)
     }
 
     // MARK: - Explicit AnalyticsAction: screenView
@@ -228,11 +222,11 @@ struct AnalyticsPluginTests {
         let plugin = makePlugin(service: service)
         var state = TestState()
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.screenView("Profile", properties: ["origin": .string("tab")]))
         )
-        try await runEffect(effect)
+        await plugin.flush()
 
         #expect(state.analytics.currentScreen == "Profile")
         let events = await service.trackedEvents
@@ -249,13 +243,13 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.screenView("Profile"))
         )
 
         #expect(state.analytics.currentScreen == "Profile")
-        #expect(effect == nil)
+        #expect(plugin.queuedCallCount == 0)
         let events = await service.trackedEvents
         #expect(events.isEmpty)
     }
@@ -268,13 +262,13 @@ struct AnalyticsPluginTests {
         let plugin = makePlugin(service: service)
         var state = TestState()
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(
                 .identify(userID: "u1", properties: ["plan": .string("pro")])
             )
         )
-        try await runEffect(effect)
+        await plugin.flush()
 
         #expect(state.analytics.lastIdentifiedUserID == "u1")
         let calls = await service.identifyCalls
@@ -290,11 +284,11 @@ struct AnalyticsPluginTests {
         var state = TestState()
         let before = state
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.alias(newID: "user-42", previousID: "anon-7"))
         )
-        try await runEffect(effect)
+        await plugin.flush()
 
         #expect(state == before)
         let calls = await service.aliasCalls
@@ -311,8 +305,8 @@ struct AnalyticsPluginTests {
         state.analytics.lastIdentifiedUserID = "u1"
         state.analytics.lastIdentifiedProperties = ["tier": .string("pro")]
 
-        let effect = plugin.reduce(state: &state, action: .analytics(.reset))
-        try await runEffect(effect)
+        _ = plugin.reduce(state: &state, action: .analytics(.reset))
+        await plugin.flush()
 
         #expect(state.analytics.lastIdentifiedUserID == nil)
         #expect(state.analytics.lastIdentifiedProperties == [:])
@@ -327,12 +321,9 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
-        )
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.alias(newID: "n")))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        _ = plugin.reduce(state: &state, action: .analytics(.alias(newID: "n")))
+        await plugin.flush()
 
         let identifyCalls = await service.identifyCalls
         let aliasCalls = await service.aliasCalls
@@ -348,17 +339,14 @@ struct AnalyticsPluginTests {
         state.analytics.isOptedOut = true
 
         // Suppressed — and must not be recorded as "already identified".
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
         #expect(state.analytics.lastIdentifiedUserID == nil)
 
         _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
 
         // The same identify after opting back in must reach the service.
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        await plugin.flush()
         let identifyCalls = await service.identifyCalls
         #expect(identifyCalls.count == 1)
         #expect(state.analytics.lastIdentifiedUserID == "u1")
@@ -373,11 +361,11 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.analytics.lastIdentifiedUserID = "u1"
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.setOptedOut(true))
         )
-        try await runEffect(effect)
+        await plugin.flush()
 
         #expect(state.analytics.isOptedOut == true)
         #expect(state.analytics.lastIdentifiedUserID == nil)
@@ -392,13 +380,13 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.setOptedOut(false))
         )
 
         #expect(state.analytics.isOptedOut == false)
-        #expect(effect == nil)
+        #expect(plugin.queuedCallCount == 0)
         let resets = await service.resetCount
         #expect(resets == 0)
     }
@@ -414,14 +402,13 @@ struct AnalyticsPluginTests {
         )
         var state = TestState()
 
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        await plugin.flush()
 
         // Order matters: the SDK's own opt-out must close the tap before the
         // reset hands it an identity change that is still eligible to be sent.
         let log = await recorder.log
-        #expect(log == ["consent(true)", "reset"])
+        #expect(log == ["consent(true)", "reset", "flush"])
     }
 
     @Test("opt-in invokes the consent hook without resetting")
@@ -434,30 +421,30 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        await plugin.flush()
 
         #expect(state.analytics.isOptedOut == false)
         let log = await recorder.log
-        #expect(log == ["consent(false)"])
+        #expect(log == ["consent(false)", "flush"])
     }
 
-    @Test("consent hook is optional — opt-in stays effect-free without one")
+    @Test("consent hook is optional — opt-in queues nothing without one")
     func consentHookDefaultsToNil() async throws {
         let recorder = RecordingAnalyticsService()
         let plugin = makePlugin(service: recorder)
         var state = TestState()
         state.analytics.isOptedOut = true
 
-        let effect = plugin.reduce(
+        _ = plugin.reduce(
             state: &state,
             action: .analytics(.setOptedOut(false))
         )
 
-        #expect(effect == nil)
+        #expect(plugin.queuedCallCount == 0)
+        await plugin.flush()
         let log = await recorder.log
-        #expect(log.isEmpty)
+        #expect(log == ["flush"])
     }
 
     @Test("consent hook does not reopen the plugin-side gate")
@@ -469,22 +456,12 @@ struct AnalyticsPluginTests {
         )
         var state = TestState()
 
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
         // Every dispatch path must still short-circuit while opted out.
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("e"))))
-        )
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.screenView("home")))
-        )
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1", properties: [:])))
-        )
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.alias(newID: "n", previousID: nil)))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("e"))))
+        _ = plugin.reduce(state: &state, action: .analytics(.screenView("home")))
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1", properties: [:])))
+        _ = plugin.reduce(state: &state, action: .analytics(.alias(newID: "n", previousID: nil)))
         await plugin.flush()
 
         let log = await recorder.log
@@ -626,9 +603,7 @@ struct AnalyticsPluginTests {
         await plugin.flush()
 
         // Opt back in via the explicit path (skips afterReduce processing).
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
         await plugin.flush()
 
         // Next non-analytics dispatch should fire identify("u1").
@@ -745,11 +720,9 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.userID = "u1"
 
-        try await runEffect(
-            plugin.reduce(
-                state: &state,
-                action: .analytics(.identify(userID: "u1", properties: ["plan": .string("pro")]))
-            )
+        _ = plugin.reduce(
+            state: &state,
+            action: .analytics(.identify(userID: "u1", properties: ["plan": .string("pro")]))
         )
         plugin.afterReduce(state: &state, action: .unrelated)
         await plugin.flush()
@@ -766,19 +739,17 @@ struct AnalyticsPluginTests {
     /// the identity keypath reads has landed.
     private func identifyAheadOfState(
         _ service: RecordingAnalyticsService
-    ) async throws -> (AnalyticsPlugin<TestState, TestAction>, TestState) {
+    ) -> (AnalyticsPlugin<TestState, TestAction>, TestState) {
         let plugin = makePlugin(service: service, identity: AnalyticsIdentity(userID: \.userID))
         var state = TestState()
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
         return (plugin, state)
     }
 
     @Test("explicit .identify survives dispatches before state catches up")
     func explicitIdentifyAheadOfStateIsNotReset() async throws {
         let service = RecordingAnalyticsService()
-        let (plugin, initial) = try await identifyAheadOfState(service)
+        let (plugin, initial) = identifyAheadOfState(service)
         var state = initial
 
         plugin.afterReduce(state: &state, action: .unrelated)
@@ -793,7 +764,7 @@ struct AnalyticsPluginTests {
     @Test("state catching up to the explicit ID does not re-identify")
     func stateCatchingUpToExplicitIdentify() async throws {
         let service = RecordingAnalyticsService()
-        let (plugin, initial) = try await identifyAheadOfState(service)
+        let (plugin, initial) = identifyAheadOfState(service)
         var state = initial
         plugin.afterReduce(state: &state, action: .unrelated)
 
@@ -808,7 +779,7 @@ struct AnalyticsPluginTests {
     @Test("once state has caught up, its later transitions drive identity again")
     func stateTransitionsAfterExplicitIdentify() async throws {
         let service = RecordingAnalyticsService()
-        let (plugin, initial) = try await identifyAheadOfState(service)
+        let (plugin, initial) = identifyAheadOfState(service)
         var state = initial
         state.userID = "u1"
         plugin.afterReduce(state: &state, action: .setUserID("u1"))
@@ -835,9 +806,7 @@ struct AnalyticsPluginTests {
         plugin.afterReduce(state: &state, action: .setUserID("u2"))
 
         // Override what state says; the override holds while state is unchanged.
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
         plugin.afterReduce(state: &state, action: .unrelated)
         state.userID = nil
         plugin.afterReduce(state: &state, action: .setUserID(nil))
@@ -856,12 +825,12 @@ struct AnalyticsPluginTests {
         var state = TestState()
         state.userID = "u2"
         plugin.afterReduce(state: &state, action: .setUserID("u2"))
-        try await runEffect(
-            plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
-        )
+        _ = plugin.reduce(state: &state, action: .analytics(.identify(userID: "u1")))
+        // Deliver the explicit identify first: opting out discards queued calls.
+        await plugin.flush()
 
-        try await runEffect(plugin.reduce(state: &state, action: .analytics(.setOptedOut(true))))
-        try await runEffect(plugin.reduce(state: &state, action: .analytics(.setOptedOut(false))))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
         plugin.afterReduce(state: &state, action: .unrelated)
         await plugin.flush()
 
@@ -945,8 +914,8 @@ struct AnalyticsPluginTests {
     func reduceIgnoresUnrelated() {
         let plugin = makePlugin()
         var state = TestState()
-        let effect = plugin.reduce(state: &state, action: .unrelated)
-        #expect(effect == nil)
+        _ = plugin.reduce(state: &state, action: .unrelated)
+        #expect(plugin.queuedCallCount == 0)
         #expect(state == TestState())
     }
 

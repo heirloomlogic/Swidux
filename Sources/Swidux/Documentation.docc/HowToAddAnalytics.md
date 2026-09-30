@@ -116,7 +116,7 @@ struct MyAnalyticsService: AnalyticsService {
 
 Translate `AnalyticsValue` cases (`.string`, `.int`, `.double`, `.bool`, `.date`, `.array`, `.dict`, `.null`) into whatever your SDK takes. The mapping is mechanical: each case has an obvious target type.
 
-Return promptly from each method. The plugin calls the service one call at a time, in dispatch order, so a `track` that awaits an HTTP request holds back every event behind it for the length of the request — and keeps them in memory while it does. If you're writing a custom backend, append to a queue and upload from a background task instead of awaiting the network in `track`.
+Return promptly from each method. The plugin calls the service one call at a time, in dispatch order, so a `track` that awaits an HTTP request holds back every call behind it for the length of the request. At most 1,000 `track` calls wait; past that the plugin drops the oldest queued `track`, while `identify`, `alias` and `reset` are never dropped. If you're writing a custom backend, append to a queue and upload from a background task instead of awaiting the network in `track`.
 
 ### Previews and tests
 
@@ -248,7 +248,7 @@ Toggle("Share usage analytics", isOn: Binding(
 ))
 ```
 
-When `setOptedOut(true)` fires, the plugin clears `lastIdentifiedUserID` and calls `service.reset()` to clear server-side identity. While opted out, all tracking is dropped and auto-identify is paused. Opting back in re-identifies the user automatically on the next dispatch.
+When `setOptedOut(true)` fires, the plugin discards any queued `track`, `screenView`, `identify` and `alias` calls, clears `lastIdentifiedUserID`, and calls `service.reset()` to clear server-side identity. While opted out, all tracking is dropped and auto-identify is paused. Opting back in re-identifies the user automatically on the next dispatch.
 
 ### Synchronize the SDK's consent switch
 
@@ -293,7 +293,7 @@ Then dispatch the same value once from the root view at launch. The dispatch inv
 .task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
 ```
 
-The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK receives the withdrawal before the service reset. What happens to queued or in-flight work is adapter-specific; it may be sent, retained, or discarded as consent and reset take effect. Treat this hook as neither a delivery guarantee nor a data-deletion API. This is the one place your app names the vendor, which the line constructing the service already does.
+The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK receives the withdrawal before the service reset. By then the plugin has discarded its queued `track`, `screen_view`, `identify` and `alias` calls, but the opt-out's own `reset` is still queued behind the hook, and a call already taken off the queue may still be delivered. What happens to uploads the SDK has queued or started is adapter-specific, and they may be sent, retained, or discarded as consent and reset take effect. Treat this hook as neither a delivery guarantee nor a data-deletion API. This is the one place your app names the vendor, which the line constructing the service already does.
 
 ## Step 10: Flush on app shutdown
 
