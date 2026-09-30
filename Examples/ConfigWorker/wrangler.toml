@@ -2,6 +2,12 @@ name = "swidux-config"
 main = "worker.js"
 compatibility_date = "2026-05-17"
 
+# Once a custom domain serves this Worker, uncomment this and redeploy to turn
+# off the `swidux-config.<subdomain>.workers.dev` URL. Zone rules such as rate
+# limiting and WAF apply only to hostnames on your zone, and workers.dev isn't
+# one, so leaving it on keeps a second, unprotected way in.
+# workers_dev = false
+
 # One namespace holds the whole portfolio. Keys are `<appID>/<resource>`
 # (e.g. "counter/killswitch", "counter/flags"). Create the namespace once,
 # then paste the printed ids below:

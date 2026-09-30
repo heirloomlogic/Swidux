@@ -49,7 +49,7 @@ public struct KillswitchState: Sendable, Equatable {
     public var isFetching: Bool             // true while a network fetch is in flight
 
     public var isBlocked: Bool              // delegates to verdict.isBlocked
-    public var canOpenUpdateURL: Bool       // .blocked AND updateURL is non-nil
+    public var canOpenUpdateURL: Bool       // .blocked AND updateURL is https, itms-apps, or macappstore
 
     public init(
         verdict: KillswitchVerdict = .unknown,
@@ -60,7 +60,7 @@ public struct KillswitchState: Sendable, Equatable {
 }
 ```
 
-`isBlocked` and `canOpenUpdateURL` are convenience computed properties. Bind UI off them rather than pattern-matching `verdict` everywhere.
+`isBlocked` and `canOpenUpdateURL` are convenience computed properties. Bind UI off them rather than pattern-matching `verdict` everywhere. `canOpenUpdateURL` is `verdict.openableUpdateURL != nil`, so a blocked verdict whose `updateURL` uses any other scheme (`http`, say) shows the default blocker without an Update button.
 
 ### KillswitchAction
 

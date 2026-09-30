@@ -22,8 +22,9 @@ update a value and not track down commands or URLs."
 ```
 <appID>/killswitch     KillswitchConfig          (gate / force-update)
 <appID>/flags          FeatureFlagsConfig        (rollouts, variants, values)
-<appID>/<future>       arbitrary JSON            (room to grow; defaults to {})
 ```
+
+The Worker serves only these two resources and answers `404` for anything else. A new resource means adding it to `RESOURCES` in `worker.js` and redeploying.
 
 - `appID` is the app's stable slug (lowercase, `[a-z0-9-]`). Pick it once and
   keep it forever — it's baked into the shipped app's endpoint URLs.
@@ -37,9 +38,10 @@ update a value and not track down commands or URLs."
    `seeds/counter/*` as a starting point), commit.
 3. Seed the keys — dashboard, or:
    ```sh
-   wrangler kv key put --binding=CONFIG <appID>/killswitch "$(cat seeds/<appID>/killswitch.json)"
-   wrangler kv key put --binding=CONFIG <appID>/flags      "$(cat seeds/<appID>/flags.json)"
+   wrangler kv key put --binding=CONFIG --remote --preview false <appID>/killswitch --path seeds/<appID>/killswitch.json
+   wrangler kv key put --binding=CONFIG --remote --preview false <appID>/flags      --path seeds/<appID>/flags.json
    ```
+   Keep both flags: without `--remote` the write goes to local development storage and production never sees it (README "Seed / flip a value").
 4. In the app's `Store.configured()`, point the plugins at
    `…/<appID>/killswitch` and `…/<appID>/flags`.
 
@@ -59,10 +61,10 @@ means "no rules yet."
      "updateURL": "https://apps.apple.com/app/idXXXXXXXXX"
    }
    ```
-3. Save. Mirror it back into `seeds/<appID>/killswitch.json` and commit so the
-   repo stays the source of truth.
+3. Save. To do it from a terminal instead, put the JSON in `seeds/<appID>/killswitch.json` and run `wrangler kv key put --binding=CONFIG --remote --preview false <appID>/killswitch --path seeds/<appID>/killswitch.json`. Either way, `wrangler kv key get --binding=CONFIG --remote --preview false --text <appID>/killswitch` shows what production now holds.
+4. Mirror it into `seeds/<appID>/killswitch.json` if you used the dashboard, and commit so the repo stays the source of truth.
 
-**Propagation is bounded by the client's `cacheLifetime`, not by an edge cache — Cloudflare's CDN does not cache Worker responses, so every request re-reads KV and gets the value you just saved.** The `Cache-Control: max-age=60` on `killswitch` is a hint the *client* may or may not honor; the client default (`cacheLifetime`) is 3600s and dominates regardless. For a real emergency lever, ship apps with `cacheLifetime` ~300–900s and a `.killswitch(.forceFetch)` on foreground (see README "Freshness").
+**How fast a block lands depends on when each app asks, not on the Worker.** The Worker reads KV on every request (this example doesn't enable Workers Caching), and a KV write can take 60 seconds or more to reach every Cloudflare location. Swidux clients ignore the `Cache-Control` header. A cold launch always fetches. A running app goes back to the network only on `.forceFetch`, or on a `.fetch` once `cacheLifetime` has passed. For a real emergency lever, ship apps that dispatch `.killswitch(.forceFetch)` on foreground (see README "Freshness").
 
 ## What this Worker deliberately is not
 
