@@ -279,24 +279,26 @@ The contract is small: a public `GET` that returns `KillswitchConfig`-shaped JSO
 
 | Option | Change config without redeploy? | Propagation | Notes |
 |---|---|---|---|
-| **Cloudflare Worker + Workers KV** *(recommended)* | ✅ `wrangler kv key put` or dashboard | seconds | Flip in seconds, edge-cached, room to add logic (geo/gradual/per-build) later. Runnable example below. |
+| **Cloudflare Worker + Workers KV** *(recommended)* | ✅ `wrangler kv key put` or dashboard | about 60 s | A KV write can take 60 seconds or more to reach every Cloudflare location. Room to add logic (geo/gradual/per-build) later. Runnable example below. |
 | Static object (R2 / S3 + CDN) | ✅ re-upload object | seconds (after purge) | Zero code. Must set `Cache-Control` as object metadata; no room to grow. |
 | Static site / Pages (git-backed) | ❌ commit + build | ~minutes | The trap: build latency kills the *emergency* use case. |
 | GitHub raw / Gist | ✅ edit file | unpredictable | Not a production CDN; you don't control `Cache-Control`, stale exactly when freshness matters. |
 | Your own app backend | ✅ | instant | The trap: it's the service most likely down precisely when you need the killswitch. |
 
-**Recommended: Cloudflare Worker + KV.** The config lives in a KV key; the Worker returns it with a short `Cache-Control`. You push an emergency block by writing one KV key — no redeploy. A complete, runnable example is in `Examples/ConfigWorker/` — one Worker, keyed `GET /<appID>/<resource>`, that serves killswitch *and* feature-flag config for every app in a portfolio from a single URL and a single KV namespace (the Cloudflare dashboard becomes the one place you edit a value). The short version: create a KV namespace → seed `…/killswitch` → `wrangler deploy` → point `KillswitchService.live(endpoint:)` at `https://<host>/<appID>/killswitch`. See also `Examples/ConfigWorker/DEPLOY.md` for the multi-app operating convention.
+**Recommended: Cloudflare Worker + KV.** The config lives in a KV key, and the Worker reads it on every request. You push an emergency block by writing one KV key — no redeploy. A complete, runnable example is in `Examples/ConfigWorker/` — one Worker, keyed `GET /<appID>/<resource>`, that serves killswitch *and* feature-flag config for every app in a portfolio from a single URL and a single KV namespace (the Cloudflare dashboard becomes the one place you edit a value). The short version: create a KV namespace → seed `…/killswitch` → `wrangler deploy` → point `KillswitchService.live(endpoint:)` at `https://<host>/<appID>/killswitch`. See also `Examples/ConfigWorker/DEPLOY.md` for the multi-app operating convention.
 
 **Minimal alternative: a static object** (Cloudflare R2, S3, any object store fronted by a CDN). Upload `killswitch.json`, set a short `Cache-Control` on the object, re-upload to change it. Zero code; you give up the room to add server-side logic later. Equivalent push-in-seconds latency for this use case.
 
 ### Freshness: the backend can't fix client staleness
 
-The plugin caches the fetched config for `cacheLifetime` (**default 3600s**) regardless of how fresh your endpoint is. With the default, a perfectly deployed emergency block still won't reach an already-launched app for up to an hour — and no backend choice changes that. If fast emergency response matters:
+However fast your endpoint changes, an app sees the new config only when it asks for it:
 
-- Lower `cacheLifetime` to ~300–900s in `KillswitchService.live(endpoint:fetchTimeout:cacheLifetime:session:)`.
-- Dispatch `.killswitch(.forceFetch)` on app-foreground — it bypasses the freshness gate, so a returning user re-checks immediately.
+- A cold launch always goes to the network, because the freshness window is session state (see Step 4).
+- A running app goes back to the network only when something dispatches `.forceFetch`, or `.fetch` once `cacheLifetime` has passed. Wired as in Step 4, with one `.fetch` in the root view's `.task`, nothing dispatches either while that view stays on screen, so a running app doesn't re-check however long it runs.
+- Dispatch `.killswitch(.forceFetch)` when the app returns to the foreground. That is what gets an emergency block to apps that are already running.
+- `cacheLifetime` (**default 3600s**) only decides whether a repeated `.fetch` goes to the network or reuses the cached config. Lower it (300–900s, say) in `KillswitchService.live(endpoint:fetchTimeout:cacheLifetime:session:)` if you re-dispatch `.fetch` on a timer or on foreground instead of `.forceFetch`.
 
-Keep your endpoint's edge `Cache-Control` at or below `cacheLifetime`; caching longer at the edge than the client will re-ask buys nothing.
+Your endpoint's `Cache-Control` header doesn't affect Swidux clients: `KillswitchService.live` requests with `reloadIgnoringLocalCacheData`, so the local URL cache is never consulted. The header does control any cache between the app and your origin, such as the CDN in front of a static object, and those caches can hold an old config for up to its `max-age`.
 
 ## Testing
 

@@ -1,6 +1,5 @@
 // Shared config endpoint — one Cloudflare Worker, backed by Workers KV,
-// serving killswitch + feature-flag (+ arbitrary future) config for every app
-// in a portfolio.
+// serving killswitch and feature-flag config for every app in a portfolio.
 //
 // Route: GET /<appID>/<resource>  ->  KV key `<appID>/<resource>`
 //   e.g.  GET /counter/killswitch ->  KV key "counter/killswitch"
@@ -10,7 +9,7 @@
 // returns the resource's config-shaped JSON. SwiduxKillswitch decodes
 // `KillswitchConfig`; SwiduxFeatureFlags' HTTPFeatureFlagsService decodes
 // `FeatureFlagsConfig`. Both are fail-open, so a not-yet-seeded app must get a
-// *decodable* default rather than an error (see DEFAULTS below).
+// *decodable* default rather than an error (see RESOURCES below).
 //
 // Onboarding a new app = adding its KV keys in the dashboard. No redeploy, no
 // new Worker, no new URL. See README.md / DEPLOY.md.
@@ -21,30 +20,30 @@
 // enough to trip KV's 512-byte key limit (an oversized `get()` key throws).
 const ROUTE = /^\/([a-z0-9][a-z0-9-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})$/;
 
-// Type-aware fail-open defaults for a key that isn't seeded yet. `{}` decodes
-// to an allow-everyone KillswitchConfig; the flags default decodes to a valid
-// v1 config with no flags. Unknown resources fall back to `{}`.
+// The resources this Worker serves. Anything else is a 404, so a typo'd URL
+// in an app (`/<appID>/kill-switch`) shows up as a fetch error in the
+// plugin's state instead of decoding a default that can never block anyone.
+//
+// `fallback` is the fail-open body for a key that isn't seeded yet: `{}`
+// decodes to an allow-everyone KillswitchConfig, and the flags fallback
+// decodes to a valid v1 config with no flags.
+//
+// `cacheControl` doesn't reach Swidux clients, which request with
+// `.reloadIgnoringLocalCacheData`. Cloudflare caches Worker responses only
+// with Workers Caching (`[cache] enabled = true` in wrangler.toml), which
+// this example leaves off; turn it on and a flip can take up to max-age to
+// reach clients.
+//
 // `__proto__: null` so an attacker-shaped resource like "constructor" can't
-// resolve up Object.prototype and defeat the `?? FALLBACK` chain.
-const DEFAULTS = {
+// resolve up Object.prototype and pass the lookup.
+const RESOURCES = {
   __proto__: null,
-  killswitch: "{}",
-  flags: '{"version":1,"flags":{}}',
+  killswitch: { fallback: "{}", cacheControl: "public, max-age=60" },
+  flags: {
+    fallback: '{"version":1,"flags":{}}',
+    cacheControl: "public, max-age=300",
+  },
 };
-const FALLBACK = "{}";
-
-// Per-resource Cache-Control header, honored by the *requesting client*
-// (URLSession, a browser) — Cloudflare's CDN does not cache Worker responses,
-// so this is not an edge cache. Killswitch is the incident lever — keep its
-// hint short so a client that respects it re-fetches sooner. (The client's
-// own `cacheLifetime` still dominates effective propagation either way; see
-// README "Freshness".)
-const CACHE_CONTROL = {
-  __proto__: null,
-  killswitch: "public, max-age=60",
-  flags: "public, max-age=300",
-};
-const DEFAULT_CACHE_CONTROL = "public, max-age=300";
 
 export default {
   async fetch(request, env) {
@@ -65,9 +64,10 @@ export default {
       });
     }
 
-    // Expect exactly `/<appID>/<resource>`.
+    // Expect exactly `/<appID>/<resource>`, for a resource this Worker serves.
     const match = ROUTE.exec(path);
-    if (!match) {
+    const served = match && RESOURCES[match[2]];
+    if (!served) {
       return new Response("Not Found", { status: 404 });
     }
     const [, appID, resource] = match;
@@ -91,12 +91,10 @@ export default {
       });
     }
 
-    const body = stored ?? DEFAULTS[resource] ?? FALLBACK;
-
-    return new Response(body, {
+    return new Response(stored ?? served.fallback, {
       headers: {
         "Content-Type": "application/json",
-        "Cache-Control": CACHE_CONTROL[resource] ?? DEFAULT_CACHE_CONTROL,
+        "Cache-Control": served.cacheControl,
       },
     });
   },
