@@ -159,7 +159,7 @@ await persistence.hydrate(into: &initialState)
 Vendor-specific adapters live in their own repositories so the SDK dependency stays out of the core graph. Each ships a drop-in service plus a preview mock, and publishes its own DocC reference.
 
 - [`SwiduxRevenueCatPaywall`](https://github.com/heirloomlogic/SwiduxRevenueCatPaywall) — RevenueCat adapter for `SwiduxPaywall`. Ships `RevenueCatPaywallService` (drop-in `PaywallService`), `MockRevenueCatPaywallService` for previews, and `SwiduxRevenueCatPaywallUI`, a SwiftUI sheet built on RevenueCatUI. [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/).
-- [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) — Mixpanel adapter for `SwiduxAnalytics`. Ships `MixpanelAnalyticsService` (drop-in `AnalyticsService` that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types) and a recording stand-in for its Mixpanel-only controls, built on `RecordingAnalyticsService`. [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
+- [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) — Mixpanel adapter for `SwiduxAnalytics`. Ships `MixpanelAnalyticsService` (drop-in `AnalyticsService` that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types) and a recording stand-in for previews and tests that also records Mixpanel's consent controls. [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
 
 ## Macros
 

@@ -31,7 +31,7 @@ Your domain types and database stay in your app. Swidux provides the contracts, 
 Vendor-specific adapters live in their own repositories so a third-party SDK never enters the core dependency graph. Each ships a drop-in service conformer plus a preview mock, and publishes its own DocC reference:
 
 - [SwiduxRevenueCatPaywall](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) — RevenueCat adapter for the paywall plugin (`RevenueCatPaywallService`, `MockRevenueCatPaywallService`, and the `SwiduxRevenueCatPaywallUI` sheet). See <doc:HowToAddAPaywall> and <doc:PluginPaywallReference>.
-- [SwiduxMixpanelAnalytics](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/) — Mixpanel adapter for the analytics plugin (`MixpanelAnalyticsService` and a recording stand-in for its Mixpanel-only controls, built on `RecordingAnalyticsService`). See <doc:HowToAddAnalytics> and <doc:PluginAnalyticsReference>.
+- [SwiduxMixpanelAnalytics](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/) — Mixpanel adapter for the analytics plugin (`MixpanelAnalyticsService` and a recording stand-in for previews and tests that also records Mixpanel's consent controls). See <doc:HowToAddAnalytics> and <doc:PluginAnalyticsReference>.
 
 ## Topics
 
