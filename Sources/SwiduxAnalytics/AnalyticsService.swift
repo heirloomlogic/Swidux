@@ -26,6 +26,22 @@ public protocol AnalyticsService: Sendable {
     func track(_ event: AnalyticsEvent) async
 
     /// Identify the active user with optional people properties.
+    ///
+    /// An implementation that stores a user profile must set each property
+    /// in `properties` on it, leave alone any property omitted from
+    /// `properties`, and delete a property passed as ``AnalyticsValue/null``.
+    /// It must not infer deletion from omission, so it needs no per-user
+    /// snapshot of earlier calls to detect omitted keys. An implementation
+    /// that stores no profile, such as a logger or a no-op, has nothing to
+    /// merge.
+    ///
+    /// ```swift
+    /// // Saved: plan = "pro", experiment_variant = "B"
+    /// await service.identify(userID: "u1", properties: ["plan": "free"])
+    /// // plan = "free", experiment_variant is still "B"
+    /// await service.identify(userID: "u1", properties: ["experiment_variant": .null])
+    /// // experiment_variant is deleted, plan is still "free"
+    /// ```
     func identify(userID: String, properties: [String: AnalyticsValue]) async
 
     /// Link an anonymous distinct ID to a known user ID.

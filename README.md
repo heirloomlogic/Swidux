@@ -123,7 +123,7 @@ someView.devPaywall(state: store.paywall, service: simulatedPaywallService, onAc
 
 ### Analytics
 
-Centralize event tracking behind a provider-agnostic `AnalyticsService`. A declarative `AnalyticsMapper` turns domain actions into tracked events in `afterReduce`, auto-identify keeps people-properties in sync with state, and screen views, opt-out, and shutdown flushing are first-class. The plugin doesn't know about your backend — implement `AnalyticsService` against Amplitude, PostHog, Segment, or a custom server, or drop in the ready-made [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) adapter for Mixpanel. See [Add Analytics](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddanalytics).
+Centralize event tracking behind a provider-agnostic `AnalyticsService`. A declarative `AnalyticsMapper` turns domain actions into tracked events in `afterReduce`, auto-identify sends people-properties derived from state, and screen views, opt-out, and shutdown flushing are first-class. The plugin doesn't know about your backend — implement `AnalyticsService` against Amplitude, PostHog, Segment, or a custom server, or drop in the ready-made [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) adapter for Mixpanel. See [Add Analytics](https://heirloomlogic.github.io/Swidux/documentation/swidux/howtoaddanalytics).
 
 ```swift
 plugins.register(AnalyticsPlugin(state: \.analytics, action: AppAction.analytics, extractAction: { if case .analytics(let a) = $0 { return a }; return nil }, service: MixpanelAnalyticsService(token: "..."), mapper: mapper, identity: identity))

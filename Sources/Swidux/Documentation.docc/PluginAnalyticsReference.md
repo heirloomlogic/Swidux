@@ -191,6 +191,8 @@ public protocol AnalyticsService: Sendable {
 
 Implementations own batching, retry, network failure handling, and offline queueing.
 
+An `identify` implementation that stores a user profile must set each property it is given, leave a key omitted from `properties` at its saved value, and delete a key passed as `.null`. Implementations that store no profile, such as `ConsoleAnalyticsService` and `MockAnalyticsService`, have nothing to merge. Auto-identify passes whatever dictionary `userProperties` returns, so a key that drops out of that dictionary is omitted from the next `identify`, so a conforming implementation leaves it at its saved value; return `.null` for the key to delete it.
+
 Dispatch never waits for the service, but the plugin **serializes** its calls: `track`/`identify`/`alias`/`reset` run one at a time in dispatch order, each starting after the previous one returns (see *Queueing*). A conformer that awaits a network round trip inside `track` therefore delivers one event per round trip, and while a call is stalled (offline, a 60-second request timeout) every later call waits behind it. Enqueue the work and return promptly, as vendor SDKs do; upload from the service's own background queue.
 
 ### `MockAnalyticsService`
@@ -287,7 +289,7 @@ When configured with an `AnalyticsIdentity`, the plugin re-evaluates both the `u
 - `"u1" → nil` (sign-out): clears both, fires `service.reset()`.
 - Stable userID and stable `userProperties`: no-op.
 
-`userProperties` is re-evaluated every non-analytics dispatch; dictionary equality decides whether to re-fire `identify`. This keeps derived people-properties (subscription tier, paywall entitlements, feature flags) in sync with state without any explicit `.identify` plumbing.
+`userProperties` is re-evaluated every non-analytics dispatch; dictionary equality decides whether to re-fire `identify`. This sends derived people-properties (subscription tier, paywall entitlements, feature flags) without any explicit `.identify` plumbing. Each call carries the current dictionary; a key you stop returning is omitted, not deleted, so it keeps its last value on the profile unless you return `.null` for it.
 
 When opted out, auto-identify is paused: neither `lastIdentifiedUserID` nor `lastIdentifiedProperties` is updated. Opting back in re-establishes identity correctly on the next dispatch.
 
