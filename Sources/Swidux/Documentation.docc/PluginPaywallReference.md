@@ -62,7 +62,7 @@ A locked keychain reads as an empty cache. `KeychainKeyValueStore.value(_:)` ret
 - When every live attempt fails, `customerInfo()` throws instead of returning the cached entitlement. `.refreshCustomerInfo` ends in `.refreshFailed`, and `currentSnapshot()` returns a free snapshot.
 - The stored entitlement survives the miss, because the service writes the cache only when a live snapshot arrives or `clearCache()` runs.
 
-The service doesn't watch for the keychain becoming readable. Dispatch `.refreshCustomerInfo` when a scene becomes active; once the keychain is readable, that refresh returns a live snapshot or, when every live read fails, falls back to the cache as usual, and either one sets `PaywallState.isPro`:
+The service doesn't watch for the keychain becoming readable. Dispatch `.refreshCustomerInfo` when a scene becomes active; once the keychain is readable, the next snapshot the service delivers replaces the empty state and sets `PaywallState.isPro` and `hasPermanentLicense` from its own values. A refresh delivers a live snapshot or, when every live read fails, the cached entitlement if it is within `maxCacheAge` (a permanent license is kept past it). If it gets neither, it throws and the state stays as it was:
 
 ```swift
 .onChange(of: scenePhase) { _, phase in

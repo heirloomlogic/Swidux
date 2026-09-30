@@ -162,7 +162,7 @@ If your app can launch in the background before the first unlock after a restart
 }
 ```
 
-Once the keychain is readable, any snapshot lifts the gate. That refresh returns a live snapshot or, when every live read fails, falls back to the cache as usual, and either one sets `store.paywall.isPro`. See "Failure Modes" in <doc:KeyValueStoreGuide> for how `KeychainKeyValueStore` reports a locked keychain on writes and on `deviceIdentity(key:)`.
+Once the keychain is readable, the next snapshot the service delivers replaces that empty state, and `store.paywall.isGateSatisfied` then follows the snapshot's own entitlement. A refresh delivers a live snapshot or, when every live read fails, the cached entitlement if it is within `maxCacheAge` (a permanent license is kept past it). A live snapshot for a user with no entitlement leaves the gate closed, and a refresh that gets neither a live snapshot nor a usable cache throws and leaves the state as it was. See "Failure Modes" in <doc:KeyValueStoreGuide> for how `KeychainKeyValueStore` reports a locked keychain on writes and on `deviceIdentity(key:)`.
 
 ## Step 5: Observe customer info on launch
 
