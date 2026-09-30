@@ -180,6 +180,8 @@ Bind a sheet to `store.paywall.isPresented` and dispatch `.paywall(.dismiss)` wh
 }
 ```
 
+If you are still on `SimulatedPaywallService` with the `SwiduxDevPaywallUI` sheet, the `.devPaywall(state:service:onAction:)` call is replaced, not kept, when you adopt RevenueCat. See "Moving to a real provider" in <doc:PluginPaywallReference> for the exact change.
+
 Trigger presentation by dispatching `.paywall(.request(reason:))` with a short identifier describing why you're asking. The reason is stored in `store.paywall.requestedReason` so the sheet can tailor its copy.
 
 ```swift

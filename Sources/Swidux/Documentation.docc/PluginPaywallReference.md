@@ -206,7 +206,7 @@ public enum SimulatedPaywallError: Error, Equatable {
 
 ### `SwiduxDevPaywallUI`
 
-A separate, opt-in library product (`import SwiduxDevPaywallUI`) providing a bare-bones debug paywall sheet. It mirrors the shape of the vendor paywall UI so the call site is unchanged when a real provider is adopted:
+A separate, opt-in library product (`import SwiduxDevPaywallUI`) providing a bare-bones debug paywall sheet. It is a development stand-in, not a drop-in for a provider's modifier: adopting a real provider changes this call site (see "Moving to a real provider" below):
 
 ```swift
 someView.devPaywall(
@@ -230,6 +230,33 @@ init() {
 ```
 
 This is the one place a dev/QA service is intentionally constructed outside `Store.configured()`, because the debug UI must drive the same instance the plugin observes. Swapping to a real provider removes the shared-instance wiring and the `SwiduxDevPaywallUI` import along with the two-line `Store.configured()` change.
+
+#### Moving to a real provider
+
+`.devPaywall(state:service:onAction:)` takes a `SimulatedPaywallService` because its buttons drive that service. A provider modifier has no such argument, and its name is provider-specific, so the call is replaced rather than kept. For the RevenueCat adapter, change:
+
+```swift
+someView.devPaywall(
+    state: store.paywall,
+    service: simulatedPaywallService,
+    onAction: { store.send(.paywall($0)) }
+)
+```
+
+to:
+
+```swift
+import SwiduxRevenueCatPaywallUI
+
+someView.revenueCatPaywallAndCustomerCenter(
+    state: store.paywall,
+    onAction: { store.send(.paywall($0)) }
+)
+```
+
+The `state:` and `onAction:` arguments carry over unchanged. The `service:` argument is dropped, and the plugin's `service:` in `Store.configured()` becomes `RevenueCatPaywallService`. The provider modifier also presents the customer center from the same `PaywallState`, which the development sheet does not. Attach it once, to one app-wide host.
+
+`revenueCatPaywallAndCustomerCenter` appears in `SwiduxRevenueCatPaywall` releases after 1.1.0. Release 1.1.0 and earlier spell the same modifier `.revenueCatPaywall(state:send:)`, with the closure labeled `send:` instead of `onAction:`. The provider's own [DocC reference](https://heirloomlogic.github.io/SwiduxRevenueCatPaywall/documentation/swiduxrevenuecatpaywall/) is the authority for the signature your pinned version ships.
 
 ## Action semantics
 
