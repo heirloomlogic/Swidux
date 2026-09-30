@@ -42,7 +42,9 @@ public enum AnalyticsAction: Sendable, Equatable {
     ///
     /// Either value invokes the plugin's `onConsentChange` hook when one is
     /// configured, so a vendor SDK's own consent switch follows the plugin's
-    /// gate. On opt-out the hook runs *before* `service.reset()`.
+    /// gate. On opt-out the hook runs *before* `service.reset()`, ahead of
+    /// any service call still queued. On opt-in it runs in queue order, after
+    /// every call queued before it — including an earlier opt-out's reset.
     case setOptedOut(Bool)
 }
 
