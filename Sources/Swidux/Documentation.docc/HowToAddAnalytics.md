@@ -293,7 +293,7 @@ Then dispatch the same value once from the root view at launch. The dispatch inv
 .task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
 ```
 
-The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK receives the withdrawal before the service reset. The plugin's own queue is already cleared by then; what happens to uploads the SDK has queued or started is adapter-specific, and they may be sent, retained, or discarded as consent and reset take effect. Treat this hook as neither a delivery guarantee nor a data-deletion API. This is the one place your app names the vendor, which the line constructing the service already does.
+The hook fires for either value, and on opt-out it runs before `service.reset()`, so the SDK receives the withdrawal before the service reset. By then the plugin has discarded its queued `track`, `screen_view`, `identify` and `alias` calls, but the opt-out's own `reset` is still queued behind the hook, and a call already taken off the queue may still be delivered. What happens to uploads the SDK has queued or started is adapter-specific, and they may be sent, retained, or discarded as consent and reset take effect. Treat this hook as neither a delivery guarantee nor a data-deletion API. This is the one place your app names the vendor, which the line constructing the service already does.
 
 ## Step 10: Flush on app shutdown
 

@@ -242,16 +242,16 @@ Sets `lastIdentifiedUserID = nil` and queues `service.reset()`. Runs even when o
 
 ### `setOptedOut(Bool)`
 
-- `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, discards every queued `track`, `screen_view`, `identify` and `alias` call, runs `onConsentChange(true)` when a hook is configured, and queues `service.reset()` behind it to clear server-side identity.
+- `setOptedOut(true)` — Sets `isOptedOut = true`, clears `lastIdentifiedUserID`, discards every `track`, `screen_view`, `identify` and `alias` call still in the queue, runs `onConsentChange(true)` when a hook is configured, and queues `service.reset()` behind it to clear server-side identity.
 - `setOptedOut(false)` — Clears the flag and runs `onConsentChange(false)` when a hook is configured. Auto-identify on the next dispatch will re-establish identity.
 
 ## Queueing
 
 Dispatch never waits for the service. Every call the plugin makes — explicit, mapped, and auto-identify — joins one queue that a worker task drains off the main actor, one call at a time, in dispatch order. A `track` that awaits a network round trip holds back every call behind it for the length of the request.
 
-The queue holds at most 1,000 `track` calls (explicit `track`, `screenView`, and mapper events). Queuing one past that drops the oldest queued `track`; nothing reports the drop. `identify`, `alias` and `reset` are never dropped, however many are waiting. Opting out discards every queued call that needs consent — see *Consent*.
+The queue holds at most 1,000 `track` calls (explicit `track`, `screenView`, and mapper events). Queuing one past that drops the oldest queued `track`; nothing reports the drop. `identify`, `alias` and `reset` are never dropped, however many are waiting. Opting out discards every call still in the queue that needs consent — see *Consent*.
 
-`onConsentChange` hooks don't join this queue: they run as soon as they're dispatched, in dispatch order, so a stalled service call cannot delay an opt-out. Calls queued after a hook wait for it to return.
+`onConsentChange` hooks don't join this queue: they run in dispatch order without waiting for service calls, so a stalled service call cannot delay an opt-out. The worker takes no further call off the queue while a hook is in flight, so every call still queued when a hook is dispatched, and every call queued after it, waits for the hook to return.
 
 ## Consent
 
@@ -265,7 +265,7 @@ Treat this as required wiring for any vendor with a consent API, not an optional
 
 Keep the user's choice in app storage. Before creating the store, seed `AnalyticsState(isOptedOut:)` from that choice. Then dispatch `.setOptedOut(storedValue)` once from the root view at launch. The dispatch applies the stored value to the vendor SDK even when it matches the plugin's initial state. This keeps the plugin and vendor in step when a vendor starts opted out by default.
 
-Opting out discards the plugin's queued `track`, `screen_view`, `identify` and `alias` calls as the action reduces, so their payloads are released at once; a queued `reset` stays, and a call the service is already running finishes. Until the user opts back in, an explicit `reset` is the only call the plugin still queues. The hook says nothing about what the vendor SDK does with uploads of its own, and it is not a data-deletion API.
+Opting out discards the plugin's queued `track`, `screen_view`, `identify` and `alias` calls as the action reduces, so their payloads are released at once; a queued `reset` stays. A call already taken off the queue, whether the service is running it or the worker is about to, is not discarded and may still reach the service after the opt-out. Until the user opts back in, the plugin queues only `reset` calls: one for an explicit `reset` action, and one for every `.setOptedOut(true)` dispatch, including a repeat while already opted out. The hook says nothing about what the vendor SDK does with uploads of its own, and it is not a data-deletion API.
 
 ## Mapper semantics
 

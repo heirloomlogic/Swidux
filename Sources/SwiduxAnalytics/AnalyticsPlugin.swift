@@ -35,10 +35,11 @@ import Swidux
 /// ## Consent
 ///
 /// Opting out gates events *plugin-side* — every dispatch path returns early,
-/// so nothing reaches the service — and removes every queued call that needs
-/// consent (track, screen view, identify, alias) as the action reduces,
-/// releasing their payloads at once. A queued `reset` stays, and a call the
-/// service is already running finishes.
+/// so nothing reaches the service — and removes every call still in the queue
+/// that needs consent (track, screen view, identify, alias) as the action
+/// reduces, releasing their payloads at once. A queued `reset` stays. A call
+/// already taken off the queue, running or about to run, is not removed and
+/// may still reach the service after the opt-out.
 ///
 /// That alone does not engage a vendor SDK's own consent switch, which matters
 /// when the SDK tracks automatic events or still holds a queue of its own.
