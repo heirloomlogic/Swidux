@@ -58,17 +58,19 @@ store.send(.paywall(.refreshCustomerInfo))
 
 A locked keychain reads as an empty cache. `KeychainKeyValueStore.value(_:)` returns `nil` both when no item exists and when the keychain can't be read. With the default `.afterFirstUnlockThisDeviceOnly` accessibility, or `.afterFirstUnlock`, that is the time between a restart and the first unlock; with `.whenUnlocked`, `.whenUnlockedThisDeviceOnly`, or `.whenPasscodeSetThisDeviceOnly` it is any time the device is locked. While it can't be read, `ResilientPaywallService` behaves as if nothing were cached:
 
-- A stream started then, such as `.observeCustomerInfo` during a background launch, yields no `.cacheSeed`, so `PaywallState` stays at its free default until some snapshot arrives.
+- A stream started then, such as `.observeCustomerInfo` during a background launch, yields no `.cacheSeed`. After a launch, `PaywallState` stays at its free default until some snapshot arrives.
 - When every live attempt fails, `customerInfo()` throws instead of returning the cached entitlement. `.refreshCustomerInfo` ends in `.refreshFailed`, and `currentSnapshot()` returns a free snapshot.
 - The stored entitlement survives the miss, because the service writes the cache only when a live snapshot arrives or `clearCache()` runs.
 
-The service doesn't watch for the keychain becoming readable. Dispatch `.refreshCustomerInfo` when a scene becomes active; once the keychain is readable, the next snapshot the service delivers replaces the empty state and sets `PaywallState.isPro` and `hasPermanentLicense` from its own values. A refresh delivers a live snapshot or, when every live read fails, the cached entitlement if it is within `maxCacheAge` (a permanent license is kept past it). If it gets neither, it throws and the state stays as it was:
+The service doesn't watch for the keychain becoming readable. Dispatch `.refreshCustomerInfo` when a scene becomes active:
 
 ```swift
 .onChange(of: scenePhase) { _, phase in
     if phase == .active { store.send(.paywall(.refreshCustomerInfo)) }
 }
 ```
+
+Once the keychain is readable, `customerInfo()` returns the cached entitlement when every live read fails and the cache is within `maxCacheAge` (a permanent license is kept past it). On success the refresh dispatches `.customerInfoUpdated`, which sets `isPro` and `hasPermanentLicense` from the snapshot. If `customerInfo()` gets neither a live snapshot nor a usable cache, it throws. The refresh then ends in `.refreshFailed`, which sets `error` and leaves `isPro` and `hasPermanentLicense` unchanged.
 
 See "Failure Modes" in <doc:KeyValueStoreGuide> for how `KeychainKeyValueStore` reports a locked keychain on writes and on `deviceIdentity(key:)`.
 
