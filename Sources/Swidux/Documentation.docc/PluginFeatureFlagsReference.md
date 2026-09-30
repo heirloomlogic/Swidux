@@ -182,6 +182,12 @@ The URL must be **HTTPS** (`http` is allowed only for `localhost` development se
 
 Third-party adapters (LaunchDarkly, GrowthBook, Statsig) conform to the same protocol without changing the plugin.
 
+### Diagnostics
+
+A failed refresh keeps the current config, so nothing on screen changes. The plugin logs it at error level to the `swidux` subsystem, `featureflags` category, with a summary of the error. When the service is `HTTPFeatureFlagsService`, the line also names its URL, without the query, fragment, or credentials; other services' failures are logged without one. A non-2xx response to `HTTPFeatureFlagsService` names its status, so a wrong URL reads as `HTTP 404`. The plugin remembers only the last failure it logged, in memory: a failure identical to it is skipped until a refresh succeeds, so an outage is logged once per launch as long as the error stays the same, and a different error is logged again. A cancelled refresh isn't logged. `lastFetchError` records every failure either way.
+
+In debug builds, an `HTTPFeatureFlagsService` response that is 2xx and carries `X-Config-Source: default` logs at warning level, `remoteconfig` category. A config worker can send that header when nothing is stored under the requested key and it serves its fallback instead, which usually means the app ID in the URL is wrong. `Examples/ConfigWorker` doesn't send this header.
+
 ## Typed flag keys
 
 ```swift

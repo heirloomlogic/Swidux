@@ -44,6 +44,19 @@ public struct KillswitchConfig: Codable, Sendable, Equatable {
         self.updateURL = updateURL
     }
 
+    /// The top-level keys in `data` that this type doesn't declare, sorted.
+    ///
+    /// Decoding ignores them, so a misspelled `minimumSupportedVerison`
+    /// decodes as a config with no minimum. The live service logs each one in
+    /// debug builds; internal so a test can assert what is reported. Empty
+    /// when `data` isn't a JSON object.
+    static func unknownKeys(in data: Data) -> [String] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        // The synthesized coding keys are the stored property names.
+        let known = Set(Mirror(reflecting: KillswitchConfig()).children.compactMap(\.label))
+        return object.keys.filter { !known.contains($0) }.sorted()
+    }
+
     /// Every version rule that fails strict parsing, as `field "value"`.
     ///
     /// Such a rule never matches, so it fails open. Evaluation logs each one;

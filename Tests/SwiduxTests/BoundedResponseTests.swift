@@ -57,6 +57,49 @@ struct BoundedResponseTests {
         #expect(BoundedResponse.deadline(forTimeout: 0.25) == .milliseconds(250))
     }
 
+    @Test("a non-2xx status is named in the error, not just classified")
+    func errorNamesTheStatus() async throws {
+        let (result, _) = try await fetch("missing", deadline: .seconds(5))
+
+        let error = #expect(throws: URLError.self) { try result.get() }
+        #expect(error?.code == .badServerResponse)
+        #expect(error?.localizedDescription.contains("HTTP 404") == true)
+    }
+
+    @Test(
+        "a response marked as the endpoint's unseeded default draws a warning",
+        arguments: ["default", "Default", " default "]
+    )
+    func unseededDefaultIsFlagged(source: String) throws {
+        let response = try #require(
+            HTTPURLResponse(
+                url: URL(static: "https://config.example.test/Counter/killswitch?token=s3cret"),
+                statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["x-config-source": source]
+            )
+        )
+
+        let warning = try #require(BoundedResponse.unseededDefaultWarning(for: response))
+
+        #expect(warning.contains("https://config.example.test/Counter/killswitch"))
+        #expect(!warning.contains("s3cret"))
+    }
+
+    @Test(
+        "a seeded, unmarked, or error response draws no unseeded-default warning",
+        arguments: [["X-Config-Source": "kv"], ["X-Config-Source": "error"], [:]]
+    )
+    func otherSourcesAreQuiet(headers: [String: String]) throws {
+        let response = try #require(
+            HTTPURLResponse(
+                url: URL(static: "https://config.example.test/counter/killswitch"),
+                statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers
+            )
+        )
+
+        #expect(BoundedResponse.unseededDefaultWarning(for: response) == nil)
+    }
+
     /// Fetches `path` from the staged protocol, cancelling it from outside if
     /// it is still running after 5 s — so a missing deadline fails the test
     /// instead of hanging the run.
@@ -86,9 +129,9 @@ struct BoundedResponseTests {
     }
 }
 
-/// Serves one of three transfers by path: `ok` answers at once, `trickle`
-/// answers 200 and then sends a byte every 20 ms until stopped, and `silent`
-/// never answers at all.
+/// Serves one of four transfers by path: `ok` answers at once, `missing`
+/// answers 404, `trickle` answers 200 and then sends a byte every 20 ms until
+/// stopped, and `silent` never answers at all.
 private final class StagedTransferProtocol: URLProtocol {
     static let body = Data(#"{"minimumSupportedVersion":"2.0.0"}"#.utf8)
 
@@ -104,6 +147,11 @@ private final class StagedTransferProtocol: URLProtocol {
         switch url.lastPathComponent {
         case "silent":
             return
+        case "missing":
+            let notFound = HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)
+            client?.urlProtocol(self, didReceive: notFound ?? response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("Not Found".utf8))
+            client?.urlProtocolDidFinishLoading(self)
         case "trickle":
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             trickle()
