@@ -230,20 +230,22 @@ public macro Persisted()
 
 For an entity `Card`, the macro emits:
 
-1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the relationships and blob columns described below, and the throwing converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`). Encoding and decoding errors propagate to the caller; `EntityDB` rolls back failed writes.
+1. **A peer class `CardModel`** — `@Model final class CardModel: PersistableModel`, with one stored property per mirrored entity property, the association references and blob columns described below, and the throwing converter trio `init(from:)` / `toDomain()` / `update(from:)` (the latter never reassigns `id`). Encoding and decoding errors propagate to the caller; `EntityDB` rolls back failed writes.
 2. **An extension `Card: PersistableEntity`** — providing `typealias Model = CardModel`.
 
 One attribute *is* generated, on `id` alone: `@Attribute(.preserveValueOnDeletion)`. SwiftData drops a deleted row's values from persistent history unless they are marked to survive it, and without the identity a delete transaction records that *something* was deleted without recording what — which is all a peer device has to go on when a deletion arrives over CloudKit. Nothing else is preserved, deliberately: a tombstone outlives the row, so any column added to that list is data that deletion does not actually delete. The attribute is transparent to existing stores — it does not change the entity's version hash, so a store written before it was introduced reopens without a migration. It is not retroactive, though: rows deleted *before* it shipped left empty tombstones, and those deletions stay unidentifiable forever. `mergeChanges(into:)` is the one thing that reads deletions out of history, and it covers this from both ends — its watermark lasts a single session, so every launch starts from a full read, and a tombstone that yields no identity escalates that tick to a full read too.
 
 No `@Attribute(.unique)` is generated on `id`: CloudKit forbids unique constraints. Identity is therefore a *convention* enforced by `EntityDB`, not a constraint enforced by the store — a fetch by `id` may legitimately return several rows, and mirrored stores do produce that when two devices create the same entity offline. `EntityDB` is written to converge rather than to assume uniqueness: writes update **every** row sharing an `id`, deletions remove **every** row sharing an `id`, and `fetchAll` collapses duplicates to the first row in fetch order. Removing duplicates from disk requires app knowledge of which value wins and is opt-in — see <doc:HowToAddICloudSync>.
 
-The generated model is **CloudKit-safe by construction unless it declares a `@Relation`**, which is what lets the same model back both local and synced containers. SwiftData's CloudKit mirroring requires every non-optional attribute to be optional or carry a default value, and every relationship to be optional and to have an inverse — validated when the store loads. `@Persisted` enforces the first two:
+The generated model uses CloudKit-safe attribute defaults, which lets the same model back local and synced containers. SwiftData's CloudKit mirroring requires every non-optional attribute to carry a default and every relationship to be optional with an inverse. `@Persisted` enforces those schema requirements:
 
 - **Non-optional mirrored attributes get a default** — the default written on the domain property (`var count: Int = 0`) if present, else a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). The default is inert locally; `init(from:)` overwrites it on load.
 - **A non-optional, non-primitive mirrored property** with no default and no `@Inline` is a diagnostic (`mirrorRequiresDefault`): add a default, make it optional, or mark it `@Inline`.
-- **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a diagnostic (`relationRequiresOptional`). `update(from:)` reconciles related rows by `id` through `SwiduxRelationCodec` rather than rebuilding them, so a re-saved parent keeps its children's `persistentModelID`s instead of orphaning a fresh copy of the set on every write. The current `@Relation` generator does not satisfy the third rule: it emits no inverse, so a model that declares one is **local-only**. `ContainerFactory` and `CloudContainerFactory` throw `CloudKitIncompatibleSchema`, naming the relationship, rather than build a mirrored container over it — SwiftData itself would fail to load the store (Core Data error 134060).
+- **Association references are optional and have generated inverses.** `@BelongsTo` stores an optional parent UUID, and `@HasMany` stores ordered child UUIDs. Their storage references use optional SwiftData relationships with reciprocal inverses.
 
-`@BelongsTo` and `@HasMany` provide a separate identity-based association API with generated storage inverses, ordered ID metadata, and explicit grouped local persistence. See <doc:PersistedAssociations>. Mirrored containers containing these associations are still rejected while synchronization reconciliation and signed-device acceptance remain open in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
+`@BelongsTo` and `@HasMany` provide identity-based associations with generated storage inverses, ordered ID metadata, and explicit grouped local persistence. See <doc:PersistedAssociations>. Mirrored containers containing these associations are still rejected while synchronization reconciliation and signed-device acceptance remain open in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
+
+`@Relation` was removed in 2.0.0. Replace an owned value without independent identity with `@Inline`. Model independently editable children as their own persisted entities and connect them with `@BelongsTo` and `@HasMany`.
 - **`@Inline` blob columns** default to `Data()`. A non-optional `@Inline` property must carry a domain default (`= …`) — the generated getter uses it only when the blob is empty; omitting it is a diagnostic (`inlineRequiresDefault`). Optional properties use `nil` for empty blobs. A non-empty blob that cannot be decoded throws instead of replacing the stored value with a default.
 
 ### Requirements on the annotated struct
@@ -257,15 +259,16 @@ The generated model is **CloudKit-safe by construction unless it declares a `@Re
 
 ### Property handling and markers
 
-By default every stored property is mirrored directly onto the model — SwiftData persists scalars and `Codable` composites natively. Four marker macros (named to avoid SwiftData's own `@Attribute` / `@Relationship` / `@Transient`) override that:
+By default every stored property is mirrored directly onto the model — SwiftData persists scalars and `Codable` composites natively. Five marker macros override that:
 
 | Marker | Effect |
 |---|---|
 | *(none)* | Mirror directly as `var name: T = <default>` — see the CloudKit-safe default rules above. |
 | `@Inline` | Store a `Codable` value as one opaque JSON `Data` column (defaulting to `Data()`), exposed through a read-only `get throws` accessor of the original type. Write through the domain value and `update(from:)`. The generated class allocates a shared `JSONEncoder`/`JSONDecoder` once per model type. |
 | `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar. |
-| `@Relation(deleteRule:)` | A SwiftData `@Relationship` to another `@Persisted` entity. The property's type references the *domain* type (`[Tag]` / `Tag?`); the model substitutes the `…Model` shadow (always **optional**, `= nil`) and the converters map element-by-element. Optional isn't enough for CloudKit, which also requires an inverse, so a model with a `@Relation` can't be mirrored; see the CloudKit rules above. A non-optional to-one `@Relation` is a diagnostic. `deleteRule` is a `SwiduxDeleteRule`. The current implementation uses **owned value composition**: the parent's value contains its children, and the converters do not support back-references or `inverse:`. Bidirectional relations are currently unsupported, and writing `inverse:` is a diagnostic; give the child a `@ForeignKey` `UUID` if it needs to name its parent. A to-many relation is **unordered**: SwiftData stores it as a set, so the array loads in no particular order and a reorder-only change is not saved. Sort in the domain, or store an explicit position, when order matters. |
 | `@Ignored` | Exclude a derived field. Must be **optional** so `toDomain()` can reconstruct it as `nil` — a diagnostic fires on a non-optional `@Ignored` property. |
+| `@BelongsTo(_:inverse:)` | Store an optional parent UUID and generate the storage-only inverse reference named by the parent's `@HasMany` declaration. |
+| `@HasMany(_:inverse:)` | Store ordered child UUIDs and generate the storage-only inverse reference to the child's `@BelongsTo` declaration. |
 
 ### Example expansion
 

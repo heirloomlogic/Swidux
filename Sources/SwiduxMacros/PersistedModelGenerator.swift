@@ -176,14 +176,6 @@ func cloudKitMirrorDefault(for prop: PersistedProperty) -> MirrorDefault {
 
 // MARK: - Per-property code generation
 
-private func relationModelType(cardinality: RelationCardinality, element: String) -> String {
-    // All relationships are optional: CloudKit forbids non-optional relationships.
-    switch cardinality {
-    case .toMany: return "[\(element)Model]?"
-    case .toOneOptional, .toOne: return "\(element)Model?"
-    }
-}
-
 /// The attribute prefix for a mirrored identity column, empty for anything else.
 ///
 /// SwiftData drops a deleted row's values from persistent history unless they are
@@ -193,12 +185,6 @@ private func relationModelType(cardinality: RelationCardinality, element: String
 /// anything added here is data that deletion does not actually delete.
 private func identityAttribute(for prop: PersistedProperty) -> String {
     prop.isIdentity ? "@Attribute(.preserveValueOnDeletion) " : ""
-}
-
-/// Embedded-value `@Relation` converters cannot carry an inverse; storage-only
-/// `@BelongsTo` and `@HasMany` references are generated separately.
-private func relationshipAttribute(deleteRule: String?) -> String {
-    deleteRule.map { "@Relationship(deleteRule: \($0))" } ?? "@Relationship"
 }
 
 private func modelMemberLines(
@@ -236,10 +222,6 @@ private func modelMemberLines(
                     get throws { \(getter) }
                 }
             """
-    case .relation(let rule, let cardinality, let element):
-        let attr = relationshipAttribute(deleteRule: rule)
-        let modelType = relationModelType(cardinality: cardinality, element: element)
-        return "    \(attr) \(accessPrefix)var \(prop.name): \(modelType) = nil"
     case .ignored:
         return nil
     }
@@ -251,13 +233,6 @@ private func initLine(for prop: PersistedProperty) -> String? {
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
         return "        self._swidux_\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
-    case .relation(_, let cardinality, let element):
-        switch cardinality {
-        case .toMany, .toOneOptional:
-            return "        self.\(prop.name) = try domain.\(prop.name).map { try \(element)Model(from: $0) }"
-        case .toOne:
-            return "        self.\(prop.name) = try \(element)Model(from: domain.\(prop.name))"
-        }
     case .ignored:
         return nil
     }
@@ -269,17 +244,6 @@ private func toDomainArgument(for prop: PersistedProperty) -> String {
         return "            \(prop.name): \(prop.name)"
     case .inlineBlob:
         return "            \(prop.name): try \(prop.name)"
-    case .relation(_, let cardinality, _):
-        // The model stores relationships optionally (CloudKit requirement), so
-        // reconstruct the domain shape from the optional.
-        switch cardinality {
-        case .toMany:
-            return "            \(prop.name): try (\(prop.name) ?? []).map { try $0.toDomain() }"
-        case .toOneOptional:
-            return "            \(prop.name): try \(prop.name).map { try $0.toDomain() }"
-        case .toOne:
-            return "            \(prop.name): try \(prop.name)!.toDomain()"
-        }
     case .ignored:
         return "            \(prop.name): nil"
     }
@@ -293,19 +257,6 @@ private func updateLine(for prop: PersistedProperty) -> String? {
         return "        self.\(prop.name) = domain.\(prop.name)"
     case .inlineBlob:
         return "        self._swidux_\(prop.name)Data = try Self.swiduxInlineEncoder.encode(domain.\(prop.name))"
-    case .relation:
-        // Reconciled by id rather than rebuilt. Rebuilding detaches the previous
-        // rows instead of removing them — a delete rule fires when the *parent*
-        // goes, not when a child leaves the relationship — so every save would
-        // leave another orphaned copy behind. See `SwiduxRelationCodec`.
-        //
-        // One spelling for every cardinality: the codec is overloaded on the
-        // array and optional forms, and a non-optional to-one is diagnosed
-        // (`relationRequiresOptional`) before this expansion is ever compiled.
-        return """
-                    self.\(prop.name) = try SwiduxRelationCodec.reconcile(
-                        self.\(prop.name), with: domain.\(prop.name), in: modelContext)
-            """
     case .ignored:
         return nil
     }

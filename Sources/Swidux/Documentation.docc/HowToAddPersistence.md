@@ -47,20 +47,22 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 
 This generates a `CardModel: @Model` class with `init(from:)` / `toDomain()` / `update(from:)`, plus `extension Card: PersistableEntity { typealias Model = CardModel }`. By default every stored property is mirrored directly onto the model — SwiftData persists scalars *and* `Codable` composites natively, so no manual blob columns are needed.
 
-The generated model is **CloudKit-safe by construction unless it declares a `@Relation`**, so the *same* model backs both the local and the synced container (see <doc:HowToAddICloudSync>). SwiftData's CloudKit mirroring requires every non-optional attribute to be optional or carry a default value, and every relationship to be optional and to have an inverse — validated when the store loads. `@Persisted` satisfies the first two automatically:
+The generated model uses CloudKit-safe attribute defaults, so the same model can back local and synced containers (see <doc:HowToAddICloudSync>). SwiftData's CloudKit mirroring requires every non-optional attribute to carry a default and every relationship to be optional with an inverse. `@Persisted` supplies those schema details:
 
 - **Non-optional mirrored attributes get a default.** If you wrote one on the domain property (`var count: Int = 0`), it is propagated verbatim; otherwise the macro fills a canonical default for the known SwiftData primitives (`String → ""`, `Bool → false`, integers/floats `→ 0`, `Date → .distantPast`, `Data → Data()`, `UUID → UUID()`). Defaults are inert locally — `init(from:)` overwrites them on every load.
 - **Non-primitive, non-optional properties** (a custom `Codable` type, `URL`, an enum) have no default the macro can invent. Give the property a default (`= …`), make it optional, or mark it `@Inline` — otherwise `@Persisted` emits a compile-time error.
-- **Relationships are generated optional** (`var tags: [TagModel]? = nil`); a non-optional to-one `@Relation` is a compile-time error (CloudKit forbids non-optional relationships). The generated `update(from:)` **reconciles related rows by `id`** — surviving identities are updated in place, new ones inserted, and departed ones deleted. It has to: a `deleteRule` fires when the *parent* is deleted, never when a child leaves the relationship, so rebuilding the set on each save would detach the previous rows rather than remove them and leave an orphan behind every time. The current `@Relation` generator emits no inverse, and CloudKit mirroring refuses a relationship without one: a CloudKit container over a model with a `@Relation` fails to load its store ("CloudKit integration requires that all relationships have an inverse"). **The current `@Relation` implementation is for local stores only.** In a synced app, compose owned values with `@Inline`, or register the child as an entity of its own that names its parent with a `@ForeignKey`. A child's value lives inside its parent's, so a parent save is **last-writer-wins for its whole subtree**: a local edit to the parent that flushes before a peer's edit to one of its children has been merged writes the older child back over it. `mergeChanges(into:)` traces another writer's change to a child through its relationships to the registered row that embeds it, and reads that row; only a child deleted without any change to a row embedding it forces a full read, since a deleted child can't be traced to its parent.
+- **Association references are optional and have generated inverses.** `@BelongsTo` stores an optional parent UUID, and `@HasMany` stores ordered child UUIDs. Their storage references use optional SwiftData relationships with reciprocal inverses.
 - **`@Inline` blob columns** default to `Data()`, so any `Codable` type is CloudKit-safe through `@Inline`. Because `Data()` is never decodable, a **non-optional** `@Inline` property must also carry a domain default (`= …`) — the generated throwing getter uses it when the blob is empty (e.g. a row CloudKit materialized before the blob synced). Non-empty corrupt data throws, leaving the failed read visible instead of substituting a value that a later save could overwrite. Both directions fail per row. A row that won't decode — typically one a newer app version wrote — is left out of the read and reported as a `.fetch` failure naming it in `failedIDs`; merges treat it as locally owned, never as deleted, and the stored payload is left as it is — until this device writes that row, since memory still holds the value it loaded before the newer version wrote it, and an edit writes that value back. A value that won't encode (a non-finite `Double` in an `@Inline` payload, say) fails to save on its own: the rest of its batch is saved, and the `.save` failure names the culprit. Omitting the default is a compile-time error (`inlineRequiresDefault`).
 
-`@BelongsTo` and `@HasMany` provide a separate identity-based association API with generated storage inverses, ordered ID metadata, and explicit grouped local persistence. See <doc:PersistedAssociations>. Mirrored containers containing these associations are still rejected while synchronization reconciliation and signed-device acceptance remain open in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
+`@BelongsTo` and `@HasMany` provide identity-based associations with generated storage inverses, ordered ID metadata, and explicit grouped local persistence. See <doc:PersistedAssociations>. Mirrored containers containing these associations are still rejected while synchronization reconciliation and signed-device acceptance remain open in [issue #102](https://github.com/heirloomlogic/Swidux/issues/102).
+
+`@Relation` was removed in 2.0.0. Replace an owned value without independent identity with `@Inline`. Model independently editable children as their own persisted entities and connect them with `@BelongsTo` and `@HasMany`.
 
 `@Persisted` lives on the **entity**; `@Swidux` lives on **state containers** (`AppState`, `@Slice` slices). They are different layers and never apply to the same type.
 
 ### Marker macros for non-trivial properties
 
-A macro can't infer relationships, foreign keys, or which fields are derived. Four property markers (named to avoid SwiftData's own `@Relationship`/`@Transient`) tell `@Persisted` what to do:
+A macro cannot infer associations, foreign keys, or derived fields. Five property markers tell `@Persisted` what to do:
 
 ```swift
 @Persisted
@@ -70,8 +72,6 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 
     @Inline var styling: TextStyling = TextStyling()  // one opaque JSON Data column
     @ForeignKey var deckID: UUID                      // scalar parent reference
-    @Relation(deleteRule: .cascade)
-    var tags: [Tag]                                   // SwiftData relationship
     @Ignored var renderedPreview: String?             // derived; omitted from the model
 }
 ```
@@ -81,8 +81,9 @@ nonisolated struct Card: Identifiable, Equatable, Sendable {
 | *(none)* | Mirror the property directly (SwiftData persists scalars and `Codable` composites). |
 | `@Inline` | Force a `Codable` value into a single JSON `Data` column (keeps a CloudKit record compact; sidesteps SwiftData `Codable`-attribute edge cases). |
 | `@ForeignKey` | Intent marker on a `UUID`; functionally a mirrored scalar column. |
-| `@Relation(deleteRule:)` | A SwiftData relationship to another `@Persisted` entity, owned by this one. The property's type references the *domain* type (`[Tag]` / `Tag?`); the model substitutes the `…Model` shadow. `deleteRule` is a `SwiduxDeleteRule` (`.cascade`, `.nullify`, `.noAction`, `.deny`). There is no `inverse:`: bidirectional relations are unsupported. A to-many relation is unordered, so sort in the domain when order matters. |
 | `@Ignored` | Exclude a derived/denormalized property. Must be optional so it can be reconstructed as `nil` on load. |
+| `@BelongsTo(_:inverse:)` | Store an optional parent UUID and generate the storage-only inverse reference named by the parent's `@HasMany` declaration. |
+| `@HasMany(_:inverse:)` | Store ordered child UUIDs and generate the storage-only inverse reference to the child's `@BelongsTo` declaration. |
 
 > Note: `@Persisted` does not generate an `@Attribute(.unique)` on `id` — CloudKit forbids unique constraints — so the same generated model works for both local and synced containers. The cost is that rows sharing an `id` are possible. `EntityDB` handles them by converging rather than by assuming uniqueness: writes update every matching row, deletions remove every matching row, and `fetchAll` collapses to one value per `id`. Nothing deletes a duplicate as a side effect of a write.
 >
@@ -244,7 +245,7 @@ Seven kinds ship today:
 | `.writesUnpersisted` | The set of IDs whose last flush failed changed. Fires again with an **empty** set once they land, so an indicator can be cleared rather than guessed at. | `entityType`, `unpersistedIDs` |
 | `.mergeWithheld` | A re-hydration left a stored value unapplied because an editing hold was in force. Expected while the user is editing; a hold that outlives the edit shows up here. See <doc:HowToAddICloudSync>. | `entityType`, `withheldIDs` |
 | `.remoteChangesMerged` | A `mergeChanges(into:)` tick narrowed its work from persistent history and merged only the rows that changed. The healthy case — if it stops appearing, ticks have quietly gone back to reading every table. `carriedOverCount` counts how many of those rows an earlier tick had deferred and this one re-offered; equal to `mergedCount` tick after tick, no peer is writing and an editing hold has been leaked. | `mergedCount`, `carriedOverCount` |
-| `.historyUnavailable` | A tick couldn't narrow its work and re-read every registered entity. Rare once hydration has anchored the session — both `hydrate(into:)` overloads anchor, as does the re-hydration after a container rebuild, and pruning keeps the anchor. Expected on a tick whose window holds a change it can't trace to a row: a `@Relation` child deleted without its parent changing, or a tombstone from before `@Attribute(.preserveValueOnDeletion)`. Repeatedly, the store can't be anchored at all, and `fallbackReason` says why. | `fallbackReason` |
+| `.historyUnavailable` | A tick couldn't narrow its work and re-read every registered entity. Rare once hydration has anchored the session — both `hydrate(into:)` overloads anchor, as does the re-hydration after a container rebuild, and pruning keeps the anchor. Expected when a tombstone from before `@Attribute(.preserveValueOnDeletion)` cannot identify its deleted row. Repeatedly, the store cannot be anchored at all, and `fallbackReason` says why. | `fallbackReason` |
 | `.historyPruned` | Transactions older than `historyRetention` were deleted. Once per launch, never for a CloudKit-mirrored store. | `prunedCount` |
 
 `PersistenceDiagnostic` is a struct with static constructors rather than an enum, so a future kind can't break an exhaustive `switch` in your code — match on `kind` and read the payload you expect. Duplicate reads and dispatch loops are logged whether or not you supply a handler; the unpersisted set has no log of its own, because the individual `PersistenceFailure`s behind it are already logged.
@@ -274,7 +275,7 @@ let persistence = PersistenceCoordinator<AppState, AppAction>(
 )
 ```
 
-Pass every generated `…Model` type to the container's `models:`. Writers flush in registration order — if entity B holds a `@Relation` to A, register A's entity first.
+Pass every generated `…Model` type to the container's `models:`. Writers flush in registration order.
 
 ## Testing
 
