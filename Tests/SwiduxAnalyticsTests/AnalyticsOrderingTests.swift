@@ -152,8 +152,8 @@ extension AnalyticsPluginTests {
 
     @Test("Opt-in behind a stalled call waits for the opt-out's reset")
     func optInWaitsForOptOutReset() async {
-        let service = RecordingAnalyticsService(stallTracks: true)
-        let plugin = makePlugin(service: service, onConsentChange: { await service.consentChanged(to: $0) })
+        let service = StallingAnalyticsService()
+        let plugin = makePlugin(service: service, onConsentChange: { await service.setOptedOut($0) })
         var state = TestState()
         _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("stalled"))))
         await service.trackStarted()
@@ -170,8 +170,8 @@ extension AnalyticsPluginTests {
 
     @Test("An opt-in still queued is dropped by a later opt-out")
     func queuedOptInDroppedByLaterOptOut() async {
-        let service = RecordingAnalyticsService(stallTracks: true)
-        let plugin = makePlugin(service: service, onConsentChange: { await service.consentChanged(to: $0) })
+        let service = StallingAnalyticsService()
+        let plugin = makePlugin(service: service, onConsentChange: { await service.setOptedOut($0) })
         var state = TestState()
         _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("stalled"))))
         await service.trackStarted()
@@ -198,7 +198,7 @@ extension AnalyticsPluginTests {
                     for await _ in release.stream { break }
                 }
                 // Logged on completion: what matters is which call the SDK finishes last.
-                await service.consentChanged(to: optedOut)
+                await service.setOptedOut(optedOut)
             })
         var state = TestState()
         _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
