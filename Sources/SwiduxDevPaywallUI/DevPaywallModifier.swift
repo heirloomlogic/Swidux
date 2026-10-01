@@ -19,7 +19,7 @@ extension View {
     /// in later releases. See "Moving to a real provider" in the Paywall Plugin
     /// Reference.
     ///
-    /// Pass the *same* ``SimulatedPaywallService`` instance you handed to
+    /// Pass the *same* ``/SwiduxPaywall/SimulatedPaywallService`` instance you handed to
     /// `Store.configured()`.
     ///
     /// - Parameters:

@@ -8,7 +8,7 @@ import Swidux
 import Synchronization
 
 /// `Codable` mirror of ``EntitlementSnapshot`` (which is not `Codable`) so the
-/// last-known-good entitlement can be persisted through a ``KeyValueStore``.
+/// last-known-good entitlement can be persisted through a ``/Swidux/KeyValueStore``.
 public struct CachedEntitlement: Codable, Sendable, Equatable {
     /// `true` when the user had an active pro subscription at the time of caching.
     public var isPro: Bool
@@ -56,7 +56,7 @@ public struct CachedEntitlement: Codable, Sendable, Equatable {
 extension KVKey where Value == CachedEntitlement {
     /// The last entitlement snapshot a successful read delivered. Versioned so a
     /// future shape change declares a new key rather than silently failing to
-    /// decode (``KeyValueStore`` has no migration).
+    /// decode (``/Swidux/KeyValueStore`` has no migration).
     public static let lastKnownEntitlement = KVKey<CachedEntitlement>(
         "swidux.paywall.lastKnownEntitlement.v2"
     )
@@ -88,7 +88,7 @@ extension KVKey where Value == CachedEntitlement {
 /// a user can edit or restore from a doctored backup, whereas the Keychain is
 /// encrypted and not plist-editable. (On unsigned macOS dev builds the Keychain
 /// can return `errSecMissingEntitlement` / −34018 — see *Sandboxing &
-/// entitlements (macOS)* on ``KeychainKeyValueStore``.)
+/// entitlements (macOS)* on ``/Swidux/KeychainKeyValueStore``.)
 ///
 /// ```swift
 /// let resilient = ResilientPaywallService(
@@ -101,7 +101,7 @@ extension KVKey where Value == CachedEntitlement {
 ///
 /// ## Threat model
 ///
-/// Backed by ``KeychainKeyValueStore``, the cache defends against casual plist
+/// Backed by ``/Swidux/KeychainKeyValueStore``, the cache defends against casual plist
 /// editing and a doctored-backup restore: the persisted last-known-good is
 /// encrypted and not a user-editable file. It does **not** defend against a
 /// jailbroken device — nothing client-side does; entitlements can always be
@@ -207,7 +207,7 @@ public struct ResilientPaywallService: PaywallService {
     }
 
     /// Long-lived stream of entitlement updates. Yields the persisted
-    /// last-known-good first (when ``seedsFromCache`` is on and the cache is
+    /// last-known-good first (when `seedsFromCache` is on and the cache is
     /// still usable), then forwards and persists every snapshot the base
     /// stream emits. The seed has source `.cacheSeed`, so it can bootstrap the
     /// plugin's gate without superseding a pending or completed live read.

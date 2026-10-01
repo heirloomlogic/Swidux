@@ -13,7 +13,7 @@ import SwiftData
 
 /// Builds local-only or CloudKit-mirrored containers for a fixed schema.
 public enum CloudContainerFactory {
-    /// Builds a container for the given models in the requested ``SyncMode``.
+    /// Builds a container for the given models in the requested ``/SwiduxPersistence/SyncMode``.
     ///
     /// - Parameters:
     ///   - models: The generated `{Type}Model` types in the schema.

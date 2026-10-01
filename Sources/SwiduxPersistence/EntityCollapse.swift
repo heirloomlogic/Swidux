@@ -86,7 +86,7 @@ public enum EntityCollapse {
     /// - Parameter choose: Picks between two rows sharing an ID. Must be
     ///   commutative and associative, and must decide from replicated content
     ///   only — otherwise devices disagree on the winner.
-    /// - Returns: A resolver suitable for ``PersistedEntity/entity(_:collapse:)``.
+    /// - Returns: A resolver suitable for ``PersistedEntity/entity(_:policy:collapse:)``.
     public static func byID<E: PersistableEntity>(
         preferring choose: @escaping @Sendable (E, E) -> E
     ) -> @Sendable ([E]) -> [E] {

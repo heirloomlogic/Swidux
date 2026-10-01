@@ -15,7 +15,7 @@ import SwiftData
 import os
 
 /// Drives opt-in/opt-out iCloud sync at runtime on top of a
-/// ``PersistenceCoordinator``.
+/// ``/SwiduxPersistence/PersistenceCoordinator``.
 @MainActor
 public final class SyncCoordinator<State, Action> {
     /// Builds the `ModelContainer` for a given sync mode. The default routes
@@ -33,7 +33,7 @@ public final class SyncCoordinator<State, Action> {
     /// The user's currently-chosen mode (persisted).
     public private(set) var mode: SyncMode
 
-    /// Creates a coordinator over an existing ``PersistenceCoordinator``.
+    /// Creates a coordinator over an existing ``/SwiduxPersistence/PersistenceCoordinator``.
     ///
     /// - Parameters:
     ///   - persistence: The coordinator whose database is swapped on toggle.
@@ -173,7 +173,7 @@ extension SyncCoordinator where State: SwiduxObservable {
     /// `true` unless the build isn't entitled, so a signed-out user starts
     /// syncing on sign-in without another toggle — swaps the active database,
     /// persists the preference, and re-hydrates via `merge` (never replace).
-    /// Returns the resolved ``SyncStatus``.
+    /// Returns the resolved ``/SwiduxPersistence/SyncStatus``.
     ///
     /// The flush, preflight, and rebuild all complete before any state is
     /// packed, so an edit made while the toggle is in flight survives it.

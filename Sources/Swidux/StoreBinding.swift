@@ -8,7 +8,7 @@
 import SwiftUI
 
 extension Store {
-    /// Creates a SwiftUI ``Binding`` that reads a property through the
+    /// Creates a SwiftUI `Binding` that reads a property through the
     /// observer tree and dispatches an action when written.
     ///
     /// Use this for the common case where a form control writes a single
@@ -27,12 +27,12 @@ extension Store {
     ///
     /// For transformed reads (optional unwraps, `EntityStore` lookups,
     /// negated booleans) or setters that need extra work (animation, branching),
-    /// fall back to ``SwiftUI/Binding/init(get:set:)``.
+    /// fall back to `Binding(get:set:)`.
     ///
     /// - Parameters:
     ///   - keyPath: A keypath into the observer tree identifying the property
     ///     to read.
-    ///   - action: A closure mapping the new value to an ``Action`` that the
+    ///   - action: A closure mapping the new value to an `Action` that the
     ///     store will dispatch on change.
     /// - Returns: A binding suitable for any SwiftUI control.
     public func binding<Value>(
