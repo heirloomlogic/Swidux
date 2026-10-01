@@ -10,11 +10,12 @@ import os
 /// (`os.Logger`) instead of sending to a provider.
 ///
 /// Use this as the default `service:` while the analytics vendor decision is
-/// still open. Unlike the silent ``MockAnalyticsService`` (which is for
-/// previews and tests), `ConsoleAnalyticsService` behaves like a micro version
-/// of the real thing: every `track`, `identify`, `alias`, `reset`, and `flush`
-/// is printed to the Xcode console and Console.app, so analytics wiring can be
-/// developed and QA-tested end to end with no SDK and no vendor commitment.
+/// still open. Unlike the silent ``MockAnalyticsService`` (for previews;
+/// tests use ``RecordingAnalyticsService``), `ConsoleAnalyticsService` behaves
+/// like a micro version of the real thing: every `track`, `identify`, `alias`,
+/// `reset`, and `flush` is printed to the Xcode console and Console.app, so
+/// analytics wiring can be developed and QA-tested end to end with no SDK and
+/// no vendor commitment.
 ///
 /// Swapping in a real provider later is the usual two-line change in
 /// `Store.configured()` — nothing else in the app changes.

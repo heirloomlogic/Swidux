@@ -24,15 +24,16 @@ Add the product to your target dependencies in `Package.swift` alongside `Swidux
 
 ## Provided implementations
 
-The plugin ships with two in-repo conformers, both provider-agnostic and SDK-free:
+The plugin ships with three in-repo conformers, all provider-agnostic and SDK-free:
 
-- `MockAnalyticsService` — silent no-op, for previews and tests.
+- `MockAnalyticsService` — silent no-op, for previews.
+- `RecordingAnalyticsService` — records every call in order, for tests and previews. Tests written against it don't change when the app switches provider.
 - `ConsoleAnalyticsService` — logs every call to `os.Logger`. Use this as the default `service:` while the analytics vendor decision is still open: analytics wiring can be developed and QA-tested end to end with no SDK and no vendor commitment. Adopting a real provider later is the usual two-line change in `Store.configured()`.
 
 For production Mixpanel integrations, the [`SwiduxMixpanelAnalytics`](https://github.com/heirloomlogic/SwiduxMixpanelAnalytics) companion package provides:
 
 - `MixpanelAnalyticsService` — an `AnalyticsService` conformer that forwards to the Mixpanel SDK and maps `AnalyticsValue` to native Mixpanel types.
-- `MockMixpanelAnalyticsService` — a Mixpanel-flavored mock for previews.
+- A recording stand-in for previews and tests that also records Mixpanel's consent controls. Details are in the package's DocC reference.
 
 Full API documentation lives in the package's own [DocC reference](https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/documentation/swiduxmixpanelanalytics/).
 
@@ -203,6 +204,42 @@ No-op conformer for previews and development.
 public struct MockAnalyticsService: AnalyticsService {
     public init()
     // All methods are no-ops.
+}
+```
+
+### `RecordingAnalyticsService`
+
+Records every call for tests and previews. `calls` keeps them all in arrival order; the per-kind properties read one kind from that log. `setOptedOut(_:)` records a consent change, so wiring `onConsentChange: { await service.setOptedOut($0) }` puts consent in the same log as the service calls. It records calls a real service would drop, such as tracking while opted out. The log grows without limit, and init logs a fault in Release builds.
+
+```swift
+public actor RecordingAnalyticsService: AnalyticsService {
+    public init()
+
+    public enum Call: Sendable, Equatable {
+        case track(AnalyticsEvent)
+        case identify(userID: String, properties: [String: AnalyticsValue])
+        case alias(newID: String, previousID: String?)
+        case reset
+        case flush
+        case setOptedOut(Bool)
+    }
+
+    public private(set) var calls: [Call]
+    public var trackedEvents: [AnalyticsEvent] { get }
+    public var identifyCalls: [IdentifyCall] { get }
+    public var aliasCalls: [AliasCall] { get }
+    public var resetCount: Int { get }
+    public var flushCount: Int { get }
+
+    public func setOptedOut(_ optedOut: Bool) async
+
+    public struct IdentifyCall: Sendable, Equatable {
+        public init(userID: String, properties: [String: AnalyticsValue] = [:])
+    }
+
+    public struct AliasCall: Sendable, Equatable {
+        public init(newID: String, previousID: String? = nil)
+    }
 }
 ```
 
