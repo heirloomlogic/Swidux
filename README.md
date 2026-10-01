@@ -194,25 +194,9 @@ Full DocC reference at https://heirloomlogic.github.io/Swidux/documentation/swid
 - **I want to write my own plugin** — [Building a Domain Plugin](https://heirloomlogic.github.io/Swidux/documentation/swidux/buildingadomainplugin)
 - **Something isn't working** — [Troubleshooting](https://heirloomlogic.github.io/Swidux/documentation/swidux/troubleshooting)
 
-## Installing the agent skill
+## Coding agents
 
-Swidux ships a companion agent skill, `swidux-ref`, with the architecture rules and copy-pasteable code templates your AI coding assistant needs. It lives in the public [heirloomlogic/skills](https://github.com/heirloomlogic/skills) repo.
-
-**Install (GitHub CLI, recommended):**
-
-```bash
-gh skill install heirloomlogic/skills swidux-ref --agent claude-code --scope user
-```
-
-`--scope user` installs to `~/.claude/skills/`. Pass `--scope project` to commit it to the current project's `.claude/skills/` so the whole team gets it. Pin a version with `swidux-ref@v1.2.3`. Requires `gh` ≥ v2.90.0.
-
-**Install (skills.sh):**
-
-```bash
-npx skillsadd heirloomlogic/skills
-```
-
-For Codex, Cursor, Gemini CLI, and other agents — plus a `curl`-only fallback — see the [Agent Skill](https://heirloomlogic.github.io/Swidux/documentation/swidux/agentskill) article.
+[AGENTS.md](AGENTS.md) is a brief task index into the documentation in this repository. No separate skill is required. When using Swidux in an app, point your agent to `AGENTS.md` in the resolved Swidux checkout so it reads documentation matching your dependency version.
 
 ## Requirements
 

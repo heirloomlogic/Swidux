@@ -51,7 +51,6 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 - <doc:HowToAddPersistence>
 - <doc:HowToAddICloudSync>
 - <doc:BuildingADomainPlugin>
-- <doc:AgentSkill>
 
 ### Reference
 
