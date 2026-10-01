@@ -49,7 +49,7 @@ An entry with a known type and a malformed body still rejects the whole document
 Two rules keep builds already in the field working as the format grows:
 
 - **A new flag type is additive only when every build reading the endpoint skips unknown types.** Skipping ships in the first release after 1.10.0. Builds on 1.10.0 or earlier reject the whole document on an unknown `type`, so if any are still in the field, serve the new type from a new resource such as `/<appID>/flags-v2`, as the next rule describes. Once every build has the skip, publish on the existing endpoint: a build that predates the type skips that one flag and keeps applying the others. Changing an existing key to a new type looks the same to those builds: the flag reads as absent and takes its Swift default, because each fetch replaces the whole config and no per-flag last-known-good value is kept.
-- **Never bump `version` on an endpoint that shipped builds read.** Every build that predates the bump rejects the whole document from then on: installs with a cached config stay on it, and fresh installs get no remote flags. Ship a breaking schema as a new resource, such as `/<appID>/flags-v2`, and keep serving the old one to the builds that read it. The shared `Examples/ConfigWorker` returns 404 for any resource missing from `RESOURCES` in `worker.js`, so add the new resource there.
+- **Never bump `version` on an endpoint that shipped builds read.** Every build that predates the bump rejects the whole document from then on: installs with a cached config stay on it, and fresh installs get no remote flags. Ship a breaking schema as a new resource, such as `/<appID>/flags-v2`, and keep serving the old one to the builds that read it. A server that returns 404 for resources it doesn't serve, as <doc:HostingRemoteConfig> recommends, needs the new resource added to its list.
 
 ## Bucketing and identity
 
@@ -178,7 +178,7 @@ The plugin bounds every fetch with its `fetchTimeout:` init parameter (default 3
 
 ### Built-in: `HTTPFeatureFlagsService`
 
-`URLSession` + `JSONDecoder`. Apps host their JSON anywhere — static file on a CDN, Cloudflare Worker, their own server. Zero backend infrastructure required. `Examples/ConfigWorker/` is a runnable shared Worker serving flags + killswitch for a whole portfolio from one URL (`GET /<appID>/flags`).
+`URLSession` + `JSONDecoder`. Apps host their JSON anywhere — static file on a CDN, Cloudflare Worker, their own server. Zero backend infrastructure required. See <doc:HostingRemoteConfig> for what the server must return in each case.
 
 The URL must be **HTTPS** (`http` is allowed only for `localhost` development servers; anything else is a precondition failure at init). Responses over 1 MB and non-2xx statuses throw, and malformed variant definitions (empty array, negative weights, weights not summing to 100) fail decoding — in every case the plugin keeps its last-known-good cached config.
 
@@ -188,7 +188,7 @@ Third-party adapters (LaunchDarkly, GrowthBook, Statsig) conform to the same pro
 
 A failed refresh keeps the current config, so nothing on screen changes. The plugin logs it at error level to the `swidux` subsystem, `featureflags` category, with a summary of the error. When the service is `HTTPFeatureFlagsService`, the line also names its URL, without the query, fragment, or credentials; other services' failures are logged without one. A non-2xx response to `HTTPFeatureFlagsService` names its status, so a wrong URL reads as `HTTP 404`. The plugin remembers only the last failure it logged, in memory: a failure identical to it is skipped until a refresh succeeds, so an outage is logged once per launch as long as the error stays the same, and a different error is logged again. A cancelled refresh isn't logged. `lastFetchError` records every failure either way.
 
-In debug builds, an `HTTPFeatureFlagsService` response that is 2xx and carries `X-Config-Source: default` logs at warning level, `remoteconfig` category. A config worker can send that header when nothing is stored under the requested key and it serves its fallback instead, which usually means the app ID in the URL is wrong. `Examples/ConfigWorker` doesn't send this header.
+In debug builds, an `HTTPFeatureFlagsService` response that is 2xx and carries `X-Config-Source: default` logs at warning level, `remoteconfig` category. A config worker can send that header when nothing is stored under the requested key and it serves its fallback instead, which usually means the app ID in the URL is wrong. See <doc:HostingRemoteConfig>.
 
 ## Typed flag keys
 

@@ -46,6 +46,7 @@ Vendor-specific adapters live in their own repositories so a third-party SDK nev
 - <doc:HowToAddAParentalGate>
 - <doc:HowToAddAnalytics>
 - <doc:HowToAddFeatureFlags>
+- <doc:HostingRemoteConfig>
 - <doc:HowToCancelEffects>
 - <doc:HowToAddPersistence>
 - <doc:HowToAddICloudSync>
