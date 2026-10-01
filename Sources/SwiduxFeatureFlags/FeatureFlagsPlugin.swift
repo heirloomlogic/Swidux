@@ -9,10 +9,10 @@ import Swidux
 /// A Swidux plugin for feature flags + A/B variants + remote-tunable values.
 ///
 /// State lives in ``FeatureFlagsState``. Reads happen via typed ``BoolFlag`` /
-/// ``VariantFlag`` / ``ValueFlag`` against the store. Bucketing is pure FNV-1a
-/// against the configured identity. The wire format is fetched by
-/// ``FeatureFlagsService`` (default: ``HTTPFeatureFlagsService``) and cached
-/// in `KeyValueStore`.
+/// ``VariantFlag`` / ``ValueFlag`` against the store. Bucketing is a pure hash
+/// of the configured identity and the flag key (see ``Bucketing``). The wire
+/// format is fetched by ``FeatureFlagsService`` (default:
+/// ``HTTPFeatureFlagsService``) and cached in `KeyValueStore`.
 @MainActor
 public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
     /// Host app's root state type.
@@ -218,7 +218,7 @@ public final class FeatureFlagsPlugin<RootState, RootAction>: SwiduxPlugin {
         switch definition {
         case .boolean(let rollout):
             let bucket = Bucketing.bucket(id: state.defaultBucketingID, flagKey: key)
-            return .bool(bucket < rollout)
+            return .bool(Bucketing.isInRollout(bucket: bucket, rollout: rollout))
         case .variant(let variants):
             // Decoded configs guarantee non-empty variants, but a config can
             // also be constructed programmatically — never index with -1.

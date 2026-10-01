@@ -4,7 +4,7 @@ Wire the `SwiduxFeatureFlags` plugin into a Swidux app for typed feature flags, 
 
 ## Overview
 
-`SwiduxFeatureFlags` is a domain plugin that owns a `FeatureFlagsState` slice, fetches a Swidux-defined JSON wire format via a provider-agnostic `FeatureFlagsService`, and answers reads against state. Bucketing is pure FNV-1a — same input always produces the same bucket, no network round-trip per read. Local overrides give QA a one-action toggle that wins over remote evaluation.
+`SwiduxFeatureFlags` is a domain plugin that owns a `FeatureFlagsState` slice, fetches a Swidux-defined JSON wire format via a provider-agnostic `FeatureFlagsService`, and answers reads against state. Bucketing is a pure hash of the identity and the flag key: the same input always produces the same bucket, with no network round-trip per read. Local overrides give QA a one-action toggle that wins over remote evaluation.
 
 For an API-level reference, see <doc:PluginFeatureFlagsReference>. For where domain plugins fit in the dispatch cycle, see <doc:PluginArchitecture>.
 

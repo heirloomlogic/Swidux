@@ -301,7 +301,7 @@ struct FeatureFlagsPluginTests {
         #expect(state.featureFlags.resolvedDeviceID == "device-1")
         #expect(
             state.featureFlags.isEnabled(.init("k"))
-                == (Bucketing.bucket(id: "device-1", flagKey: "k") < 50)
+                == (Bucketing.bucket(id: "device-1", flagKey: "k") < 5_000)
         )
 
         // Sign-in: the next dispatch resolves the user ID; default reads use it.
@@ -310,7 +310,7 @@ struct FeatureFlagsPluginTests {
         #expect(state.featureFlags.resolvedUserID == "user-1")
         #expect(
             state.featureFlags.isEnabled(.init("k"))
-                == (Bucketing.bucket(id: "user-1", flagKey: "k") < 50)
+                == (Bucketing.bucket(id: "user-1", flagKey: "k") < 5_000)
         )
 
         // Sign-out clears it again.
@@ -340,7 +340,7 @@ struct FeatureFlagsPluginTests {
         try await effect?({ _ in })
         await Task.yield()
 
-        let expected = Bucketing.bucket(id: "user-1", flagKey: "k") < 50
+        let expected = Bucketing.bucket(id: "user-1", flagKey: "k") < 5_000
         #expect(counter.records.first?.1 == .bool(expected))
     }
 
@@ -406,7 +406,7 @@ struct FeatureFlagsPluginTests {
 
     /// First ID in `candidates` whose bucket for `key` lands on the other side
     /// of `threshold` from `id`'s.
-    private func idOnOtherSide(of id: String, key: String, threshold: Int = 50) -> String {
+    private func idOnOtherSide(of id: String, key: String, threshold: Int = 5_000) -> String {
         let side = Bucketing.bucket(id: id, flagKey: key) < threshold
         let other = (0..<1_000).map { "other-\($0)" }
             .first { (Bucketing.bucket(id: $0, flagKey: key) < threshold) != side }
