@@ -94,12 +94,12 @@ public final class PersistenceCoordinator<State, Action> {
     /// Builds the stack from registered entities and a prepared container.
     ///
     /// - Parameters:
-    ///   - entities: The registered entity collections (``PersistedEntity/entity(_:)``).
+    ///   - entities: The registered entity collections (``PersistedEntity/entity(_:policy:collapse:)``).
     ///   - container: The prepared `ModelContainer`.
     ///   - debounce: How long the core plugin waits after the last change before flushing.
     ///   - retry: How a failed save is retried before the stack gives up and
     ///     reports a final ``PersistenceFailure``. Defaults to
-    ///     ``RetryPolicy/default``.
+    ///     ``/Swidux/RetryPolicy/default``.
     ///   - mergePolicy: How ``rehydrate(into:policy:)`` resolves storage
     ///     against live state. Defaults to ``MergePolicy/preferRemote``, so
     ///     remote edits and deletions surface mid-session. Individual entities
@@ -389,7 +389,7 @@ public final class PersistenceCoordinator<State, Action> {
     }
 
     /// The same rows as ``fetchAll(of:flushPending:)``, as a change-free
-    /// ``EntityStore`` ready to `merge(from:)` or diff against live state.
+    /// ``/Swidux/EntityStore`` ready to `merge(from:)` or diff against live state.
     public func snapshot<E: PersistableEntity>(
         of type: E.Type,
         flushPending: Bool = true
@@ -402,7 +402,7 @@ public final class PersistenceCoordinator<State, Action> {
     /// Takes `inout State` because it runs *before the store exists* — the
     /// canonical launch sequence hydrates a plain value and hands the result to
     /// `Store(initialState:)`. There is no observer to race with, so there is
-    /// no lost-write hazard here. Use ``hydrate(into:)-(Store)`` if the store
+    /// no lost-write hazard here. Use ``hydrate(into:)-(Store<State,Action>)`` if the store
     /// is already built.
     ///
     /// If a fetch fails, the corresponding `EntityStore` is left untouched
@@ -410,7 +410,7 @@ public final class PersistenceCoordinator<State, Action> {
     ///
     /// At launch — while nothing has anchored ``mergeChanges(into:policy:)``
     /// yet — it anchors the watermark at the history token current when the
-    /// read began, exactly as ``hydrate(into:)-(Store)`` does, so the first
+    /// read began, exactly as ``hydrate(into:)-(Store<State,Action>)`` does, so the first
     /// remote-change tick reads only what changed since. A read that failed
     /// anchors nothing, so that first tick re-reads everything instead and
     /// recovers the rows this one missed.
@@ -773,7 +773,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// read. A row an editing hold defers is carried forward by identity and
     /// re-offered next tick, which is what keeps a hold from quietly becoming a
     /// veto without costing a full table read per tick to prevent. See
-    /// <doc:HowToAddICloudSync>.
+    /// <doc:/Swidux/HowToAddICloudSync>.
     ///
     /// Both outcomes are reported: ``PersistenceDiagnostic/Kind/remoteChangesMerged``
     /// for a narrowed tick, ``PersistenceDiagnostic/Kind/historyUnavailable``
@@ -1148,7 +1148,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// Registered `collapse:` resolvers do not run here — a resolver is handed
     /// the whole table and asked which rows survive, and a subset would have it
     /// judge a world it cannot see. Duplicate rows are still collapsed on read
-    /// and still reported. Use ``collapseDuplicates(into:)-(Store)`` or a full
+    /// and still reported. Use ``collapseDuplicates(into:)-(Store<State,Action>)`` or a full
     /// ``rehydrate(into:policy:)`` to reclaim them.
     ///
     /// - Parameters:
@@ -1182,7 +1182,7 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     }
 
     /// Runs every registered collapse resolver against storage, applying the
-    /// result to a live store. See ``collapseDuplicates(into:)-(inout)``.
+    /// result to a live store. See ``collapseDuplicates(into:)-(State)``.
     public func collapseDuplicates(into store: Store<State, Action>) async {
         await corePlugin.flush()
         let applies = await collapsePhase()

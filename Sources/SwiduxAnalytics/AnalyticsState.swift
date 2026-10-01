@@ -29,7 +29,7 @@ public nonisolated struct AnalyticsState: Sendable, Equatable {
     /// identity keypath each dispatch to detect transitions.
     ///
     /// `internal(set)` guards the reducer path only — the generated observer
-    /// mirrors every stored property as a settable `var`. See <doc:MacrosReference>.
+    /// mirrors every stored property as a settable `var`. See <doc:/Swidux/MacrosReference>.
     public internal(set) var lastIdentifiedUserID: String? = nil
 
     /// The properties most recently passed to `service.identify` (auto or

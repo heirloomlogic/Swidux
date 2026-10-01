@@ -11,7 +11,7 @@ import Foundation
 /// IDs an app has declared it is editing, exempt from a re-hydration merge for
 /// as long as the hold is in force.
 ///
-/// Every other exemption is inferred: ``Swidux/EntityStore/changes``, the
+/// Every other exemption is inferred: ``/Swidux/EntityStore/changes``, the
 /// writer's drained-but-unflushed buffers, and the failed-flush ledger all
 /// describe writes the *store* has seen. A value still sitting in a view's local
 /// `@State` is in none of them, so under
@@ -72,7 +72,7 @@ public final class EditingHolds {
 
     /// Exempts `id` from the merge until a matching ``release(_:)``.
     ///
-    /// Balance every call. Prefer ``SwiftUI/View/holdsEntity(_:in:)``, which
+    /// Balance every call. Prefer `View.holdsEntity(_:in:)`, which
     /// balances them for you.
     public func hold(_ id: UUID) {
         depths[id, default: 0] += 1

@@ -93,7 +93,7 @@ public actor EntityDB {
     /// Loads every persisted row of `M` and reconstructs domain values.
     ///
     /// Rows sharing an `id` are collapsed to the first one in fetch order:
-    /// ``EntityStore`` cannot represent duplicates, and handing it a duplicate
+    /// ``/Swidux/EntityStore`` cannot represent duplicates, and handing it a duplicate
     /// corrupts its index. Duplicates are logged, not treated as an error —
     /// they are a legitimate state under CloudKit mirroring.
     ///
@@ -172,7 +172,7 @@ public actor EntityDB {
     ///
     /// The by-ID counterpart to ``fetchAll(of:)``: the read a caller who already
     /// knows *which* rows changed should make, instead of scanning the table to
-    /// find out. Costs one round trip per ``batchFetchChunkSize`` IDs and
+    /// find out. Costs one round trip per `batchFetchChunkSize` IDs and
     /// materializes only the rows it asked for, so a sync tick that touched
     /// three rows no longer pays for the whole table.
     ///
@@ -234,7 +234,7 @@ public actor EntityDB {
     /// transaction with one `save()`, so a crash can't persist a partial batch.
     ///
     /// All touched rows are fetched up front in chunks of
-    /// ``batchFetchChunkSize`` via the model's generated
+    /// `batchFetchChunkSize` via the model's generated
     /// `swiduxBatchFetchDescriptor(ids:)` — one round trip per chunk instead
     /// of one per row.
     ///

@@ -102,7 +102,7 @@ public struct KillswitchService: Sendable {
     ///
     /// Neither of those makes the file authenticated. A process running as the
     /// user can still write it on a platform where the caches directory isn't
-    /// sandboxed — see <doc:SecurityPosture>.
+    /// sandboxed — see <doc:/Swidux/SecurityPosture>.
     public static func live(
         endpoint: URL,
         fetchTimeout: TimeInterval = 10,
