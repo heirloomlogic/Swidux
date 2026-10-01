@@ -220,7 +220,7 @@ Swift 6.2+ / Xcode 26+, macOS 15+ / iOS 18+. Strict concurrency (`.swiftLanguage
 
 ## Contributing
 
-Release history lives in [Releases](https://github.com/heirloomlogic/Swidux/releases), mirrored into [CHANGELOG.md](CHANGELOG.md) by CI. Development setup — including the `.dev-tooling` sentinel that gates the lint and DocC tooling — is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
+Release history lives in [Releases](https://github.com/heirloomlogic/Swidux/releases). Swidux follows [semantic versioning](https://semver.org) from 2.0.0: source-breaking changes ship only in major versions. Development setup — including the `.dev-tooling` sentinel that gates the lint and DocC tooling — is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
