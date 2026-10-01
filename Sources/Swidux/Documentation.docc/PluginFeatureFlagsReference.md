@@ -4,7 +4,7 @@ API reference for the `SwiduxFeatureFlags` library — typed feature flags, A/B 
 
 ## Overview
 
-`SwiduxFeatureFlags` is a domain plugin that owns a `FeatureFlagsState` slice, fetches a JSON wire format via a provider-agnostic `FeatureFlagsService`, and answers reads against state. Bucketing is pure FNV-1a so reads are synchronous and offline-capable.
+`SwiduxFeatureFlags` is a domain plugin that owns a `FeatureFlagsState` slice, fetches a JSON wire format via a provider-agnostic `FeatureFlagsService`, and answers reads against state. Bucketing is a pure hash, so reads are synchronous and work offline.
 
 Three flag types from one wire format:
 
@@ -53,13 +53,15 @@ Two rules keep builds already in the field working as the format grows:
 
 ## Bucketing and identity
 
-`bucket = FNV1a(bucketingID + ":" + flagKey) % 100`
+`bucket = fmix32(FNV1a(bucketingID + ":" + flagKey)) % 10_000`
 
-- **Stable per `(bucketingID, flagKey)` pair forever.** Same input always produces the same bucket.
-- **Per-flag.** A user isn't always in the "early" group across different flags. At 10–50% rollouts, membership in two flags' cohorts is effectively independent; at very small rollouts it is not — two flags canaried at 1% reach essentially disjoint sets of users, so no device runs both canaries at once.
+A boolean flag is on when `bucket < rollout * 100`. Variant weights scale the same way: with weights `[50, 25, 25]`, buckets `0..<5_000` get the first variant, `5_000..<7_500` the second, and `7_500..<10_000` the third.
+
+- **Stable per `(bucketingID, flagKey)` pair.** Same input always produces the same bucket. Changing the function re-buckets every user, so it changes only in a major release. 2.0.0 replaced the 1.x hash (FNV-1a modulo 100, no finalizer), so upgrading from 1.x re-buckets every user once.
+- **Per-flag.** A user isn't always in the "early" group across different flags. Two flags' cohorts are independent at any rollout size: of the users in one flag's 1% canary, about 1% are also in another flag's 1% canary.
 - **Identity resolution.** When a `userIDKeyPath` is configured *and* the current user ID is non-nil, that is used. Otherwise the **device ID** is used (the plugin's required `deviceIDKeyPath`). Anonymous users get a stable per-install identity; logged-in users get stable cross-device assignment. A user's variant *can* shift once at login — acceptable for nearly all real use cases.
 
-FNV-1a was chosen because it's simple and dependency-free. It is not GrowthBook-compatible: GrowthBook hashes the ID and a seed with no separator, over UTF-16, into 1,000 (v1) or 10,000 (v2) buckets, so an app migrating from GrowthBook re-buckets about half of every 50/50 experiment.
+FNV-1a with murmur3's `fmix32` finalizer was chosen because it's simple and dependency-free. It is not GrowthBook-compatible: GrowthBook hashes the ID and a seed with no separator, over UTF-16, into 1,000 (v1) or 10,000 (v2) buckets, so an app migrating from GrowthBook re-buckets about half of every 50/50 experiment.
 
 ### The device ID must be stable across reinstall
 

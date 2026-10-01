@@ -116,9 +116,8 @@ enum FlagEvaluator {
     ) -> Bool? {
         if case .bool(let v) = localOverrides[flag.key] { return v }
         guard case .boolean(let rollout) = config.flags[flag.key] else { return nil }
-        if rollout >= 100 { return true }
-        if rollout <= 0 { return false }
-        return Bucketing.bucket(id: bucketingID, flagKey: flag.key) < rollout
+        return Bucketing.isInRollout(
+            bucket: Bucketing.bucket(id: bucketingID, flagKey: flag.key), rollout: rollout)
     }
 
     static func variant<Variant>(
