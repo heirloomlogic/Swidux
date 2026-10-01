@@ -90,9 +90,9 @@ Use `receipt.undo(in:)` for in-memory state, or `persistence.undo(_:in:)` to sav
 
 The generated reference column is `_swidux_<property>Reference`; an inline JSON blob is `_swidux_<property>Data`. User properties colliding with either generated name produce a diagnostic. SwiftData inverse references use nullify rules; session policies own destructive operations. The scalar UUID and UUID-array columns keep their domain property names.
 
-These generated association schemas are currently local-only. `ContainerFactory` throws `SwiduxAssociationError.synchronizationUnavailable` when a mirrored container includes them, even though their inverses satisfy SwiftData's schema requirement. Remote deletion evidence, partial delivery, competing ownership/order changes, reconnect behavior, and account isolation still need synchronization reconciliation and signed-device acceptance under [#102](https://github.com/heirloomlogic/Swidux/issues/102), [#103](https://github.com/heirloomlogic/Swidux/issues/103), and [#109](https://github.com/heirloomlogic/Swidux/issues/109). Local tests and schema inspection do not establish those guarantees.
+These generated association schemas are currently local-only. `ContainerFactory` throws `SwiduxAssociationError.synchronizationUnavailable` when a mirrored container includes them, even though their inverses satisfy SwiftData's schema requirement. Remote deletion evidence, partial delivery, competing ownership/order changes, reconnect behavior, and account isolation still need synchronization reconciliation and signed-device acceptance under [#102](https://github.com/heirloomlogic/Swidux/issues/102) and [#109](https://github.com/heirloomlogic/Swidux/issues/109). Local tests and schema inspection do not establish those guarantees.
 
-`@Relation` remains the separate embedded-value API: local-only and unordered, with parent saves reconciling embedded child snapshots. Use the identity-based declarations above when children are independently editable.
+`@Relation` was removed in 2.0.0. Use `@Inline` for an owned value without independent identity. Use the identity-based declarations above when children are independently editable.
 
 ## Breaking schema change
 

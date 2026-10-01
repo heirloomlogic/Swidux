@@ -179,7 +179,7 @@ nonisolated struct AppState: Equatable, Sendable {
 
 The macros emit an `AppStateObserver` class and a `SwiduxObservable` extension. `@Slice` ensures composed state slices keep per-property observation. See [Macros Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/macrosreference).
 
-`SwiduxPersistence` adds `@Persisted` (with the property markers `@Relation`, `@ForeignKey`, `@Inline`, `@Ignored`), which generates a domain entity's SwiftData `@Model` shadow and converters. It operates on entities stored in an `EntityStore` — a different layer than `@Swidux`, which annotates state containers — so the two never apply to the same type.
+`SwiduxPersistence` adds `@Persisted` with `@ForeignKey`, `@Inline`, `@Ignored`, `@BelongsTo`, and `@HasMany` property markers. It generates a domain entity's SwiftData `@Model` shadow and converters. Use `@Inline` for owned values without independent identity; use `@BelongsTo` and `@HasMany` for independently editable children. Persistence operates on entities stored in an `EntityStore` — a different layer than `@Swidux`, which annotates state containers — so the two never apply to the same type.
 
 > **Note for Redux users:** `@Slice` is not Redux Toolkit's `createSlice`. Swidux slices don't own reducers — `@Slice` is a structural marker for nested `@Swidux` properties so SwiftUI gets per-property observation. Apologies for the term overload; we picked it for memorability over literal equivalence.
 

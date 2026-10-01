@@ -756,17 +756,8 @@ extension PersistenceCoordinator where State: SwiduxObservable {
     /// re-hydration after a container rebuild both leave one), when the watermark has expired or the
     /// history fetch fails, when a deletion's tombstone carries no identity
     /// (every row deleted before `@Attribute(.preserveValueOnDeletion)` shipped),
-    /// when a changed row can't be resolved, when another writer deleted a
-    /// `@Relation` child without changing any row that embeds it — a deleted
-    /// child can't be traced to its parent — and when more than one store sits
-    /// behind the container. A child that was inserted or edited is traced
-    /// through its relationships to the registered row holding it, and only
-    /// that row is read.
-    ///
-    /// > Note: A parent's save writes its whole subtree from memory, so it is
-    /// > last-writer-wins for its children too. A local edit to the parent that
-    /// > flushes before the tick that would have delivered a peer's edit to one
-    /// > of its children writes the older child back over it.
+    /// when a changed row can't be resolved, and when more than one store sits
+    /// behind the container.
     ///
     /// The watermark advances whenever a tick read every registered entity
     /// successfully — including a tick that declined to apply some of what it

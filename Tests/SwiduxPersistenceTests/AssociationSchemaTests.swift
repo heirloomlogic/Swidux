@@ -13,7 +13,7 @@ struct AssociationSchemaTests {
         #expect(relationships.count == 4)
         #expect(relationships.allSatisfy { $0.isOptional })
         #expect(relationships.allSatisfy { $0.deleteRule == .nullify })
-        #expect(CloudKitIncompatibleSchema.oneSidedRelationships(in: schema).isEmpty)
+        #expect(relationships.allSatisfy { $0.inverseName != nil || $0.inverseKeyPath != nil })
         #expect(
             AssociationParent.swiduxAssociationInverse("childIDs") == \AssociationParentModel._swidux_childIDsReference)
         #expect(

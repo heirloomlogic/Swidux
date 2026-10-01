@@ -63,19 +63,8 @@ extension PersistedMacro: PeerMacro {
                 // A non-optional, non-primitive mirrored attribute has no CloudKit-safe
                 // default the macro can synthesize: require a default, optionality, or @Inline.
                 if cloudKitMirrorDefault(for: property) == .missing { diagnose(property, .mirrorRequiresDefault) }
-            case .relation(_, let cardinality, _):
-                if let inverse = property.relationInverse {
-                    context.diagnose(Diagnostic(node: inverse, message: SwiduxDiagnostic.relationInverseUnsupported))
-                }
-                if !property.hasSupportedRelationShape {
-                    diagnose(property, .relationUnsupportedShape)
-                } else if cardinality == .toOne {
-                    // CloudKit forbids non-optional relationships; a non-optional
-                    // to-one `@Relation` cannot be reconstructed safely.
-                    diagnose(property, .relationRequiresOptional)
-                }
             case .association(let toMany, _, _):
-                if !property.hasSupportedRelationShape {
+                if !property.hasSupportedShape {
                     diagnose(property, .associationUnsupportedShape(toMany: toMany))
                 } else if toMany && cloudKitMirrorDefault(for: property) == .missing {
                     diagnose(property, .mirrorRequiresDefault)
@@ -98,13 +87,10 @@ extension PersistedMacro: PeerMacro {
             }
         }
 
-        // A relation whose shape has no `…Model` spelling is already an error;
-        // leaving it out keeps that error from arriving with a parse failure in
-        // the expansion buffer.
         return [
             generatePersistedModelClass(
                 structName: structDecl.name.text,
-                properties: properties.filter(\.hasSupportedRelationShape),
+                properties: properties.filter(\.hasSupportedShape),
                 accessLevel: accessLevel(of: structDecl)
             )
         ]
@@ -130,7 +116,7 @@ extension PersistedMacro: ExtensionMacro {
             generatePersistableEntityExtension(
                 typeName: type.trimmedDescription,
                 accessLevel: accessLevel(of: structDecl),
-                properties: classifyPersistedProperties(of: structDecl).filter(\.hasSupportedRelationShape)
+                properties: classifyPersistedProperties(of: structDecl).filter(\.hasSupportedShape)
             )
         ]
     }

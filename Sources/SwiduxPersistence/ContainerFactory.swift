@@ -20,10 +20,10 @@ public enum ContainerFactory {
     ///   - url: On-disk store URL. `nil` uses SwiftData's default. Ignored when
     ///     `inMemory` is `true`.
     ///   - inMemory: Build an in-memory store (tests, previews).
-    /// Mirrored containers reject one-sided relationships with `CloudKitIncompatibleSchema`. Generated ID associations currently throw `SwiduxAssociationError.synchronizationUnavailable` until synchronization reconciliation and device acceptance are implemented.
+    /// Generated ID associations currently throw `SwiduxAssociationError.synchronizationUnavailable` in mirrored containers until synchronization reconciliation and device acceptance are implemented.
     ///
     /// - Returns: A configured `ModelContainer` for the schema.
-    /// - Throws: An invalid association declaration, an unsupported mirrored schema, or a SwiftData construction error.
+    /// - Throws: An invalid association declaration, an unsupported synchronized association, or a SwiftData construction error.
     public static func makeContainer(
         models: [any PersistentModel.Type],
         cloudKitDatabase: ModelConfiguration.CloudKitDatabase = .none,
@@ -49,10 +49,6 @@ public enum ContainerFactory {
         if configuration.cloudKitContainerIdentifier != nil {
             if associationModels.contains(where: { SwiduxAssociationGraph.hasAssociations($0) }) {
                 throw SwiduxAssociationError.synchronizationUnavailable
-            }
-            let oneSided = CloudKitIncompatibleSchema.oneSidedRelationships(in: schema)
-            guard oneSided.isEmpty else {
-                throw CloudKitIncompatibleSchema(oneSidedRelationships: oneSided)
             }
         }
         return try ModelContainer(for: schema, configurations: [configuration])

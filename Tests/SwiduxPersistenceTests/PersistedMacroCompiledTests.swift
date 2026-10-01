@@ -38,14 +38,13 @@ nonisolated struct VersionedNote: Identifiable, Equatable, Sendable {
     var body: String = ""
 }
 
-/// `Optional<T>` is as optional as `T?`: no default, `@Ignored` and a to-one
-/// `@Relation` all accept it.
+/// `Optional<T>` is as optional as `T?`: no default is required, and `@Ignored`
+/// accepts it.
 @Persisted
 nonisolated struct SpelledOptionalNote: Identifiable, Equatable, Sendable {
     var id: UUID
     var link: Optional<URL>
     @Ignored var preview: Optional<String>
-    @Relation(deleteRule: .nullify) var chapter: Optional<Chapter>
 }
 
 /// An entity nested in another type, as a feature namespace would hold it.
@@ -98,8 +97,7 @@ struct PersistedMacroCompiledTests {
         let note = SpelledOptionalNote(
             id: UUID(),
             link: URL(string: "https://example.com"),
-            preview: nil,
-            chapter: Chapter(id: UUID(), heading: "one")
+            preview: nil
         )
 
         #expect(try SpelledOptionalNoteModel(from: note).toDomain() == note)

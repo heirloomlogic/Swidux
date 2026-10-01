@@ -5,7 +5,6 @@ enum SwiduxDiagnostic: DiagnosticMessage {
     case persistedRequiresStruct
     case ignoredRequiresOptional
     case mirrorRequiresDefault
-    case relationRequiresOptional
     case inlineRequiresDefault
     case requiresTypeAnnotation
     case singleBindingPerDeclaration
@@ -19,8 +18,6 @@ enum SwiduxDiagnostic: DiagnosticMessage {
     case restrictedAccessStruct(macro: String)
     case sliceRequiresNamedType
     case selfInDefaultValue(enclosing: String, generatedDeclaration: String)
-    case relationInverseUnsupported
-    case relationUnsupportedShape
     case inlineColumnCollision(property: String, column: String)
     case letRequiresDefault
     case associationUnsupportedShape(toMany: Bool)
@@ -39,9 +36,6 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .mirrorRequiresDefault:
             return
                 "Persisted properties of a non-primitive type must provide a default value (= …), be optional, or be marked @Inline to be CloudKit-safe"
-        case .relationRequiresOptional:
-            return
-                "@Relation to-one properties must be optional (T?) or to-many to be CloudKit-safe; CloudKit forbids non-optional relationships"
         case .inlineRequiresDefault:
             return
                 "Non-optional @Inline properties must provide a default value (= …) or be optional, so a missing or undecodable blob can be recovered instead of crashing"
@@ -82,12 +76,6 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .selfInDefaultValue(let enclosing, let generatedDeclaration):
             return
                 "'Self' in a property's type or default value must be written as '\(enclosing)'; the generated \(generatedDeclaration) is emitted outside the struct, where Self doesn't refer to it"
-        case .relationInverseUnsupported:
-            return
-                "@Relation(inverse:) is not supported: a @Relation is an owned value composition, and a domain value can't hold a back-reference to its parent without containing itself. Remove inverse:, and keep the parent's id in a @ForeignKey property if the child needs it"
-        case .relationUnsupportedShape:
-            return
-                "@Relation properties must be declared as [T] (to-many) or T? (to-one), where T names a @Persisted struct directly"
         case .inlineColumnCollision(let property, let column):
             return
                 "@Inline property '\(property)' stores its blob in a generated '\(column)' column, which collides with the property '\(column)'; rename one of them"
@@ -112,7 +100,6 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .persistedRequiresStruct: return "persistedRequiresStruct"
         case .ignoredRequiresOptional: return "ignoredRequiresOptional"
         case .mirrorRequiresDefault: return "mirrorRequiresDefault"
-        case .relationRequiresOptional: return "relationRequiresOptional"
         case .inlineRequiresDefault: return "inlineRequiresDefault"
         case .requiresTypeAnnotation: return "requiresTypeAnnotation"
         case .singleBindingPerDeclaration: return "singleBindingPerDeclaration"
@@ -126,8 +113,6 @@ enum SwiduxDiagnostic: DiagnosticMessage {
         case .restrictedAccessStruct: return "restrictedAccessStruct"
         case .sliceRequiresNamedType: return "sliceRequiresNamedType"
         case .selfInDefaultValue: return "selfInDefaultValue"
-        case .relationInverseUnsupported: return "relationInverseUnsupported"
-        case .relationUnsupportedShape: return "relationUnsupportedShape"
         case .inlineColumnCollision: return "inlineColumnCollision"
         case .letRequiresDefault: return "letRequiresDefault"
         case .associationUnsupportedShape: return "associationUnsupportedShape"

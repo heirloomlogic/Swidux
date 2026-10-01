@@ -94,13 +94,6 @@ enum HistoryScanFailure: Error, Sendable {
     /// watermark past a change nobody read.
     case unresolvedChanges(entityName: String)
 
-    /// Another writer deleted a row of a model no registration mirrors but a
-    /// registered one reaches through a relationship — a `@Relation` child —
-    /// without changing any row that embeds it. A deleted child can't be traced
-    /// to the parent that held it, so only a full read of the parents can
-    /// deliver the removal.
-    case embeddedChange(entityName: String)
-
     /// More than one store behind the container. `DefaultHistoryToken` is a
     /// per-store vector and `Comparable` orders it totally, which is not a
     /// componentwise upper bound — so `> max` can exclude a second store's later
@@ -155,10 +148,7 @@ extension EntityDB {
 
         let byName = Dictionary(
             readers.map { ($0.entityName, $0) }, uniquingKeysWith: { first, _ in first })
-        let relations = EmbeddedRelations(
-            registered: byName.mapValues(\.modelType), schema: modelContainer.schema)
         var changedPIDs: [String: [PersistentIdentifier]] = [:]
-        var embeddedPIDs: [String: [PersistentIdentifier]] = [:]
         var deletedPIDs: Set<PersistentIdentifier> = []
 
         // One pass. The window can hold every change of a first CloudKit import,
@@ -166,32 +156,13 @@ extension EntityDB {
         // the transactions it came from, alongside them.
         for transaction in transactions {
             let isOwnWrite = transaction.author == transactionAuthor
-            var touched: Set<String> = []
-            var embeddedDeletions: Set<String> = []
             for change in transaction.changes {
                 let identifier = change.changedPersistentIdentifier
                 guard let reader = byName[identifier.entityName] else {
-                    // A model a registered entity embeds: its rows *are* in
-                    // state, inside their parents, so another writer's change
-                    // to one is traced to the registered row holding it —
-                    // skipping it would consume it unread, and the parent's next
-                    // save would write the stale child back over it. Our own
-                    // saves wrote these children *from* state, so they have
-                    // nothing to teach this scan.
-                    guard relations.modelTypes[identifier.entityName] != nil, !isOwnWrite else {
-                        // A model no registered entity mirrors or reaches. Its
-                        // rows are not in state, so nothing here has anything
-                        // to say.
-                        continue
-                    }
-                    if case .delete = change {
-                        embeddedDeletions.insert(identifier.entityName)
-                    } else {
-                        embeddedPIDs[identifier.entityName, default: []].append(identifier)
-                    }
+                    // A model no registered entity mirrors has no state entry
+                    // for this coordinator to merge.
                     continue
                 }
-                touched.insert(reader.entityName)
                 switch change {
                 case .delete:
                     deletedPIDs.insert(identifier)
@@ -215,25 +186,11 @@ extension EntityDB {
                     scan.escalate(.unresolvedChanges(entityName: reader.entityName))
                 }
             }
-            // A deleted child has no row left to trace to its parent. The
-            // parent's own change is what delivers it — a cascade deletes the
-            // parent, and a save that drops a child rewrites the parent — so a
-            // deletion that arrived with a change to a registered row embedding
-            // its model is accounted for. One that arrived alone is not.
-            for entityName in embeddedDeletions
-            where touched.isDisjoint(with: relations.registeredAncestors[entityName] ?? []) {
-                scan.escalate(.embeddedChange(entityName: entityName))
-            }
         }
 
         // A window going to be re-read in full needs no rows resolved: the
         // full read finds them anyway, and only its tombstones are owed.
         guard scan.escalation == nil else { return scan }
-        let embedding = try embeddingRows(
-            of: embeddedPIDs, relations: relations, registered: Set(byName.keys))
-        for (entityName, ids) in embedding {
-            scan.rows.insert(changed: ids, for: entityName)
-        }
         for (entityName, identifiers) in changedPIDs {
             guard let reader = byName[entityName] else { continue }
             let resolved = try identities(of: identifiers, asConcrete: reader.modelType)
@@ -394,8 +351,6 @@ extension HistoryScanFailure: CustomStringConvertible {
             "a deleted \(entityName) row left no identity in its tombstone"
         case .unresolvedChanges(let entityName):
             "a changed \(entityName) row could not be resolved to an identity"
-        case .embeddedChange(let entityName):
-            "a \(entityName) row changed that is only readable through its parent"
         case .multipleStores:
             "history tokens are not a total order across more than one store"
         case .fetchFailed(let message):

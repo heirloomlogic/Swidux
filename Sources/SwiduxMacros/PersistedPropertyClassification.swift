@@ -9,19 +9,10 @@ enum PersistedPropertyKind {
     /// `@Inline`: force a `Codable` value into one opaque JSON `Data` column,
     /// exposed through a computed accessor of the original type.
     case inlineBlob
-    /// `@Relation`: a SwiftData relationship to another `@Persisted` entity's
-    /// generated model. `elementBaseName` is the related domain type's name.
-    case relation(deleteRule: String?, cardinality: RelationCardinality, elementBaseName: String)
     /// `@Ignored`: a derived/denormalized field with no column. Must be optional
     /// (or otherwise defaultable) so `toDomain()` can reconstruct it as `nil`.
     case ignored
     case association(toMany: Bool, destination: String, inverse: String)
-}
-
-enum RelationCardinality {
-    case toOne
-    case toOneOptional
-    case toMany
 }
 
 struct PersistedProperty {
@@ -35,12 +26,9 @@ struct PersistedProperty {
     let defaultValue: ExprSyntax?
     /// The property's binding, where property-level diagnostics are anchored.
     let binding: PatternBindingSyntax
-    /// The `@Relation` attribute's `inverse:` argument, if one was written.
-    /// Always diagnosed: see `SwiduxDiagnostic.relationInverseUnsupported`.
-    let relationInverse: LabeledExprSyntax?
-    /// Whether a `@Relation`'s declared type has a shape the generator can
-    /// map: `[T]`, `T?` or `T`, with `T` naming a type directly.
-    let hasSupportedRelationShape: Bool
+    /// Whether an association marker's declared type and arguments can be
+    /// represented by the generated model.
+    let hasSupportedShape: Bool
     /// The access level the property spells, if any; the generated model never
     /// republishes it wider. See `memberAccessPrefix`.
     let accessLevel: AccessLevel?
@@ -60,7 +48,7 @@ struct PersistedProperty {
 }
 
 /// Classifies the stored properties of an `@Persisted` domain struct, reading
-/// the `@Relation` / `@ForeignKey` / `@Inline` / `@Ignored` marker attributes.
+/// the `@BelongsTo` / `@HasMany` / `@ForeignKey` / `@Inline` / `@Ignored` marker attributes.
 func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedProperty] {
     structDecl.memberBlock.members.compactMap { member -> PersistedProperty? in
         guard let varDecl = member.decl.as(VariableDeclSyntax.self) else { return nil }
@@ -86,7 +74,6 @@ func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedP
 
         func property(
             _ kind: PersistedPropertyKind,
-            inverse: LabeledExprSyntax? = nil,
             supportedShape: Bool = true
         ) -> PersistedProperty {
             PersistedProperty(
@@ -96,23 +83,13 @@ func classifyPersistedProperties(of structDecl: StructDeclSyntax) -> [PersistedP
                 isOptional: isOptional,
                 defaultValue: defaultValue,
                 binding: binding,
-                relationInverse: inverse,
-                hasSupportedRelationShape: supportedShape,
+                hasSupportedShape: supportedShape,
                 accessLevel: AccessLevel(varDecl.modifiers)
             )
         }
 
         if marker(named: "Ignored", on: varDecl) != nil {
             return property(.ignored)
-        }
-        if let relation = marker(named: "Relation", on: varDecl) {
-            let (rule, inverse) = relationArguments(relation)
-            let shape = relationShape(of: typeSyntax)
-            return property(
-                .relation(deleteRule: rule, cardinality: shape.cardinality, elementBaseName: shape.element),
-                inverse: inverse,
-                supportedShape: shape.isSupported
-            )
         }
         for (markerName, toMany) in [("BelongsTo", false), ("HasMany", true)] {
             if let attribute = marker(named: markerName, on: varDecl) {
@@ -179,52 +156,6 @@ private func marker(named markerName: String, on varDecl: VariableDeclSyntax) ->
         }
     }
     return nil
-}
-
-/// Extracts the `deleteRule:` source text and the `inverse:` argument from a
-/// `@Relation`.
-private func relationArguments(_ attribute: AttributeSyntax) -> (deleteRule: String?, inverse: LabeledExprSyntax?) {
-    guard case .argumentList(let args) = attribute.arguments else { return (nil, nil) }
-    var rule: String?
-    var inverse: LabeledExprSyntax?
-    for arg in args {
-        switch arg.label?.text {
-        case "deleteRule":
-            rule = arg.expression.trimmedDescription
-        case "inverse":
-            inverse = arg
-        default:
-            break
-        }
-    }
-    return (rule, inverse)
-}
-
-/// Determines the cardinality and related element base type name of a relation
-/// property from its declared type (`[Foo]`, `Foo?`, or `Foo`).
-///
-/// `isSupported` is `false` when the element doesn't name a type directly —
-/// `[Foo]?`, `[[Foo]]`, `Set<Foo>` — since appending `Model` to it names nothing.
-private func relationShape(
-    of typeSyntax: TypeSyntax
-) -> (cardinality: RelationCardinality, element: String, isSupported: Bool) {
-    let cardinality: RelationCardinality
-    let element: TypeSyntax
-    if let array = typeSyntax.as(ArrayTypeSyntax.self) {
-        (cardinality, element) = (.toMany, array.element)
-    } else if let wrapped = optionalWrappedType(of: typeSyntax) {
-        (cardinality, element) = (.toOneOptional, wrapped)
-    } else {
-        (cardinality, element) = (.toOne, typeSyntax)
-    }
-    return (cardinality, baseName(of: element), isDirectlyNamedType(element))
-}
-
-private func baseName(of typeSyntax: TypeSyntax) -> String {
-    if let identifier = typeSyntax.as(IdentifierTypeSyntax.self) {
-        return identifier.name.text
-    }
-    return typeSyntax.trimmedDescription
 }
 
 /// Association endpoints use scalar UUIDs; model references are storage-only.

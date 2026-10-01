@@ -22,7 +22,6 @@ final class UnsupportedShapeTests: XCTestCase {
 
     let persisted: [String: Macro.Type] = [
         "Persisted": PersistedMacro.self,
-        "Relation": MarkerMacro.self,
         "ForeignKey": MarkerMacro.self,
         "Inline": MarkerMacro.self,
         "Ignored": MarkerMacro.self,
@@ -844,8 +843,8 @@ final class UnsupportedShapeTests: XCTestCase {
         )
     }
 
-    // `Optional<T>` is as optional as `T?`: no default is required, `@Ignored`
-    // accepts it, and a to-one `@Relation` maps to an optional model.
+    // `Optional<T>` is as optional as `T?`: no default is required, and
+    // `@Ignored` accepts it.
     func testOptionalGenericSpellingIsOptional() throws {
         assertMacroExpansion(
             """
@@ -854,7 +853,6 @@ final class UnsupportedShapeTests: XCTestCase {
                 var id: UUID
                 var url: Optional<URL>
                 @Ignored var cache: Optional<String>
-                @Relation(deleteRule: .nullify) var owner: Optional<Person>
             }
             """,
             expandedSource: """
@@ -862,7 +860,6 @@ final class UnsupportedShapeTests: XCTestCase {
                     var id: UUID
                     var url: Optional<URL>
                     var cache: Optional<String>
-                    var owner: Optional<Person>
                 }
 
                 @Model
@@ -871,31 +868,22 @@ final class UnsupportedShapeTests: XCTestCase {
 
                     @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
                     var url: Optional<URL>
-                    @Relationship(deleteRule: .nullify) var owner: PersonModel? = nil
 
                     init(from domain: Link) throws {
                         self.id = domain.id
                         self.url = domain.url
-                        self.owner = try domain.owner.map {
-                            try PersonModel(from: $0)
-                        }
                     }
 
                     func toDomain() throws -> Link {
                         Link(
                             id: id,
                             url: url,
-                            cache: nil,
-                            owner: try owner.map {
-                                try $0.toDomain()
-                            }
+                            cache: nil
                         )
                     }
 
                     func update(from domain: Link) throws {
                         self.url = domain.url
-                        self.owner = try SwiduxRelationCodec.reconcile(
-                            self.owner, with: domain.owner, in: modelContext)
                     }
 
                     static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<LinkModel> {
@@ -917,136 +905,6 @@ final class UnsupportedShapeTests: XCTestCase {
                     typealias Model = LinkModel
                 }
                 """,
-            macros: persisted
-        )
-    }
-
-    func testRelationToOptionalArrayIsDiagnosed() throws {
-        assertMacroExpansion(
-            """
-            @Persisted
-            struct Shelf: Identifiable, Equatable, Sendable {
-                var id: UUID
-                @Relation(deleteRule: .cascade) var books: [Book]?
-            }
-            """,
-            expandedSource: """
-                struct Shelf: Identifiable, Equatable, Sendable {
-                    var id: UUID
-                    var books: [Book]?
-                }
-
-                @Model
-                final class ShelfModel: PersistableModel {
-                    typealias Domain = Shelf
-
-                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-
-                    init(from domain: Shelf) throws {
-                        self.id = domain.id
-                    }
-
-                    func toDomain() throws -> Shelf {
-                        Shelf(
-                            id: id
-                        )
-                    }
-
-                    func update(from domain: Shelf) throws {
-
-                    }
-
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<ShelfModel> {
-                        FetchDescriptor<ShelfModel>(predicate: #Predicate {
-                                ids.contains($0.id)
-                            })
-                    }
-
-                    static func swiduxBatchFetchDescriptor(
-                        persistentIDs: [PersistentIdentifier]
-                    ) -> FetchDescriptor<ShelfModel> {
-                        FetchDescriptor<ShelfModel>(predicate: #Predicate {
-                            persistentIDs.contains($0.persistentModelID)
-                        })
-                    }
-                }
-
-                extension Shelf: PersistableEntity {
-                    typealias Model = ShelfModel
-                }
-                """,
-            diagnostics: [
-                DiagnosticSpec(message: Message.relationShape, line: 4, column: 41)
-            ],
-            macros: persisted
-        )
-    }
-
-    func testRelationInverseIsDiagnosed() throws {
-        assertMacroExpansion(
-            #"""
-            @Persisted
-            struct Deck: Identifiable, Equatable, Sendable {
-                var id: UUID
-                @Relation(deleteRule: .cascade, inverse: \CardModel.deck) var cards: [Card] = []
-            }
-            """#,
-            expandedSource: """
-                struct Deck: Identifiable, Equatable, Sendable {
-                    var id: UUID
-                    var cards: [Card] = []
-                }
-
-                @Model
-                final class DeckModel: PersistableModel {
-                    typealias Domain = Deck
-
-                    @Attribute(.preserveValueOnDeletion) var id: UUID = UUID()
-                    @Relationship(deleteRule: .cascade) var cards: [CardModel]? = nil
-
-                    init(from domain: Deck) throws {
-                        self.id = domain.id
-                        self.cards = try domain.cards.map {
-                            try CardModel(from: $0)
-                        }
-                    }
-
-                    func toDomain() throws -> Deck {
-                        Deck(
-                            id: id,
-                            cards: try (cards ?? []).map {
-                                try $0.toDomain()
-                            }
-                        )
-                    }
-
-                    func update(from domain: Deck) throws {
-                        self.cards = try SwiduxRelationCodec.reconcile(
-                            self.cards, with: domain.cards, in: modelContext)
-                    }
-
-                    static func swiduxBatchFetchDescriptor(ids: [UUID]) -> FetchDescriptor<DeckModel> {
-                        FetchDescriptor<DeckModel>(predicate: #Predicate {
-                                ids.contains($0.id)
-                            })
-                    }
-
-                    static func swiduxBatchFetchDescriptor(
-                        persistentIDs: [PersistentIdentifier]
-                    ) -> FetchDescriptor<DeckModel> {
-                        FetchDescriptor<DeckModel>(predicate: #Predicate {
-                            persistentIDs.contains($0.persistentModelID)
-                        })
-                    }
-                }
-
-                extension Deck: PersistableEntity {
-                    typealias Model = DeckModel
-                }
-                """,
-            diagnostics: [
-                DiagnosticSpec(message: Message.inverse, line: 4, column: 37)
-            ],
             macros: persisted
         )
     }
@@ -1217,10 +1075,6 @@ private enum Message {
         "A let with an initial value can't be persisted: the memberwise initializer has no parameter for it, so the generated model can't load it. Make it a var, or static if it is a constant"
     static let privateProperty =
         "@Persisted can't mirror a private property; the generated model reads and rebuilds it from outside the struct. Make it fileprivate or wider, or mark it @Ignored"
-    static let relationShape =
-        "@Relation properties must be declared as [T] (to-many) or T? (to-one), where T names a @Persisted struct directly"
-    static let inverse =
-        "@Relation(inverse:) is not supported: a @Relation is an owned value composition, and a domain value can't hold a back-reference to its parent without containing itself. Remove inverse:, and keep the parent's id in a @ForeignKey property if the child needs it"
     static let letDefault =
         "A let without a default can't be rebuilt by the generated init(observer:), which reads only the var properties the observer mirrors; give it a default, or make it a var"
     static let inlineCollision =
