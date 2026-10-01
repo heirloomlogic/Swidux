@@ -64,17 +64,22 @@ jobs:
       - name: Create .nojekyll file
         run: touch ./docs/.nojekyll
 
+      # upload-artifact rejects any path containing `"`, `:`, `<`, `>`, `|`, `*`,
+      # `?` or a line break (an NTFS portability rule), and DocC names its
+      # per-symbol JSON after the signature, e.g. `data(for:session:).json`.
+      # Uploading the tree directly fails, so ship it as one archive; the
+      # archive's own name is clean and tar keeps the filenames byte-for-byte.
+      # COPYFILE_DISABLE stops bsdtar adding `._*` AppleDouble entries.
+      - name: Archive docs
+        run: COPYFILE_DISABLE=1 tar -czf docs.tar.gz -C docs .
+
       - name: Upload docs artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs
-          path: docs
+          path: docs.tar.gz
           retention-days: 1
-          # Default is false, which drops ./docs/.nojekyll — the artifact
-          # would otherwise silently lack it, and a recreated gh-pages branch
-          # (or a fork) would publish through Jekyll, which drops every
-          # `_`/`.`-prefixed path.
-          include-hidden-files: true
+          if-no-files-found: error
 
   deploy:
     needs: build
@@ -97,7 +102,17 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: docs
-          path: docs
+          path: ${{ runner.temp }}/docs-artifact
+
+      # The archive carries `.nojekyll` and the colon-bearing filenames, so
+      # extracting it (rather than uploading a bare tree) is what preserves
+      # both. Without `.nojekyll`, a recreated gh-pages branch (or a fork)
+      # would publish through Jekyll, which drops every `_`/`.`-prefixed path.
+      - name: Extract docs
+        run: |
+          mkdir docs
+          tar -xzf "${{ runner.temp }}/docs-artifact/docs.tar.gz" -C docs
+          test -f docs/.nojekyll
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@fa24774553152dd7873cd16ebd8d959b010c5445 # v4.9.0
