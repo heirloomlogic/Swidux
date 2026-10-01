@@ -56,11 +56,8 @@ swift package plugin --allow-writing-to-package-directory format-source-code
 
 ## Release notes
 
-Write release notes on the GitHub Release. `CHANGELOG.md` is generated from the
-Releases API by `.github/workflows/changelog.yml` and regenerated on every
-release publish, edit, or delete — hand edits are overwritten, so don't make
-them. `bin/generate-changelog` previews the output locally.
+Write release notes on the GitHub Release. Releases are the only record of changes; `CHANGELOG.md` just points there.
 
-Label your PR `enhancement`, `changed`, `bug`, `security`, or `documentation`.
-`.github/release.yml` groups the auto-generated notes under those headings;
-unlabeled PRs land in **Other Changes** rather than being dropped.
+Swidux follows semantic versioning from 2.0.0. A source-breaking change — a removed or renamed public symbol, a new requirement on a public protocol, a new case in a public enum that apps switch over, a behavior change that existing code must adapt to — ships only in a major version.
+
+Label your PR `breaking`, `enhancement`, `changed`, `bug`, `security`, or `documentation`. `.github/release.yml` groups the auto-generated notes under those headings; unlabeled PRs land in **Other Changes** rather than being dropped. A breaking PR can carry a topic label too and is still listed under **Breaking**. Each breaking change also needs a hand-written migration note in the release.

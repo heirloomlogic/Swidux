@@ -1,5 +1,9 @@
 changelog:
   categories:
+    # First so a breaking PR lands here even when it also carries a topic label.
+    - title: Breaking
+      labels:
+        - breaking
     - title: Added
       labels:
         - enhancement
